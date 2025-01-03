@@ -33,12 +33,55 @@ def singular_values_hoyer_sparsity(
     return hoyer_sparsity(singular_values, normalize)
 
 
+_reductions = {
+    "sum": torch.sum,
+    "mean": torch.mean,
+    "none": lambda x: x,
+    None: lambda x: x,
+}
+
+
+def scad(
+    input: torch.Tensor, lambda_val: float, a: float, reduction: str = "sum"
+) -> torch.Tensor:
+    # https://andrewcharlesjones.github.io/journal/scad.html
+    abs_input = torch.abs(input)
+    # Case 1: |x| <= λ
+    case1 = lambda_val * abs_input * (abs_input <= lambda_val)
+
+    # Case 2: λ < |x| <= aλ
+    case2 = (
+        (-(abs_input**2) + 2 * a * lambda_val * abs_input - lambda_val**2)
+        / (2 * (a - 1))
+    ) * ((abs_input > lambda_val) & (abs_input <= a * lambda_val))
+
+    # Case 3: |x| > aλ
+    case3 = ((a + 1) * (lambda_val**2) / 2) * (abs_input > a * lambda_val)
+    penalty = case1 + case2 + case3
+    return _reductions[reduction](penalty)
+
+
+def singular_values_scad(
+    input: torch.Tensor, lambda_val: float, a_val: float, reduction: str = "sum"
+) -> torch.Tensor:
+    singular_values = torch.linalg.svdvals(input)
+    return scad(singular_values, lambda_val, a_val, reduction)
+
+
 # Pairs (fn, sgn) where sgn is -1 if the metric should be minimized, 1 if maximized
 _regularizers = {
-    "entropy": lambda **kwargs: (singular_values_entropy, 1.0),
+    "entropy": lambda **kwargs: (lambda x, **kwargs: singular_values_entropy(x), -1.0),
     "hoyer_sparsity": lambda **kwargs: (
-        singular_values_hoyer_sparsity,
+        lambda x, **kwargs: singular_values_hoyer_sparsity(
+            x, kwargs.get("normalize", DEFAULT_NORMALIZE)
+        ),
         -1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else 1.0,
+    ),
+    "scad": lambda **kwargs: (
+        lambda x, **kwargs: singular_values_scad(
+            x, kwargs["lambda_val"], kwargs["a_val"], kwargs.get("reduction", "sum")
+        ),
+        -1.0,
     ),
     "noop": lambda **kwargs: (lambda x, **kwargs: 0.0, 1.0),
 }

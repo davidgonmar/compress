@@ -31,11 +31,16 @@ model = SimpleMNISTModel()
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = Adam(model.parameters(), lr=1e-3)
 
-kwargs = {"entropy": {}, "hoyer_sparsity": {"normalize": True}}
+kwargs = {
+    "entropy": {},
+    "hoyer_sparsity": {"normalize": True},
+    "scad": {"lambda_val": 0.1, "a_val": 3.7},
+}  # SCAD needs tuning
 regularizer = SingularValuesRegularizer(
     metric=args.sv_regularizer,
     params=[model.model[1].weight, model.model[3].weight],
     weights=args.regularizer_weight,
+    **kwargs[args.sv_regularizer],
 )
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
@@ -86,6 +91,7 @@ for epoch in range(num_epochs):
         val_loss /= len(val_loader.dataset)
         accuracy = correct / len(val_loader.dataset)
         print(f"Validation Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
+        torch.save(model.state_dict(), args.save_path)
 
 
 print("Finished training. Saving model...")
