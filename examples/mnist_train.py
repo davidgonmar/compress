@@ -2,23 +2,22 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms, datasets
 from torch.optim import Adam
-from compress.regularizers import SingularValuesEntropyRegularizer, SingularValuesHoyerSparsityRegularizer
+from compress.regularizers import SingularValuesRegularizer
 from examples.utils.models import SimpleMNISTModel
 import argparse
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")
-parser.add_argument("--regularizer", type=str, default="singular_values_entropy")
+parser.add_argument("--sv_regularizer", type=str, default="noop")
 parser.add_argument("--epochs", type=int, default=40)
 parser.add_argument("--regularizer_weight", type=float, default=1.0)
 args = parser.parse_args()
 
 
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
-])
+transform = transforms.Compose(
+    [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+)
 
 dataset = datasets.MNIST(root="data", train=True, transform=transform, download=True)
 train_size = int(len(dataset) * 0.8)
@@ -32,14 +31,12 @@ model = SimpleMNISTModel()
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = Adam(model.parameters(), lr=1e-3)
 
-regularizers = {
-    "singular_values_entropy": SingularValuesEntropyRegularizer,
-    "singular_values_hoyer_sparsity": SingularValuesHoyerSparsityRegularizer
-}
-
-regularizer = regularizers[args.regularizer]([
-    model.model[1].weight, model.model[3].weight
-], weights=args.regularizer_weight)
+kwargs = {"entropy": {}, "hoyer_sparsity": {"normalize": True}}
+regularizer = SingularValuesRegularizer(
+    metric=args.sv_regularizer,
+    params=[model.model[1].weight, model.model[3].weight],
+    weights=args.regularizer_weight,
+)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
@@ -66,7 +63,9 @@ for epoch in range(num_epochs):
     train_loss /= len(train_loader.dataset)
     reg_loss /= len(train_loader.dataset)
 
-    print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Regularization Loss: {reg_loss:.4f}")
+    print(
+        f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Regularization Loss: {reg_loss:.4f}"
+    )
 
     if epoch % 5 == 0:
         model.eval()

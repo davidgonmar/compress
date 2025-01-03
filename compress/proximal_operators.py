@@ -1,6 +1,7 @@
 from typing import List
 import torch
 
+
 def nuclear_norm_proximal_op(input, lr, multiplier):
     U, S, V = torch.svd(input)
     S_opt = torch.clamp(S - lr * multiplier, min=0)

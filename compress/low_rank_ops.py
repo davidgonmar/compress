@@ -40,7 +40,7 @@ class LowRankLinear(nn.Module):
         else:
             low_rank_linear.bias = None
         return low_rank_linear
-    
+
     def forward(self, x: torch.Tensor):
         # X in R^{... x IN}
         # W0 in R^{IN x RANK} -> X @ W0 in R^{... x RANK}
