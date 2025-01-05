@@ -3,7 +3,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.factorize import to_low_rank
 from compress.regularizers import singular_values_entropy
-from examples.utils.models import SimpleMNISTModel, ConvMNISTModel
+from examples.utils.models import MLPClassifier, ConvClassifier
+import copy
 import argparse
 
 
@@ -27,17 +28,19 @@ def evaluate(model, loader, criterion, device):
     return loss / len(loader.dataset), correct / len(loader.dataset)
 
 
+model = torch.load(args.save_path)
+
 transform = transforms.Compose(
     [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
 )
 
-test_dataset = datasets.MNIST(
-    root="data", train=False, transform=transform, download=True
+test_dataset = (
+    datasets.MNIST(root="data", train=False, transform=transform, download=True)
+    if model.input_size == (1, 28, 28)
+    else datasets.CIFAR10(root="data", train=False, transform=transform, download=True)
 )
-
 test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 
-model = torch.load(args.save_path)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -66,13 +69,13 @@ print("Per-layer singular values:")
 # for name, values in singular_vals.items():
 # print(f"Layer {name}: {values}")
 
-model_cls = SimpleMNISTModel if isinstance(model, SimpleMNISTModel) else ConvMNISTModel
+model_cls = MLPClassifier if isinstance(model, MLPClassifier) else ConvClassifier
 for ratio in ratios:
     model_lr = to_low_rank(
         model,
         ratio_to_keep=ratio,
         inplace=False,
-        model_initializer=lambda: model_cls().to(device),
+        model_initializer=lambda: copy.deepcopy(model),
     )
     test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
     print(f"Ratio: {ratio}, Test Loss: {test_loss}, Test Accuracy: {test_acc}")

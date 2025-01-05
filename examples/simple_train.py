@@ -4,7 +4,7 @@ from torchvision import transforms, datasets
 from torch.optim import Adam
 from compress.regularizers import SingularValuesRegularizer
 from compress.utils import extract_weights
-from examples.utils.models import SimpleMNISTModel, ConvMNISTModel
+from examples.utils.models import MLPClassifier, ConvClassifier
 import argparse
 
 
@@ -14,36 +14,77 @@ parser.add_argument("--sv_regularizer", type=str, default="noop")
 parser.add_argument("--epochs", type=int, default=40)
 parser.add_argument("--regularizer_weight", type=float, default=1.0)
 parser.add_argument("--model_type", type=str, default="simple")
+parser.add_argument("--dataset", type=str, default="mnist")
 args = parser.parse_args()
 
 
-transform = transforms.Compose(
-    [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+def get_mnist():
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+    )
+
+    dataset = datasets.MNIST(
+        root="data", train=True, transform=transform, download=True
+    )
+    train_size = int(len(dataset) * 0.8)
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
+
+    return train_loader, val_loader, {"input_size": (1, 28, 28), "num_classes": 10}
+
+
+def get_cifar10():
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+    )
+
+    dataset = datasets.CIFAR10(
+        root="data", train=True, transform=transform, download=True
+    )
+    train_size = int(len(dataset) * 0.8)
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
+
+    return train_loader, val_loader, {"input_size": (3, 32, 32), "num_classes": 10}
+
+
+train_loader, val_loader, model_params = (
+    get_mnist()
+    if args.dataset == "mnist"
+    else get_cifar10()
+    if args.dataset == "cifar10"
+    else (None, None, None)
 )
 
-dataset = datasets.MNIST(root="data", train=True, transform=transform, download=True)
-train_size = int(len(dataset) * 0.8)
-val_size = len(dataset) - train_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+assert train_loader is not None, "Invalid dataset"
 
-train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
+model = (
+    MLPClassifier(**model_params)
+    if args.model_type == "simple"
+    else ConvClassifier(**model_params)
+)
 
-model = SimpleMNISTModel() if args.model_type == "simple" else ConvMNISTModel()
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = Adam(model.parameters(), lr=1e-3)
 
-kwargs = {
+regularizer_kwargs = {
     "entropy": {},
     "hoyer_sparsity": {"normalize": True},
     "scad": {"lambda_val": 0.1, "a_val": 3.7},
     "noop": {},
-}  # SCAD needs tuning
+}
+
 regularizer = SingularValuesRegularizer(
     metric=args.sv_regularizer,
-    params=extract_weights(model),
+    params=extract_weights(model, cls_list=(torch.nn.Linear, torch.nn.Conv2d)),
     weights=args.regularizer_weight,
-    **kwargs[args.sv_regularizer],
+    **regularizer_kwargs[args.sv_regularizer],
 )
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
