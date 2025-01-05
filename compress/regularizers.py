@@ -87,6 +87,8 @@ _regularizers = {
 }
 
 
+# For Conv2d weights, we have shape (OUT, IN, H, W)
+# We reshape them into (OUT, IN * H * W) to compute the singular values
 class SingularValuesRegularizer:
     def __init__(
         self,
@@ -113,6 +115,6 @@ class SingularValuesRegularizer:
 
     def __call__(self) -> torch.Tensor:
         return self.sgn * sum(
-            weight * self.fn(param, **self.kwargs)
+            weight * self.fn(param.reshape(param.shape[0], -1), **self.kwargs)
             for param, weight in zip(self.params, self.weights)
         )

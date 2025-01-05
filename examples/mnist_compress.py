@@ -1,9 +1,9 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from examples.utils.models import SimpleMNISTModel
 from compress.factorize import to_low_rank
 from compress.regularizers import singular_values_entropy
+from examples.utils.models import SimpleMNISTModel, ConvMNISTModel
 import argparse
 
 
@@ -37,14 +37,12 @@ test_dataset = datasets.MNIST(
 
 test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 
-model = SimpleMNISTModel()
+model = torch.load(args.save_path)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model.to(device)
-model.load_state_dict(
-    torch.load(args.save_path, map_location=device, weights_only=True)
-)
+
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -56,7 +54,7 @@ entropies = {
     if isinstance(module, torch.nn.Linear)
 }
 
-print(f"Per-layer entropies: {entropies}")
+# print(f"Per-layer entropies: {entropies}")
 
 singular_vals = {
     name: torch.linalg.svd(module.weight, full_matrices=False).S.tolist()
@@ -65,20 +63,16 @@ singular_vals = {
 }
 
 print("Per-layer singular values:")
-for name, values in singular_vals.items():
-    print(f"Layer {name}: {values}")
+# for name, values in singular_vals.items():
+# print(f"Layer {name}: {values}")
 
+model_cls = SimpleMNISTModel if isinstance(model, SimpleMNISTModel) else ConvMNISTModel
 for ratio in ratios:
     model_lr = to_low_rank(
         model,
         ratio_to_keep=ratio,
         inplace=False,
-        model_initializer=lambda: SimpleMNISTModel().to(device),
+        model_initializer=lambda: model_cls().to(device),
     )
     test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
-    weights = [
-        module.weight
-        for module in model_lr.modules()
-        if isinstance(module, torch.nn.Linear)
-    ]
     print(f"Ratio: {ratio}, Test Loss: {test_loss}, Test Accuracy: {test_acc}")

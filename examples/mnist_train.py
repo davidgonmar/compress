@@ -3,7 +3,8 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import transforms, datasets
 from torch.optim import Adam
 from compress.regularizers import SingularValuesRegularizer
-from examples.utils.models import SimpleMNISTModel
+from compress.utils import extract_weights
+from examples.utils.models import SimpleMNISTModel, ConvMNISTModel
 import argparse
 
 
@@ -12,6 +13,7 @@ parser.add_argument("--save_path", type=str, default="mnist_model.pth")
 parser.add_argument("--sv_regularizer", type=str, default="noop")
 parser.add_argument("--epochs", type=int, default=40)
 parser.add_argument("--regularizer_weight", type=float, default=1.0)
+parser.add_argument("--model_type", type=str, default="simple")
 args = parser.parse_args()
 
 
@@ -27,7 +29,7 @@ train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
 
-model = SimpleMNISTModel()
+model = SimpleMNISTModel() if args.model_type == "simple" else ConvMNISTModel()
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = Adam(model.parameters(), lr=1e-3)
 
@@ -38,7 +40,7 @@ kwargs = {
 }  # SCAD needs tuning
 regularizer = SingularValuesRegularizer(
     metric=args.sv_regularizer,
-    params=[model.model[1].weight, model.model[3].weight],
+    params=extract_weights(model),
     weights=args.regularizer_weight,
     **kwargs[args.sv_regularizer],
 )
@@ -91,8 +93,8 @@ for epoch in range(num_epochs):
         val_loss /= len(val_loader.dataset)
         accuracy = correct / len(val_loader.dataset)
         print(f"Validation Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
-        torch.save(model.state_dict(), args.save_path)
+        torch.save(model, args.save_path)
 
 
 print("Finished training. Saving model...")
-torch.save(model.state_dict(), args.save_path)
+torch.save(model, args.save_path)

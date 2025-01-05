@@ -1,11 +1,11 @@
 import torch.nn as nn
 from typing import Callable
 from tqdm import tqdm
-from compress.low_rank_ops import LowRankLinear
+from compress.low_rank_ops import LowRankLinear, LowRankConv2d
 
 
 def default_should_do(module: nn.Module, full_name: str):
-    return isinstance(module, nn.Linear)
+    return isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d)
 
 
 def _to_low_rank_recursive(model: nn.Module, should_do: Callable, prefix=""):
@@ -15,12 +15,13 @@ def _to_low_rank_recursive(model: nn.Module, should_do: Callable, prefix=""):
         if isinstance(module, nn.Linear):
             if should_do(module, full_name):
                 modules_to_replace.append((full_name, module))
+        elif isinstance(module, nn.Conv2d):
+            if should_do(module, full_name):
+                modules_to_replace.append((full_name, module))
         elif isinstance(module, nn.Sequential):
             for idx, sub_module in enumerate(module):
                 sub_full_name = f"{full_name}.{idx}"
-                if isinstance(sub_module, nn.Linear) and should_do(
-                    sub_module, sub_full_name
-                ):
+                if should_do(sub_module, sub_full_name):
                     modules_to_replace.append((sub_full_name, sub_module))
                 else:
                     modules_to_replace.extend(
@@ -53,6 +54,12 @@ def to_low_rank(
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-        setattr(parent_module, attr_name, LowRankLinear.from_linear(module, **kwargs))
+        setattr(
+            parent_module,
+            attr_name,
+            LowRankLinear.from_linear(module, **kwargs)
+            if isinstance(module, nn.Linear)
+            else LowRankConv2d.from_conv2d(module, **kwargs),
+        )
 
     return model
