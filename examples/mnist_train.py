@@ -37,6 +37,7 @@ kwargs = {
     "entropy": {},
     "hoyer_sparsity": {"normalize": True},
     "scad": {"lambda_val": 0.1, "a_val": 3.7},
+    "noop": {},
 }  # SCAD needs tuning
 regularizer = SingularValuesRegularizer(
     metric=args.sv_regularizer,

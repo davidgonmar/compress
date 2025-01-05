@@ -83,7 +83,7 @@ _regularizers = {
         ),
         -1.0,
     ),
-    "noop": lambda **kwargs: (lambda x, **kwargs: 0.0, 1.0),
+    "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
 }
 
 
