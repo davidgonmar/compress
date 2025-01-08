@@ -2,7 +2,6 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.factorize import to_low_rank
-from compress.regularizers import singular_values_entropy
 from examples.utils.models import MLPClassifier, ConvClassifier
 import copy
 import argparse
@@ -10,7 +9,13 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")
+parser.add_argument("--print_model", action="store_true")
 args = parser.parse_args()
+
+
+def maybe_print_model(model):
+    if args.print_model:
+        print(model)
 
 
 def evaluate(model, loader, criterion, device):
@@ -46,12 +51,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model.to(device)
 
-
-criterion = torch.nn.CrossEntropyLoss()
-
-ratios = [1.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-
-entropies = {
+"""entropies = {
     name: singular_values_entropy(module.weight).item()
     for name, module in model.named_modules()
     if isinstance(module, torch.nn.Linear)
@@ -66,9 +66,28 @@ singular_vals = {
 }
 
 print("Per-layer singular values:")
-# for name, values in singular_vals.items():
-# print(f"Layer {name}: {values}")
+for name, values in singular_vals.items():
+    print(f"Layer {name}: {values}")"""
 
+criterion = torch.nn.CrossEntropyLoss()
+
+
+energies_to_remove = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
+energies_to_keep = [1 - energy for energy in energies_to_remove]
+for energy_keep, energy_remove in zip(energies_to_keep, energies_to_remove):
+    model_lr = to_low_rank(
+        model,
+        energy_to_keep=energy_keep,
+        inplace=False,
+        model_initializer=lambda: copy.deepcopy(model),
+    )
+    test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
+    print(
+        f"Energy kept: {energy_keep}, Energy removed: {energy_remove}, Test Loss: {test_loss}, Test Accuracy: {test_acc}"
+    )
+    maybe_print_model(model_lr)
+
+ratios = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 model_cls = MLPClassifier if isinstance(model, MLPClassifier) else ConvClassifier
 for ratio in ratios:
     model_lr = to_low_rank(
@@ -79,3 +98,4 @@ for ratio in ratios:
     )
     test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
     print(f"Ratio: {ratio}, Test Loss: {test_loss}, Test Accuracy: {test_acc}")
+    maybe_print_model(model_lr)

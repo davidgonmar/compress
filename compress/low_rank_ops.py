@@ -2,6 +2,39 @@ import torch
 import torch.nn as nn
 
 
+def _get_rank_ratio_to_keep(S: torch.Tensor, ratio_to_keep: float):
+    return max(int(S.shape[0] * ratio_to_keep), 1)
+
+
+def _get_rank_energy_to_keep(S: torch.Tensor, energy_to_keep: float):
+    # chooses rank such that
+    # sum(S[:rank] ** 2) <= energy_to_keep * sum(S ** 2)
+    assert 0.0 <= energy_to_keep <= 1.0, "energy_to_keep must be in [0, 1]"
+    total_energy = torch.sum(S**2)
+    energy = 0.0
+    rank = 0
+    for s in S:
+        energy += s**2
+        rank += 1
+        if energy / total_energy >= energy_to_keep:
+            break
+    return rank
+
+
+def _get_rank(
+    S: torch.Tensor,
+    ratio_to_keep: float | None = None,
+    energy_to_keep: float | None = None,
+):
+    assert S.ndim == 1, "Singular values must be 1-dimensional"
+    if ratio_to_keep is not None:
+        return _get_rank_ratio_to_keep(S, ratio_to_keep)
+    elif energy_to_keep is not None:
+        return _get_rank_energy_to_keep(S, energy_to_keep)
+    else:
+        raise ValueError("Either ratio_to_keep or energy_to_keep must be provided")
+
+
 class LowRankLinear(nn.Module):
     def __init__(
         self, in_features: int, out_features: int, rank: int, bias: bool = True
@@ -12,13 +45,16 @@ class LowRankLinear(nn.Module):
         self.bias = nn.Parameter(torch.randn(out_features)) if bias else None
 
     @staticmethod
-    def from_linear(linear: nn.Linear, ratio_to_keep: float = 0.1):
+    def from_linear(
+        linear: nn.Linear,
+        ratio_to_keep: float | None = None,
+        energy_to_keep: float | None = None,
+    ):
         # Original linear -> O = X @ W
         # Low rank linear -> W = U @ S @ V_T -> O = X @ U @ S @ V_T
         W, b = linear.weight.T, linear.bias
         U, S, V_T = torch.linalg.svd(W, full_matrices=True)  # complete SVD
-        orig_rank = min(S.shape)
-        rank = max(int(orig_rank * ratio_to_keep), 1)
+        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
         S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
         # pad S to be {IN x OUT}
         in_f, out_f = W.shape
@@ -81,7 +117,11 @@ class LowRankConv2d(nn.Module):
         self.out_channels = out_channels
 
     @staticmethod
-    def from_conv2d(conv2d: nn.Conv2d, ratio_to_keep: float = 0.1):
+    def from_conv2d(
+        conv2d: nn.Conv2d,
+        ratio_to_keep: float | None = None,
+        energy_to_keep: float | None = None,
+    ):
         # Original conv2d -> O = conv2d(W, X)
         # Low rank conv2d -> O = conv2d(W1, conv2d(W0, X))
         W, b = conv2d.weight, conv2d.bias
@@ -89,8 +129,7 @@ class LowRankConv2d(nn.Module):
         U, S, V_T = torch.linalg.svd(
             W.permute(1, 2, 3, 0).reshape(i * h * w, o), full_matrices=True
         )
-        orig_rank = min(S.shape)
-        rank = max(int(orig_rank * ratio_to_keep), 1)
+        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
         S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
         W0 = (
             (U[:, :rank] @ S).reshape(i, h, w, rank).permute(3, 0, 1, 2)
@@ -137,3 +176,6 @@ class LowRankConv2d(nn.Module):
         return linear_out.reshape(-1, h_out, w_out, self.out_channels).permute(
             0, 3, 1, 2
         )
+
+    def __repr__(self):
+        return f"LowRankConv2d(in_channels={self.input_channels}, out_channels={self.out_channels}, kernel_size={self.kernel_size}, rank={self.rank}, stride={self.stride}, padding={self.padding}, dilation={self.dilation}, groups={self.groups}, bias={self.bias is not None})"
