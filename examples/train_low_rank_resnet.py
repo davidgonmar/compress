@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
+from torchvision.transforms import RandomHorizontalFlip, RandomCrop
+from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 from compress.factorize import to_low_rank
 from compress.regularizers import OrthogonalRegularizer
@@ -12,6 +14,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(
     [
         transforms.Resize((128, 128)),
+        RandomHorizontalFlip(),
+        RandomCrop(128, padding=4),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ]
@@ -19,21 +23,23 @@ data_transform = transforms.Compose(
 train_dataset = datasets.CIFAR10(
     root="./data", train=True, download=True, transform=data_transform
 )
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
 val_dataset = datasets.CIFAR10(
     root="./data", train=False, download=True, transform=data_transform
 )
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=64, shuffle=False)
+val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=256, shuffle=False)
 model = resnet18(num_classes=10).to(device)
 model = to_low_rank(
     model, inplace=True, ratio_to_keep=1.0, keep_singular_values_separated=True
 )  # just factorize, do not compress
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
 reg = OrthogonalRegularizer.apply_to_low_rank_modules(
-    model, weights=1.0, normalize_by_rank_squared=True
+    model, weights=8.0, normalize_by_rank_squared=True
 )
-for epoch in range(10):
+optimizer = optim.AdamW(model.parameters(), lr=0.001)
+scheduler = StepLR(optimizer, step_size=8, gamma=0.1)
+
+for epoch in range(30):
     model.train()
     train_loss_acc = 0.0
     reg_loss_acc = 0.0
@@ -50,6 +56,8 @@ for epoch in range(10):
 
         train_loss_acc += train_loss.item() * images.size(0)
         reg_loss_acc += reg_loss.item() * images.size(0)
+
+    scheduler.step()
 
     print(
         f"Epoch {epoch + 1}, Loss: {train_loss_acc / len(train_loader.dataset):.4f}, Regularizer Loss: {reg_loss_acc / len(train_loader.dataset):.4f}"
