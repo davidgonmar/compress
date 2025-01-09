@@ -1,6 +1,8 @@
 from typing import List
 import torch
 import math
+from compress.low_rank_ops import LowRankLinear, LowRankConv2d
+from compress.utils import extract_weights
 
 
 def singular_values_entropy(input: torch.Tensor) -> torch.Tensor:
@@ -117,4 +119,69 @@ class SingularValuesRegularizer:
         return self.sgn * sum(
             weight * self.fn(param.reshape(param.shape[0], -1), **self.kwargs)
             for param, weight in zip(self.params, self.weights)
+        )
+
+
+def orthogonal_regularizer(
+    matrix: torch.Tensor, normalize_by_rank_squared=True
+) -> torch.Tensor:
+    mat_rank = min(matrix.shape[0], matrix.shape[1])
+    ret = (
+        torch.norm(
+            torch.mm(matrix, matrix.t()) - torch.eye(matrix.shape[0]).to(matrix.device),
+            p="fro",
+        )
+        ** 2
+    )
+    return ret / mat_rank if normalize_by_rank_squared else ret
+
+
+class OrthogonalRegularizer:
+    def __init__(
+        self,
+        params: List[List[tuple[str, torch.nn.Module]]],
+        weights: float | List[float] = 1.0,
+        normalize_by_rank_squared=True,
+    ):
+        self.params = params
+        self.weights = (
+            [weights] * len(params) if isinstance(weights, float) else weights
+        )
+        assert len(self.params) == len(
+            self.weights
+        ), "Number of params and weights should match, got {} and {}".format(
+            len(self.params), len(self.weights)
+        )
+        self.normalize_by_rank_squared = normalize_by_rank_squared
+
+    @staticmethod
+    def apply_to_low_rank_modules(model, weights=1.0, normalize_by_rank_squared=True):
+        params = extract_weights(
+            model,
+            cls_list=(LowRankLinear, LowRankConv2d),
+            additional_check=lambda module: hasattr(
+                module, "keep_singular_values_separated"
+            )
+            and module.keep_singular_values_separated,
+            keywords={"w0", "w1"},
+            ret_module=True,
+        )
+        return OrthogonalRegularizer(params, weights, normalize_by_rank_squared)
+
+    def __call__(self) -> torch.Tensor:
+        real_params = []
+        for param in self.params:
+            (name, module), w = param
+            kw = "w0" if "w0" in name else "w1" if "w1" in name else None
+            assert kw is not None or not isinstance(module, LowRankConv2d), (
+                str(kw) + " " + str(module) + " " + str(name)
+            )
+            if isinstance(module, LowRankConv2d):
+                real_params.append(module.get_weights_as_matrices(w, kw))
+            else:
+                real_params.append(w)
+        params = real_params
+        return sum(
+            weight * orthogonal_regularizer(param, self.normalize_by_rank_squared)
+            for param, weight in zip(params, self.weights)
         )
