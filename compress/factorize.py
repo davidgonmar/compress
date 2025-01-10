@@ -5,7 +5,11 @@ from compress.low_rank_ops import LowRankLinear, LowRankConv2d
 
 
 def default_should_do(module: nn.Module, full_name: str):
-    return isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d)
+    return (
+        isinstance(module, nn.Linear)
+        or isinstance(module, nn.Conv2d)
+        or isinstance(module, nn.LazyLinear)
+    )
 
 
 def _to_low_rank_recursive(model: nn.Module, should_do: Callable, prefix=""):
@@ -54,11 +58,12 @@ def to_low_rank(
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
+
         setattr(
             parent_module,
             attr_name,
             LowRankLinear.from_linear(module, **kwargs)
-            if isinstance(module, nn.Linear)
+            if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
             else LowRankConv2d.from_conv2d(module, **kwargs),
         )
 

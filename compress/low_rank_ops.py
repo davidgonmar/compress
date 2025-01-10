@@ -51,21 +51,20 @@ class LowRankLinear(nn.Module):
         energy_to_keep: float | None = None,
         keep_singular_values_separated: bool = False,
     ):
-        # Original linear -> O = X @ W
-        # Low rank linear -> W = U @ S @ V_T -> O = X @ U @ S @ V_T
-        W, b = linear.weight.T, linear.bias
+        # Original linear -> O = X @ W.T + b
+        # Low rank linear -> W = U @ S @ V_T -> O = X @ (U @ S @ V_T).T + b = (X @ W1.T) @ W0.T + b
+        W, b = linear.weight, linear.bias
         U, S, V_T = torch.linalg.svd(W, full_matrices=True)  # complete SVD
         rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
         S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
-        # pad S to be {IN x OUT}
-        in_f, out_f = W.shape
+        out_f, in_f = W.shape
         assert S.shape == (rank, rank)
-        assert U.shape == (in_f, in_f)
-        assert V_T.shape == (out_f, out_f)
+        assert U.shape == (out_f, out_f)
+        assert V_T.shape == (in_f, in_f)
         W0 = (
-            U[:, :rank] @ S if keep_singular_values_separated else U[:, :rank]
-        )  # in R^{IN x RANK}
-        W1 = V_T[:rank, :]  # in R^{RANK x OUT}
+            U[:, :rank] @ S if not keep_singular_values_separated else U[:, :rank]
+        )  # in R^{OUT x RANK}
+        W1 = V_T[:rank, :]  # in R^{RANK x IN}
         low_rank_linear = LowRankLinear(
             linear.weight.shape[1],
             linear.weight.shape[0],
@@ -78,24 +77,17 @@ class LowRankLinear(nn.Module):
             low_rank_linear.bias.data = b
         else:
             low_rank_linear.bias = None
-
         if keep_singular_values_separated:
             low_rank_linear.S = nn.Parameter(S)
-
         low_rank_linear.keep_singular_values_separated = keep_singular_values_separated
         return low_rank_linear
 
     def forward(self, x: torch.Tensor):
-        # X in R^{... x IN}
-        # W0 in R^{IN x RANK} -> X @ W0 in R^{... x RANK}
-        # W1 in R^{RANK x OUT} -> O = (X @ W0) @ W1 in R^{... x OUT}
+        # X in R^{BATCH x IN}, W0 in R^{OUT x RANK}, W1 in R^{RANK x IN}
         w0, w1 = self.w0, self.w1
         if self.keep_singular_values_separated:
             w0 = w0 @ self.S
-        if self.bias is not None:
-            return torch.matmul(torch.matmul(x, w0), w1) + self.bias
-        else:
-            return torch.matmul(torch.matmul(x, w0), w1)
+        return torch.nn.functional.linear(x @ w1.t(), w0, bias=self.bias)
 
     def __repr__(self):
         return f"LowRankLinear(in_features={self.w0.shape[0]}, out_features={self.w1.shape[1]}, rank={self.w0.shape[1]}, bias={self.bias is not None})"
@@ -148,7 +140,7 @@ class LowRankConv2d(nn.Module):
                 .reshape(i, h, w, rank)
                 .permute(3, 0, 1, 2)
             )
-            if keep_singular_values_separated
+            if not keep_singular_values_separated
             else (U[:, :rank].reshape(i, h, w, rank).permute(3, 0, 1, 2))
         )  # shape = (rank, i, h, w)
         W1 = (
