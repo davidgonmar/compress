@@ -3,6 +3,65 @@ import torch
 import math
 from compress.low_rank_ops import LowRankLinear, LowRankConv2d
 from compress.utils import extract_weights
+from typing import Callable
+import torch.nn as nn
+
+
+def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
+    assert tensor.dim() == 2, "Expected 2D tensor, got {}".format(tensor.shape)
+    return tensor
+
+
+def conv2d_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
+    assert tensor.dim() == 4
+    o, i, h, w = tensor.shape
+    return tensor.permute(1, 2, 3, 0).reshape(i * h * w, o)
+
+
+_module_to_reshaper = {
+    (nn.Linear, "weight"): default_tensor_to_matrix_reshape,
+    (nn.LazyLinear, "weight"): default_tensor_to_matrix_reshape,
+    (nn.Conv2d, "weight"): conv2d_to_matrix_reshape,
+}
+
+
+def extract_weights_and_reshapers(
+    model, cls_list, additional_check=lambda *args: True, keywords="weight"
+):
+    params = extract_weights(
+        model, cls_list, additional_check, keywords, ret_module=True
+    )
+    modules_and_names = [(name, module) for (name, module), param in params]
+    reshapers_status = [
+        (
+            (module.__class__, name.split(".")[-1]),
+            (module.__class__, name.split(".")[-1]) in _module_to_reshaper,
+        )
+        for name, module in modules_and_names
+    ]
+
+    if all(status for _, status in reshapers_status):
+        print("Found reshapers for all modules.")
+    else:
+        found_reshapers = [
+            module_info for module_info, status in reshapers_status if status
+        ]
+        not_found_reshapers = [
+            module_info for module_info, status in reshapers_status if not status
+        ]
+        raise ValueError(
+            "Cannot find reshaper for all modules. Found reshapers for: {}. Not found for: {}".format(
+                found_reshapers, not_found_reshapers
+            )
+        )
+
+    return [
+        (param, _module_to_reshaper[(module.__class__, name.split(".")[-1])])
+        for (name, module), param in params
+    ]
+
+
+Reshaper = Callable[[torch.Tensor], torch.Tensor]
 
 
 def singular_values_entropy(input: torch.Tensor) -> torch.Tensor:
@@ -96,16 +155,19 @@ class SingularValuesRegularizer:
         self,
         *,
         metric: str,
-        params: List[torch.Tensor],
+        params_and_reshapers: List[tuple[torch.Tensor, Reshaper]],
         weights: float | List[float] = 1.0,
         **kwargs
     ):
         super(SingularValuesRegularizer, self).__init__()
-        self.params = params
+        self.params_and_reshapers = params_and_reshapers
+
         self.weights = (
-            [weights] * len(params) if isinstance(weights, float) else weights
+            [weights] * len(params_and_reshapers)
+            if isinstance(weights, float)
+            else weights
         )
-        assert len(self.params) == len(
+        assert len(self.params_and_reshapers) == len(
             self.weights
         ), "Number of params and weights should match, got {} and {}".format(
             len(self.params), len(self.weights)
@@ -117,8 +179,10 @@ class SingularValuesRegularizer:
 
     def __call__(self) -> torch.Tensor:
         return self.sgn * sum(
-            weight * self.fn(param.reshape(param.shape[0], -1), **self.kwargs)
-            for param, weight in zip(self.params, self.weights)
+            weight * self.fn(reshaper(param), **self.kwargs)
+            for (param, reshaper), weight in zip(
+                self.params_and_reshapers, self.weights
+            )
         )
 
 
