@@ -1,11 +1,15 @@
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from torch.optim import Adam
-from compress.regularizers import SingularValuesRegularizer
-from compress.utils import extract_weights
+from compress.regularizers import (
+    SingularValuesRegularizer,
+    extract_weights_and_reshapers,
+)
 from examples.utils.models import MLPClassifier, ConvClassifier
 import argparse
+from torchvision.models import resnet18
+from torch.optim.lr_scheduler import StepLR
+import torch.optim as optim
 
 
 parser = argparse.ArgumentParser()
@@ -20,15 +24,25 @@ args = parser.parse_args()
 
 def get_mnist():
     transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+        [
+            transforms.RandomCrop(28, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,)),
+        ]
     )
 
-    dataset = datasets.MNIST(
+    train_dataset = datasets.MNIST(
         root="data", train=True, transform=transform, download=True
     )
-    train_size = int(len(dataset) * 0.8)
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    val_dataset = datasets.MNIST(
+        root="data",
+        train=False,
+        transform=transforms.Compose(
+            [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+        ),
+        download=True,
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
@@ -38,15 +52,28 @@ def get_mnist():
 
 def get_cifar10():
     transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+        [
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ]
     )
 
-    dataset = datasets.CIFAR10(
+    train_dataset = datasets.CIFAR10(
         root="data", train=True, transform=transform, download=True
     )
-    train_size = int(len(dataset) * 0.8)
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    val_dataset = datasets.CIFAR10(
+        root="data",
+        train=False,
+        transform=transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        ),
+        download=True,
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
@@ -67,11 +94,21 @@ assert train_loader is not None, "Invalid dataset"
 model = (
     MLPClassifier(**model_params)
     if args.model_type == "simple"
-    else ConvClassifier(**model_params)
+    else (
+        ConvClassifier(**model_params)
+        if args.model_type == "conv"
+        else (
+            resnet18(num_classes=model_params["num_classes"])
+            if args.model_type == "resnet18"
+            else None
+        )
+    )
 )
 
 criterion = torch.nn.CrossEntropyLoss()
-optimizer = Adam(model.parameters(), lr=1e-3)
+
+optimizer = optim.AdamW(model.parameters(), lr=0.001)
+sched = StepLR(optimizer, step_size=10, gamma=0.2)
 
 regularizer_kwargs = {
     "entropy": {},
@@ -82,7 +119,16 @@ regularizer_kwargs = {
 
 regularizer = SingularValuesRegularizer(
     metric=args.sv_regularizer,
-    params=extract_weights(model, cls_list=(torch.nn.Linear, torch.nn.Conv2d)),
+    params_and_reshapers=extract_weights_and_reshapers(
+        model,
+        cls_list=(
+            torch.nn.Linear,
+            torch.nn.Conv2d,
+            torch.nn.LazyLinear,
+            torch.nn.LazyConv2d,
+        ),
+        keywords={"weight", "kernel"},
+    ),
     weights=args.regularizer_weight,
     **regularizer_kwargs[args.sv_regularizer],
 )

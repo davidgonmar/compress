@@ -2,7 +2,6 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.factorize import to_low_rank
-from examples.utils.models import MLPClassifier, ConvClassifier
 import copy
 import argparse
 
@@ -10,6 +9,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")
 parser.add_argument("--print_model", action="store_true")
+parser.add_argument("--dataset", type=str, default="mnist")
 args = parser.parse_args()
 
 
@@ -41,7 +41,7 @@ transform = transforms.Compose(
 
 test_dataset = (
     datasets.MNIST(root="data", train=False, transform=transform, download=True)
-    if model.input_size == (1, 28, 28)
+    if args.dataset == "mnist"
     else datasets.CIFAR10(root="data", train=False, transform=transform, download=True)
 )
 test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
@@ -51,28 +51,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model.to(device)
 
-"""entropies = {
-    name: singular_values_entropy(module.weight).item()
-    for name, module in model.named_modules()
-    if isinstance(module, torch.nn.Linear)
-}
-
-# print(f"Per-layer entropies: {entropies}")
-
-singular_vals = {
-    name: torch.linalg.svd(module.weight, full_matrices=False).S.tolist()
-    for name, module in model.named_modules()
-    if isinstance(module, torch.nn.Linear)
-}
-
-print("Per-layer singular values:")
-for name, values in singular_vals.items():
-    print(f"Layer {name}: {values}")"""
-
 criterion = torch.nn.CrossEntropyLoss()
+loss = evaluate(model, test_loader, criterion, device)
 
+print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
 
-energies_to_remove = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
+energies_to_remove = [0, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
 energies_to_keep = [1 - energy for energy in energies_to_remove]
 for energy_keep, energy_remove in zip(energies_to_keep, energies_to_remove):
     model_lr = to_low_rank(
@@ -87,8 +71,8 @@ for energy_keep, energy_remove in zip(energies_to_keep, energies_to_remove):
     )
     maybe_print_model(model_lr)
 
+
 ratios = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-model_cls = MLPClassifier if isinstance(model, MLPClassifier) else ConvClassifier
 for ratio in ratios:
     model_lr = to_low_rank(
         model,
