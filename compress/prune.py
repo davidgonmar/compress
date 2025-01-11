@@ -2,28 +2,10 @@ from typing import Callable
 from torch import nn
 from compress.pruned_ops import PrunedLinear, PrunedConv2d
 from tqdm import tqdm
-
-
-# pruning granularity spec accepts a ndim-tensor and returns a reshaped tensor of the form (n, m), n denoting the number of groups and m denoting the number of elements in each group
-class PruningGranularity:
-    ndim: int
-
-    def transform(self, tensor):
-        raise NotImplementedError
-
-
-class UnstructuredGranularityLinear(PruningGranularity):
-    ndim = 2
-
-    def transform(self, tensor):
-        return tensor.reshape(1, -1)
-
-
-class UnstructuredGranularityConv2d(PruningGranularity):
-    ndim = 4
-
-    def transform(self, tensor):
-        return tensor.reshape(1, -1)
+from compress.pruning_strats import (
+    UnstructuredGranularityLinear,
+    UnstructuredGranularityConv2d,
+)
 
 
 def default_should_do(module: nn.Module, full_name: str):
@@ -62,8 +44,31 @@ def _to_low_rank_recursive(model: nn.Module, should_do: Callable, prefix=""):
     return modules_to_replace
 
 
+_module_to_pruned = {
+    nn.Linear: PrunedLinear.from_linear,
+    nn.LazyLinear: PrunedLinear.from_linear,
+    nn.Conv2d: PrunedConv2d.from_conv2d,
+}
+
+
+class PruningPolicy:
+    def __init__(self, cfg=dict()):
+        self.cfg = cfg
+
+    def get_granularity(self, module: nn.Module):
+        cfg = self.cfg
+        if isinstance(module, (nn.Linear, nn.LazyLinear)):
+            return cfg.get(nn.Linear, UnstructuredGranularityLinear)
+        if isinstance(module, nn.Conv2d):
+            return cfg.get(nn.Conv2d, UnstructuredGranularityConv2d)
+
+
 def to_pruned(
-    model: nn.Module, should_do: Callable = default_should_do, inplace=True, **kwargs
+    model: nn.Module,
+    policy: PruningPolicy,
+    should_do: Callable = default_should_do,
+    inplace=True,
+    **kwargs,
 ):
     modules_to_replace = _to_low_rank_recursive(model, should_do=should_do, prefix="")
     if not inplace:
@@ -84,9 +89,9 @@ def to_pruned(
         setattr(
             parent_module,
             attr_name,
-            PrunedLinear.from_linear(module, **kwargs)
-            if isinstance(module, (nn.Linear, nn.LazyLinear))
-            else PrunedConv2d.from_conv2d(module, **kwargs),
+            _module_to_pruned[type(module)](
+                module, granularity_cls=policy.get_granularity(module), **kwargs
+            ),
         )
 
     return model

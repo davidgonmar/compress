@@ -10,6 +10,11 @@ import argparse
 from torchvision.models import resnet18
 from torch.optim.lr_scheduler import StepLR
 import torch.optim as optim
+from compress.pruning_strats import (
+    linear_granularity_from_str,
+    conv2d_granularity_from_str,
+)
+from torch import nn
 
 
 parser = argparse.ArgumentParser()
@@ -19,6 +24,8 @@ parser.add_argument("--epochs", type=int, default=40)
 parser.add_argument("--regularizer_weight", type=float, default=1.0)
 parser.add_argument("--model_type", type=str, default="simple")
 parser.add_argument("--dataset", type=str, default="mnist")
+parser.add_argument("--linear_granularity", type=str, default="unstructured")
+parser.add_argument("--conv2d_granularity", type=str, default="unstructured")
 args = parser.parse_args()
 
 
@@ -117,10 +124,16 @@ regularizer_kwargs = {
     "noop": {},
 }
 
+
+cfg = {
+    (nn.Linear, "weight"): linear_granularity_from_str(args.linear_granularity),
+    (nn.Conv2d, "weight"): conv2d_granularity_from_str(args.conv2d_granularity),
+}
 regularizer = SparsityRegularizer(
     metric=args.sparsity_metric,
     params_and_pruning_granularities=extract_weights_and_pruning_granularities(
         model,
+        cfg=cfg,
         cls_list=(
             torch.nn.Linear,
             torch.nn.Conv2d,

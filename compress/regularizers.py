@@ -5,9 +5,7 @@ from compress.low_rank_ops import LowRankLinear, LowRankConv2d
 from compress.utils import extract_weights
 from typing import Callable
 import torch.nn as nn
-from compress.prune import (
-    UnstructuredGranularityLinear,
-    UnstructuredGranularityConv2d,
+from compress.pruning_strats import (
     PruningGranularity,
 )
 
@@ -266,16 +264,9 @@ _params_metrics = {
     "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
 }
 
-_pruning_granularities = {
-    (nn.Linear, "weight"): UnstructuredGranularityLinear(),
-    (nn.Conv2d, "weight"): UnstructuredGranularityConv2d(),
-    (nn.LazyLinear, "weight"): UnstructuredGranularityLinear(),
-    (nn.LazyConv2d, "weight"): UnstructuredGranularityConv2d(),
-}
-
 
 def extract_weights_and_pruning_granularities(
-    model, cls_list, additional_check=lambda *args: True, keywords="weight"
+    model, cls_list, cfg, additional_check=lambda *args: True, keywords="weight"
 ):
     params = extract_weights(
         model, cls_list, additional_check, keywords, ret_module=True
@@ -284,7 +275,7 @@ def extract_weights_and_pruning_granularities(
     granul_status = [
         (
             (module.__class__, name.split(".")[-1]),
-            (module.__class__, name.split(".")[-1]) in _pruning_granularities,
+            (module.__class__, name.split(".")[-1]) in cfg,
         )
         for name, module in modules_and_names
     ]
@@ -301,7 +292,7 @@ def extract_weights_and_pruning_granularities(
         )
 
     return [
-        (param, _pruning_granularities[(module.__class__, name.split(".")[-1])])
+        (param, cfg[(module.__class__, name.split(".")[-1])]())
         for (name, module), param in params
     ]
 
@@ -330,12 +321,13 @@ class SparsityRegularizer:
 
         self.fn, self.sgn = _params_metrics[metric](**kwargs)
 
-        # Since we will be applying it at the group level, self.fn needs to accept a batch of groups of shape (n_groups, group_size)
-        self.fn = torch.vmap(self.fn, in_dims=0, out_dims=0)
+        # granul.transform maps the weights to a tensor of shape (n_groups, m_elements_per_group), so
+        # the metric can be obtained by doing mean over dim=1.
 
     def __call__(self) -> torch.Tensor:
         return self.sgn * sum(
-            weight * self.fn(granul.transform(param), **self.kwargs)
+            weight
+            * self.fn(granul.transform(param).sum(1, keepdim=False), **self.kwargs)
             for (param, granul), weight in zip(
                 self.params_and_pruning_granularities, self.weights
             )

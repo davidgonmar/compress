@@ -1,16 +1,25 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from compress.pruning_strats import PruningGranularity
 
 
-def _get_mask_from_ratio(weight: torch.Tensor, ratio_to_keep: float) -> torch.Tensor:
+def _get_mask_from_ratio(
+    weight: torch.Tensor, ratio_to_keep: float, granularity_cls: PruningGranularity
+):
     assert 0.0 <= ratio_to_keep <= 1.0
-    num_params = weight.numel()
-    num_to_keep = int(ratio_to_keep * num_params)
-    _, indices = torch.topk(weight.abs().view(-1), num_to_keep, largest=True)
-    mask = torch.zeros_like(weight).view(-1)
-    mask[indices] = 1.0
-    return mask.view(weight.shape)
+    granularity = granularity_cls()
+    wabs = weight.abs()
+    w_reshaped = granularity.transform(wabs)  # shape (n_groups, m_elements_per_group)
+    num_to_keep = int(
+        ratio_to_keep * w_reshaped.shape[0]
+    )  # keep only selected percentage of groups
+    _, indices = torch.topk(
+        w_reshaped.mean(1, keepdim=False), k=num_to_keep, largest=True, dim=0
+    )  # shape (n_groups_to_keep), selected by mean
+    mask = torch.zeros_like(w_reshaped)
+    mask[indices] = 1
+    return granularity.untransform(mask)
 
 
 class PrunedLinear(nn.Module):
@@ -27,13 +36,13 @@ class PrunedLinear(nn.Module):
         return F.linear(input, pruned_weight, self.bias)
 
     @staticmethod
-    def from_linear(linear, ratio_to_keep=1.0):
+    def from_linear(linear, granularity_cls: PruningGranularity, ratio_to_keep=1.0):
         pruned_linear = PrunedLinear(
             linear.in_features, linear.out_features, linear.bias is not None
         ).to(linear.weight.device)
         pruned_linear.weight.data = linear.weight.data.clone()
         pruned_linear.mask.data = _get_mask_from_ratio(
-            pruned_linear.weight, ratio_to_keep
+            pruned_linear.weight, ratio_to_keep, granularity_cls
         )
         if linear.bias is not None:
             pruned_linear.bias.data = linear.bias.data.clone()
@@ -79,7 +88,7 @@ class PrunedConv2d(nn.Module):
         )
 
     @staticmethod
-    def from_conv2d(conv2d, ratio_to_keep=1.0):
+    def from_conv2d(conv2d, granularity_cls: PruningGranularity, ratio_to_keep=1.0):
         pruned_conv2d = PrunedConv2d(
             conv2d.in_channels,
             conv2d.out_channels,
@@ -92,7 +101,7 @@ class PrunedConv2d(nn.Module):
         ).to(conv2d.weight.device)
         pruned_conv2d.weight.data = conv2d.weight.data.clone()
         pruned_conv2d.mask.data = _get_mask_from_ratio(
-            pruned_conv2d.weight, ratio_to_keep
+            pruned_conv2d.weight, ratio_to_keep, granularity_cls
         )
         if conv2d.bias is not None:
             pruned_conv2d.bias.data = conv2d.bias.data.clone()

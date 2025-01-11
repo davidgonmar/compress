@@ -1,15 +1,22 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.prune import to_pruned
+from compress.prune import to_pruned, PruningPolicy
+from compress.pruning_strats import (
+    linear_granularity_from_str,
+    conv2d_granularity_from_str,
+)
 import copy
 import argparse
+from torch import nn
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")
 parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--dataset", type=str, default="mnist")
+parser.add_argument("--linear_pruning", type=str, default="unstructured")
+parser.add_argument("--conv2d_pruning", type=str, default="unstructured")
 args = parser.parse_args()
 
 
@@ -61,6 +68,14 @@ ratios = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 for ratio in ratios:
     model_lr = to_pruned(
         model,
+        policy=PruningPolicy(
+            cfg={
+                nn.Linear: linear_granularity_from_str(args.linear_pruning),
+                nn.Conv2d: conv2d_granularity_from_str(args.conv2d_pruning),
+                nn.LazyLinear: linear_granularity_from_str(args.linear_pruning),
+                nn.LazyConv2d: conv2d_granularity_from_str(args.conv2d_pruning),
+            }
+        ),
         ratio_to_keep=ratio,
         inplace=False,
         model_initializer=lambda: copy.deepcopy(model),
