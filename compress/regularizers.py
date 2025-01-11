@@ -249,3 +249,42 @@ class OrthogonalRegularizer:
             weight * orthogonal_regularizer(param, self.normalize_by_rank_squared)
             for param, weight in zip(params, self.weights)
         )
+
+
+_params_metrics = {
+    "hoyer_sparsity": lambda **kwargs: (
+        lambda x, **kwargs: hoyer_sparsity(x, **kwargs),
+        -1.0,
+    ),
+    "scad": lambda **kwargs: (lambda x, **kwargs: scad(x, **kwargs), -1.0),
+    "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
+}
+
+
+class SparsityRegularizer:
+    def __init__(
+        self,
+        metric: str,
+        params: List[torch.Tensor],
+        weights: float | List[float] = 1.0,
+        **kwargs
+    ):
+        self.params = params
+        self.weights = (
+            [weights] * len(params) if isinstance(weights, float) else weights
+        )
+        assert len(self.params) == len(
+            self.weights
+        ), "Number of params and weights should match, got {} and {}".format(
+            len(self.params), len(self.weights)
+        )
+        self.metric = metric
+        self.kwargs = kwargs
+
+        self.fn, self.sgn = _params_metrics[metric](**kwargs)
+
+    def __call__(self) -> torch.Tensor:
+        return self.sgn * sum(
+            weight * self.fn(param, **self.kwargs)
+            for param, weight in zip(self.params, self.weights)
+        )
