@@ -1,8 +1,10 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.regularizers import SparsityRegularizer
-from compress.utils import extract_weights
+from compress.regularizers import (
+    SparsityRegularizer,
+    extract_weights_and_pruning_granularities,
+)
 from examples.utils.models import MLPClassifier, ConvClassifier
 import argparse
 from torchvision.models import resnet18
@@ -117,7 +119,7 @@ regularizer_kwargs = {
 
 regularizer = SparsityRegularizer(
     metric=args.sparsity_metric,
-    params=extract_weights(
+    params_and_pruning_granularities=extract_weights_and_pruning_granularities(
         model,
         cls_list=(
             torch.nn.Linear,

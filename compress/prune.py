@@ -4,6 +4,28 @@ from compress.pruned_ops import PrunedLinear, PrunedConv2d
 from tqdm import tqdm
 
 
+# pruning granularity spec accepts a ndim-tensor and returns a reshaped tensor of the form (n, m), n denoting the number of groups and m denoting the number of elements in each group
+class PruningGranularity:
+    ndim: int
+
+    def transform(self, tensor):
+        raise NotImplementedError
+
+
+class UnstructuredGranularityLinear(PruningGranularity):
+    ndim = 2
+
+    def transform(self, tensor):
+        return tensor.reshape(1, -1)
+
+
+class UnstructuredGranularityConv2d(PruningGranularity):
+    ndim = 4
+
+    def transform(self, tensor):
+        return tensor.reshape(1, -1)
+
+
 def default_should_do(module: nn.Module, full_name: str):
     return (
         isinstance(module, nn.Linear)

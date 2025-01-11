@@ -5,6 +5,11 @@ from compress.low_rank_ops import LowRankLinear, LowRankConv2d
 from compress.utils import extract_weights
 from typing import Callable
 import torch.nn as nn
+from compress.prune import (
+    UnstructuredGranularityLinear,
+    UnstructuredGranularityConv2d,
+    PruningGranularity,
+)
 
 
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
@@ -251,6 +256,7 @@ class OrthogonalRegularizer:
         )
 
 
+# METRICS APPLIED TO A SINGLE GROUP
 _params_metrics = {
     "hoyer_sparsity": lambda **kwargs: (
         lambda x, **kwargs: hoyer_sparsity(x, **kwargs),
@@ -260,20 +266,61 @@ _params_metrics = {
     "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
 }
 
+_pruning_granularities = {
+    (nn.Linear, "weight"): UnstructuredGranularityLinear(),
+    (nn.Conv2d, "weight"): UnstructuredGranularityConv2d(),
+    (nn.LazyLinear, "weight"): UnstructuredGranularityLinear(),
+    (nn.LazyConv2d, "weight"): UnstructuredGranularityConv2d(),
+}
+
+
+def extract_weights_and_pruning_granularities(
+    model, cls_list, additional_check=lambda *args: True, keywords="weight"
+):
+    params = extract_weights(
+        model, cls_list, additional_check, keywords, ret_module=True
+    )
+    modules_and_names = [(name, module) for (name, module), param in params]
+    granul_status = [
+        (
+            (module.__class__, name.split(".")[-1]),
+            (module.__class__, name.split(".")[-1]) in _pruning_granularities,
+        )
+        for name, module in modules_and_names
+    ]
+
+    if all(status for _, status in granul_status):
+        print("Found pruning granularities for all modules.")
+    else:
+        found = [module_info for module_info, status in granul_status if status]
+        not_found = [module_info for module_info, status in granul_status if not status]
+        raise ValueError(
+            "Cannot find pruning granularities for all modules. Found pruning granularities for: {}. Not found for: {}".format(
+                found, not_found
+            )
+        )
+
+    return [
+        (param, _pruning_granularities[(module.__class__, name.split(".")[-1])])
+        for (name, module), param in params
+    ]
+
 
 class SparsityRegularizer:
     def __init__(
         self,
         metric: str,
-        params: List[torch.Tensor],
+        params_and_pruning_granularities: List[tuple[torch.Tensor, PruningGranularity]],
         weights: float | List[float] = 1.0,
         **kwargs
     ):
-        self.params = params
+        self.params_and_pruning_granularities = params_and_pruning_granularities
         self.weights = (
-            [weights] * len(params) if isinstance(weights, float) else weights
+            [weights] * len(params_and_pruning_granularities)
+            if isinstance(weights, float)
+            else weights
         )
-        assert len(self.params) == len(
+        assert len(self.params_and_pruning_granularities) == len(
             self.weights
         ), "Number of params and weights should match, got {} and {}".format(
             len(self.params), len(self.weights)
@@ -283,8 +330,13 @@ class SparsityRegularizer:
 
         self.fn, self.sgn = _params_metrics[metric](**kwargs)
 
+        # Since we will be applying it at the group level, self.fn needs to accept a batch of groups of shape (n_groups, group_size)
+        self.fn = torch.vmap(self.fn, in_dims=0, out_dims=0)
+
     def __call__(self) -> torch.Tensor:
         return self.sgn * sum(
-            weight * self.fn(param, **self.kwargs)
-            for param, weight in zip(self.params, self.weights)
+            weight * self.fn(granul.transform(param), **self.kwargs)
+            for (param, granul), weight in zip(
+                self.params_and_pruning_granularities, self.weights
+            )
         )
