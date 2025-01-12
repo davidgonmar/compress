@@ -1,0 +1,2 @@
+python -m examples.simple_train --sv_regularizer=hoyer_sparsity --regularizer_scheduler=exp --model=resnet18 --dataset=cifar10
+python -m examples.simple_compress --dataset=cifar10

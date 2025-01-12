@@ -332,3 +332,27 @@ class SparsityRegularizer:
                 self.params_and_pruning_granularities, self.weights
             )
         )
+
+
+def update_weights(reg, weights):
+    weights = (
+        [weights]
+        * len(
+            reg.params_and_pruning_granularities
+            if hasattr(reg, "params_and_pruning_granularities")
+            else reg.params
+            if hasattr(reg, "params")
+            else reg.params_and_reshapers
+        )
+        if isinstance(weights, float)
+        else weights
+    )
+    if isinstance(reg, SingularValuesRegularizer):
+        reg.weights = weights
+    elif isinstance(reg, OrthogonalRegularizer):
+        reg.weights = weights
+    elif isinstance(reg, SparsityRegularizer):
+        reg.weights = weights
+    else:
+        raise ValueError("Unknown regularizer type: {}".format(type(reg)))
+    return reg

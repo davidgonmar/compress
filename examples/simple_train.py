@@ -4,6 +4,7 @@ from torchvision import transforms, datasets
 from compress.regularizers import (
     SingularValuesRegularizer,
     extract_weights_and_reshapers,
+    update_weights,
 )
 from examples.utils.models import MLPClassifier, ConvClassifier
 import argparse
@@ -15,10 +16,11 @@ import torch.optim as optim
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")
 parser.add_argument("--sv_regularizer", type=str, default="noop")
-parser.add_argument("--epochs", type=int, default=40)
+parser.add_argument("--epochs", type=int, default=100)
 parser.add_argument("--regularizer_weight", type=float, default=1.0)
 parser.add_argument("--model_type", type=str, default="simple")
 parser.add_argument("--dataset", type=str, default="mnist")
+parser.add_argument("--regularizer_scheduler", type=str, default="noop")
 args = parser.parse_args()
 
 
@@ -117,6 +119,23 @@ regularizer_kwargs = {
     "noop": {},
 }
 
+weights = args.regularizer_weight
+
+
+def weight_schedule_noop(epochnum):
+    return weights
+
+
+def weight_schedule_exp(epochnum):
+    # penalty is gradually more important
+    return 0.5 * weights * 2 ** ((epochnum / args.epochs))
+
+
+weight_sched = {
+    "noop": weight_schedule_noop,
+    "exp": weight_schedule_exp,
+}[args.regularizer_scheduler]
+
 regularizer = SingularValuesRegularizer(
     metric=args.sv_regularizer,
     params_and_reshapers=extract_weights_and_reshapers(
@@ -140,6 +159,7 @@ for epoch in range(num_epochs):
     model.train()
     train_loss = 0.0
     reg_loss = 0.0
+    update_weights(regularizer, weight_sched(epoch))
     for batch in train_loader:
         x, y = batch
         x, y = x.to(device), y.to(device)
