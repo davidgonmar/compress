@@ -106,7 +106,7 @@ _reductions = {
 
 
 def scad(
-    input: torch.Tensor, lambda_val: float, a: float, reduction: str = "sum"
+    input: torch.Tensor, lambda_val: float, a_val: float, reduction: str = "mean"
 ) -> torch.Tensor:
     # https://andrewcharlesjones.github.io/journal/scad.html
     abs_input = torch.abs(input)
@@ -115,12 +115,12 @@ def scad(
 
     # Case 2: λ < |x| <= aλ
     case2 = (
-        (-(abs_input**2) + 2 * a * lambda_val * abs_input - lambda_val**2)
-        / (2 * (a - 1))
-    ) * ((abs_input > lambda_val) & (abs_input <= a * lambda_val))
+        (-(abs_input**2) + 2 * a_val * lambda_val * abs_input - lambda_val**2)
+        / (2 * (a_val - 1))
+    ) * ((abs_input > lambda_val) & (abs_input <= a_val * lambda_val))
 
     # Case 3: |x| > aλ
-    case3 = ((a + 1) * (lambda_val**2) / 2) * (abs_input > a * lambda_val)
+    case3 = ((a_val + 1) * (lambda_val**2) / 2) * (abs_input > a_val * lambda_val)
     penalty = case1 + case2 + case3
     return _reductions[reduction](penalty)
 
@@ -303,6 +303,7 @@ class SparsityRegularizer:
         metric: str,
         params_and_pruning_granularities: List[tuple[torch.Tensor, PruningGranularity]],
         weights: float | List[float] = 1.0,
+        mode: str = "inside_group",
         **kwargs
     ):
         self.params_and_pruning_granularities = params_and_pruning_granularities
@@ -320,11 +321,12 @@ class SparsityRegularizer:
         self.kwargs = kwargs
 
         self.fn, self.sgn = _params_metrics[metric](**kwargs)
-
+        self.mode = mode
         # granul.transform maps the weights to a tensor of shape (n_groups, m_elements_per_group), so
         # the metric can be obtained by doing mean over dim=1.
 
-    def __call__(self) -> torch.Tensor:
+    # tries to prune entire groups
+    def call_per_group(self) -> torch.Tensor:
         return self.sgn * sum(
             weight
             * self.fn(granul.transform(param).sum(1, keepdim=False), **self.kwargs)
@@ -332,6 +334,24 @@ class SparsityRegularizer:
                 self.params_and_pruning_granularities, self.weights
             )
         )
+
+    # inside each group, applies the sparsity metric locally
+    def call_inside_group(self) -> torch.Tensor:
+        return self.sgn * sum(
+            weight
+            * torch.vmap(lambda x: self.fn(x, **self.kwargs))(
+                granul.transform(param)
+            ).mean()
+            for (param, granul), weight in zip(
+                self.params_and_pruning_granularities, self.weights
+            )
+        )
+
+    def __call__(self) -> torch.Tensor:
+        if self.mode == "inside_group":
+            return self.call_inside_group()
+        elif self.mode == "per_group":
+            return self.call_per_group()
 
 
 def update_weights(reg, weights):

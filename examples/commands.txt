@@ -1,2 +1,14 @@
 python -m examples.simple_train --sv_regularizer=hoyer_sparsity --regularizer_scheduler=exp --model=resnet18 --dataset=cifar10
 python -m examples.simple_compress --dataset=cifar10
+python -m examples.sparsity_train --sparsity_metric=noop --model=resnet18 --dataset=cifar10  --epochs=1000 --regularizer_weight=3.0 --linear_granularity=out_channel_grouping --conv2d_granularity=out_channel_grouping
+python -m examples.prune --dataset=cifar --linear_pruning=out_channel_grouping --conv2d_pruning=out_channel_grouping
+python -m examples.prune --dataset=cifar
+------------------------------ 2:4 sparsity ------------------------------
+-- resnet + cifar10
+python -m examples.prune_2to4 --dataset=cifar
+
+python -m examples.sparsity_train --sparsity_metric=hoyer_sparsity --model=resnet18 --dataset=cifar10  --epochs=1000 --finetune --regularizer_weight=1.0 --linear_granularity=2:4 --conv2d_granularity=2:4
+
+-- mlp + mnist
+python -m examples.prune_2to4 --dataset=mnist --model
+python -m examples.sparsity_train --sparsity_metric=hoyer_sparsity --model=simple --dataset=mnist  --epochs=1000 --finetune

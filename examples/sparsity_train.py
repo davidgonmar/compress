@@ -15,6 +15,7 @@ from compress.pruning_strats import (
     conv2d_granularity_from_str,
 )
 from torch import nn
+import torchvision
 
 
 parser = argparse.ArgumentParser()
@@ -26,7 +27,11 @@ parser.add_argument("--model_type", type=str, default="simple")
 parser.add_argument("--dataset", type=str, default="mnist")
 parser.add_argument("--linear_granularity", type=str, default="unstructured")
 parser.add_argument("--conv2d_granularity", type=str, default="unstructured")
+parser.add_argument("--finetune", action="store_true")
 args = parser.parse_args()
+
+if args.finetune:
+    assert args.model_type == "resnet18", "Fine-tuning only supported for ResNet18"
 
 
 def get_mnist():
@@ -112,6 +117,14 @@ model = (
     )
 )
 
+if args.finetune:
+    # load weights from pre-trained model from torch
+    torch_weights = torchvision.models.resnet18(pretrained=True).state_dict()
+    del torch_weights["fc.weight"]
+    del torch_weights["fc.bias"]
+    # do not load weights for the final layer (classification layer)
+    model.load_state_dict(torch_weights, strict=False)
+
 criterion = torch.nn.CrossEntropyLoss()
 
 optimizer = optim.AdamW(model.parameters(), lr=0.001)
@@ -129,6 +142,13 @@ cfg = {
     (nn.Linear, "weight"): linear_granularity_from_str(args.linear_granularity),
     (nn.Conv2d, "weight"): conv2d_granularity_from_str(args.conv2d_granularity),
 }
+
+mode = "nnn"
+if args.linear_granularity == "2:4" and args.conv2d_granularity == "2:4":
+    mode = "inside_group"
+else:
+    mode = "per_group"
+
 regularizer = SparsityRegularizer(
     metric=args.sparsity_metric,
     params_and_pruning_granularities=extract_weights_and_pruning_granularities(
@@ -143,6 +163,7 @@ regularizer = SparsityRegularizer(
         keywords={"weight", "kernel"},
     ),
     weights=args.regularizer_weight,
+    mode=mode,
     **regularizer_kwargs[args.sparsity_metric],
 )
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
