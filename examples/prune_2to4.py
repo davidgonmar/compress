@@ -82,6 +82,7 @@ for ratio in ratios:
         ratio_to_keep_in_group=0.5,  # 2:4 keeps 50% of the weights in each group
         inplace=False,
         model_initializer=lambda: copy.deepcopy(model),
+        to_sparse_semistructured=True,
     )
     test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
     print(f"Ratio: {ratio}, Test Loss: {test_loss}, Test Accuracy: {test_acc}")

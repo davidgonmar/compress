@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from compress.pruning_strats import PruningGranularity
+from torch.sparse import to_sparse_semi_structured
 
 
 def _get_mask_from_ratio(
@@ -60,6 +61,15 @@ class PrunedLinear(nn.Module):
         if linear.bias is not None:
             pruned_linear.bias.data = linear.bias.data.clone()
         return pruned_linear
+
+    def to_sparse_semi_structured(self):
+        w = self.weight * self.mask
+        linear = nn.Linear(
+            self.in_features, self.out_features, bias=self.bias is not None
+        )
+        linear.weight = nn.Parameter(to_sparse_semi_structured(w))
+        linear.bias = self.bias
+        return linear
 
 
 class PrunedConv2d(nn.Module):

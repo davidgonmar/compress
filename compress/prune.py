@@ -68,6 +68,7 @@ def to_pruned(
     policy: PruningPolicy,
     should_do: Callable = default_should_do,
     inplace=True,
+    to_sparse_semistructured=False,
     **kwargs,
 ):
     modules_to_replace = _to_low_rank_recursive(model, should_do=should_do, prefix="")
@@ -93,5 +94,19 @@ def to_pruned(
                 module, granularity_cls=policy.get_granularity(module), **kwargs
             ),
         )
-
+        if to_sparse_semistructured:  # only linear at the moment
+            try:
+                if hasattr(
+                    getattr(parent_module, attr_name), "to_sparse_semi_structured"
+                ):
+                    setattr(
+                        parent_module,
+                        attr_name,
+                        getattr(parent_module, attr_name).to_sparse_semi_structured(),
+                    )
+                    print(f"Converted {attr_name} to sparse semi-structured")
+            except Exception as e:
+                print(
+                    f"Failed to convert {attr_name} to sparse semi-structured: {e}, continuing"
+                )
     return model
