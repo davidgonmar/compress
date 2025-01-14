@@ -3,7 +3,6 @@ from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.prune import to_pruned, PruningPolicy
 from compress.pruning_strats import (
-    linear_granularity_from_str,
     conv2d_granularity_from_str,
 )
 import copy
@@ -17,6 +16,7 @@ parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--dataset", type=str, default="mnist")
 parser.add_argument("--linear_pruning", type=str, default="unstructured")
 parser.add_argument("--conv2d_pruning", type=str, default="unstructured")
+parser.add_argument("--global_pruning", action="store_true")
 args = parser.parse_args()
 
 
@@ -70,15 +70,14 @@ for ratio in ratios:
         model,
         policy=PruningPolicy(
             cfg={
-                nn.Linear: linear_granularity_from_str(args.linear_pruning),
                 nn.Conv2d: conv2d_granularity_from_str(args.conv2d_pruning),
-                nn.LazyLinear: linear_granularity_from_str(args.linear_pruning),
                 nn.LazyConv2d: conv2d_granularity_from_str(args.conv2d_pruning),
             }
         ),
         ratio_to_keep=ratio,
         inplace=False,
         model_initializer=lambda: copy.deepcopy(model),
+        global_prune=args.global_pruning,
     )
     test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
     print(f"Ratio: {ratio}, Test Loss: {test_loss}, Test Accuracy: {test_acc}")
