@@ -90,11 +90,24 @@ def hoyer_sparsity(input: torch.Tensor, normalize=DEFAULT_NORMALIZE) -> torch.Te
     )
 
 
+def squared_hoyer_sparsity(
+    input: torch.Tensor, normalize=DEFAULT_NORMALIZE
+) -> torch.Tensor:
+    return hoyer_sparsity(input, normalize) ** 2
+
+
 def singular_values_hoyer_sparsity(
     input: torch.Tensor, normalize=DEFAULT_NORMALIZE
 ) -> torch.Tensor:
     singular_values = torch.linalg.svdvals(input)
     return hoyer_sparsity(singular_values, normalize)
+
+
+def singular_values_squared_hoyer_sparsity(
+    input: torch.Tensor, normalize=DEFAULT_NORMALIZE
+) -> torch.Tensor:
+    singular_values = torch.linalg.svdvals(input)
+    return squared_hoyer_sparsity(singular_values, normalize)
 
 
 _reductions = {
@@ -146,6 +159,12 @@ _regularizers = {
             x, kwargs["lambda_val"], kwargs["a_val"], kwargs.get("reduction", "sum")
         ),
         -1.0,
+    ),
+    "squared_hoyer_sparsity": lambda **kwargs: (
+        lambda x, **kwargs: singular_values_squared_hoyer_sparsity(
+            x, kwargs.get("normalize", DEFAULT_NORMALIZE)
+        ),
+        -1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else 1.0,
     ),
     "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
 }
@@ -261,6 +280,10 @@ _params_metrics = {
         -1.0,
     ),
     "scad": lambda **kwargs: (lambda x, **kwargs: scad(x, **kwargs), -1.0),
+    "squared_hoyer_sparsity": lambda **kwargs: (
+        lambda x, **kwargs: squared_hoyer_sparsity(x, **kwargs),
+        -1.0,
+    ),
     "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
 }
 

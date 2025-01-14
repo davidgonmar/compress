@@ -11,6 +11,7 @@ import argparse
 from torchvision.models import resnet18
 from torch.optim.lr_scheduler import StepLR
 import torch.optim as optim
+import torchvision
 
 
 parser = argparse.ArgumentParser()
@@ -21,6 +22,7 @@ parser.add_argument("--regularizer_weight", type=float, default=1.0)
 parser.add_argument("--model_type", type=str, default="simple")
 parser.add_argument("--dataset", type=str, default="mnist")
 parser.add_argument("--regularizer_scheduler", type=str, default="noop")
+parser.add_argument("--finetune", action="store_true")
 args = parser.parse_args()
 
 
@@ -112,10 +114,20 @@ criterion = torch.nn.CrossEntropyLoss()
 optimizer = optim.AdamW(model.parameters(), lr=0.001)
 sched = StepLR(optimizer, step_size=10, gamma=0.2)
 
+if args.finetune:
+    # load weights from pre-trained model from torch
+    torch_weights = torchvision.models.resnet18(pretrained=True).state_dict()
+    del torch_weights["fc.weight"]
+    del torch_weights["fc.bias"]
+    # do not load weights for the final layer (classification layer)
+    model.load_state_dict(torch_weights, strict=False)
+
+
 regularizer_kwargs = {
     "entropy": {},
     "hoyer_sparsity": {"normalize": True},
     "scad": {"lambda_val": 0.1, "a_val": 3.7},
+    "squared_hoyer_sparsity": {"normalize": True},
     "noop": {},
 }
 
