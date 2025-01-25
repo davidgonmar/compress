@@ -17,6 +17,7 @@ parser.add_argument("--dataset", type=str, default="mnist")
 parser.add_argument("--linear_pruning", type=str, default="unstructured")
 parser.add_argument("--conv2d_pruning", type=str, default="unstructured")
 parser.add_argument("--global_pruning", action="store_true")
+parser.add_argument("--small_ratios", action="store_true")
 args = parser.parse_args()
 
 
@@ -63,8 +64,11 @@ loss = evaluate(model, test_loader, criterion, device)
 
 print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
 
-
+small_ratios = [0.01, 0.03, 0.05, 0.07, 0.09]
 ratios = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+if args.small_ratios:
+    ratios = small_ratios + ratios
 for ratio in ratios:
     model_lr = to_pruned(
         model,
