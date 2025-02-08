@@ -1,9 +1,8 @@
 import torch
 from torch import nn
 from dataclasses import dataclass
-from typing import Callable
 from tqdm import tqdm
-from .factorize import default_should_do
+from compress.common import gather_submodules, default_should_do
 
 # q(X) = clamp(round(X / scale) + zero_point, qmin, qmax)
 # X(q) = scale * (q - zero_point)
@@ -229,34 +228,6 @@ class QuantizedConv2d(nn.Conv2d):
         return f"QuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
 
 
-def _to_quantized_recursive(model: nn.Module, should_do: Callable, prefix=""):
-    modules_to_replace = []
-    for name, module in model.named_children():
-        full_name = f"{prefix}.{name}" if prefix else name
-        if isinstance(module, nn.Linear):
-            if should_do(module, full_name):
-                modules_to_replace.append((full_name, module))
-        elif isinstance(module, nn.Conv2d):
-            if should_do(module, full_name):
-                modules_to_replace.append((full_name, module))
-        elif isinstance(module, nn.Sequential):
-            for idx, sub_module in enumerate(module):
-                sub_full_name = f"{full_name}.{idx}"
-                if should_do(sub_module, sub_full_name):
-                    modules_to_replace.append((sub_full_name, sub_module))
-                else:
-                    modules_to_replace.extend(
-                        _to_quantized_recursive(
-                            sub_module, should_do, prefix=sub_full_name
-                        )
-                    )
-        else:
-            modules_to_replace.extend(
-                _to_quantized_recursive(module, should_do, prefix=full_name)
-            )
-    return modules_to_replace
-
-
 def to_quantized_online(
     model: nn.Module,
     input_specs: IntQuantizationSpec,
@@ -265,7 +236,7 @@ def to_quantized_online(
     should_do=default_should_do,
     **kwargs,
 ):
-    modules_to_replace = _to_quantized_recursive(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
     if not inplace:
         model_initializer = kwargs.pop("model_initializer", None)
         assert (
