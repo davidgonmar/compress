@@ -8,7 +8,7 @@ from itertools import product
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--save_path", type=str, default="mnist_model.pth")
+parser.add_argument("--save_path", type=str, default="qat_resnet.pth")
 parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--dataset", type=str, default="mnist")
 args = parser.parse_args()
@@ -35,6 +35,7 @@ def evaluate(model, loader, criterion, device):
 
 
 model = torch.load(args.save_path)
+
 
 transform = transforms.Compose(
     [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]

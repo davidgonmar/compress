@@ -3,6 +3,7 @@ from torch import nn
 from dataclasses import dataclass
 from tqdm import tqdm
 from compress.common import gather_submodules, default_should_do
+import copy
 
 # q(X) = clamp(round(X / scale) + zero_point, qmin, qmax)
 # X(q) = scale * (q - zero_point)
@@ -69,7 +70,7 @@ class IntQuantizationInfo:
         return self.spec.get_dtype()
 
 
-def calibrate(x: torch.Tensor, spec: IntQuantizationSpec, symmetric: bool = False):
+def calibrate(x: torch.Tensor, spec: IntQuantizationSpec, symmetric: bool = True):
     if not symmetric:
         xmin = x.min().item()
         xmax = x.max().item()
@@ -95,6 +96,20 @@ def quantize(x: torch.Tensor, info: IntQuantizationInfo, fake=True):
 
 def dequantize(x: torch.Tensor, info: IntQuantizationInfo):
     return info.scale * (x - info.zero_point)
+
+
+class FakeQuantize(torch.autograd.Function):  # Straight-Through Estimator
+    @staticmethod
+    def forward(ctx, x, info: IntQuantizationInfo):
+        return dequantize(quantize(x, info, fake=True), info)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None
+
+
+def fake_quantize(x: torch.Tensor, info: IntQuantizationInfo):
+    return FakeQuantize.apply(x, info)
 
 
 class QuantizedLinear(nn.Linear):
@@ -228,6 +243,122 @@ class QuantizedConv2d(nn.Conv2d):
         return f"QuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
 
 
+class FakeQuantizedLinear(nn.Linear):
+    def __init__(
+        self,
+        weight_spec: IntQuantizationSpec,
+        input_spec: IntQuantizationInfo | IntQuantizationSpec,
+        linear: nn.Linear,
+    ):
+        in_features, out_features, bias = (
+            linear.in_features,
+            linear.out_features,
+            linear.bias is not None,
+        )
+        assert isinstance(linear, nn.Linear), "Only nn.Linear is supported"
+        super().__init__(in_features, out_features, bias)
+        self.weight_spec = weight_spec
+        self.input_spec = input_spec
+        self.weight = nn.Parameter(linear.weight, requires_grad=False).requires_grad_(
+            True
+        )
+        self.bias = (
+            nn.Parameter(linear.bias, requires_grad=False).requires_grad_(True)
+            if bias
+            else None
+        )
+
+    def forward(self, x: torch.Tensor):
+        x = fake_quantize(x, calibrate(x, self.input_spec))
+        w = fake_quantize(self.weight, calibrate(self.weight, self.weight_spec))
+        return nn.functional.linear(x, w, self.bias)
+
+    def __repr__(self):
+        return (
+            f"FakeQuantizedLinear({self.in_features}, {self.out_features}, {self.bias})"
+        )
+
+    def to_linear(self):
+        ret = nn.Linear(self.in_features, self.out_features, self.bias is not None)
+        ret.weight = self.weight
+        ret.bias = self.bias
+        return ret
+
+
+class FakeQuantizedConv2d(nn.Conv2d):
+    def __init__(
+        self,
+        weight_spec: IntQuantizationSpec,
+        input_spec: IntQuantizationSpec,
+        conv2d: nn.Conv2d,
+    ):
+        (
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
+            bias,
+        ) = (
+            conv2d.in_channels,
+            conv2d.out_channels,
+            conv2d.kernel_size,
+            conv2d.stride,
+            conv2d.padding,
+            conv2d.dilation,
+            conv2d.groups,
+            conv2d.bias is not None,
+        )
+        super().__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
+            bias,
+        )
+        assert isinstance(conv2d, nn.Conv2d), "Only nn.Conv2d is supported"
+        self.weight_spec = weight_spec
+        self.input_spec = input_spec
+        self.weight = nn.Parameter(conv2d.weight, requires_grad=False).requires_grad_(
+            True
+        )
+        self.bias = (
+            nn.Parameter(conv2d.bias, requires_grad=False).requires_grad_(True)
+            if bias
+            else None
+        )
+
+    def forward(self, x: torch.Tensor):
+        x = fake_quantize(x, calibrate(x, self.input_spec))
+        w = fake_quantize(self.weight, calibrate(self.weight, self.weight_spec))
+        return nn.functional.conv2d(
+            x, w, self.bias, self.stride, self.padding, self.dilation, self.groups
+        )
+
+    def __repr__(self):
+        return f"FakeQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
+
+    def to_conv2d(self):
+        ret = nn.Conv2d(
+            self.in_channels,
+            self.out_channels,
+            self.kernel_size,
+            self.stride,
+            self.padding,
+            self.dilation,
+            self.groups,
+            self.bias is not None,
+        )
+        ret.weight = self.weight
+        ret.bias = self.bias
+        return ret
+
+
 def to_quantized_online(
     model: nn.Module,
     input_specs: IntQuantizationSpec,
@@ -258,6 +389,68 @@ def to_quantized_online(
             QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
             if isinstance(module, nn.Linear)
             else QuantizedConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
+        )
+
+    return model
+
+
+def prepare_for_qat(
+    model: nn.Module,
+    input_specs: IntQuantizationSpec,
+    weight_specs: IntQuantizationSpec,
+    inplace=True,
+    **kwargs,
+):
+    modules_to_replace = gather_submodules(
+        model, should_do=default_should_do, prefix=""
+    )
+    if not inplace:
+        model_initializer = kwargs.pop("model_initializer", None)
+        assert (
+            model_initializer is not None
+        ), "model_initializer must be provided if inplace=False"
+        model_ = model_initializer()
+        model_.load_state_dict(model.state_dict())
+        model = model_
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            FakeQuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
+            if isinstance(module, nn.Linear)
+            else FakeQuantizedConv2d(
+                weight_specs["conv2d"], input_specs["conv2d"], module
+            ),
+        )
+
+    return model
+
+
+def merge_qat_model(model: nn.Module, inplace=True):
+    modules_to_replace = gather_submodules(
+        model, should_do=default_should_do, prefix=""
+    )
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            module.to_linear()
+            if isinstance(module, FakeQuantizedLinear)
+            else module.to_conv2d(),
         )
 
     return model
