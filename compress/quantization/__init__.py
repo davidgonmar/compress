@@ -1,13 +1,14 @@
 import copy
-from itertools import product
-from typing import List, Tuple
 from compress.quantization.calibrate import calibrate
-from compress.quantization.quantized_ops import (
+from compress.quantization.ptq_ops import (
     QuantizedLinear,
     QuantizedConv2d,
-    FakeQuantizedLinear,
-    FakeQuantizedConv2d,
 )
+from compress.quantization.qat_ops import (
+    QATConv2d,
+    QATLinear,
+)
+
 from compress.quantization.util import IntQuantizationSpec
 from compress.common import gather_submodules, default_should_do
 from torch import nn
@@ -160,11 +161,9 @@ def prepare_for_qat(
         setattr(
             parent_module,
             attr_name,
-            FakeQuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
+            QATLinear(weight_specs["linear"], input_specs["linear"], module)
             if isinstance(module, nn.Linear)
-            else FakeQuantizedConv2d(
-                weight_specs["conv2d"], input_specs["conv2d"], module
-            ),
+            else QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
         )
 
     return model
@@ -186,9 +185,7 @@ def merge_qat_model(model: nn.Module, inplace=True):
         setattr(
             parent_module,
             attr_name,
-            module.to_linear()
-            if isinstance(module, FakeQuantizedLinear)
-            else module.to_conv2d(),
+            module.to_linear() if isinstance(module, QATLinear) else module.to_conv2d(),
         )
 
     return model
