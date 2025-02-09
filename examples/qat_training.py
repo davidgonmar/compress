@@ -5,9 +5,13 @@ from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 from tqdm import tqdm
-from compress.quant import IntQuantizationSpec, prepare_for_qat, to_quantized_online
+from compress.quantization import (
+    IntQuantizationSpec,
+    prepare_for_qat,
+    to_quantized_online,
+    merge_qat_model,
+)
 import torchvision
-from compress.quant import merge_qat_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(

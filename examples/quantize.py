@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.quant import (
+from compress.quantization import (
     IntQuantizationSpec,
     to_quantized_online,
     to_quantized_offline,

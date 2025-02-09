@@ -19,3 +19,8 @@ def extract_weights(
                         _name = name + "." + keyword
                         weights.append(((_name, module), getattr(module, keyword)))
     return weights
+
+
+def dims_sub(dims1: list[int], dims2: list[int]):
+    # dims in 1 but not in 2
+    return [dim for dim in dims1 if dim not in dims2]
