@@ -62,6 +62,7 @@ print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
 bit_widths = [8, 16]
 signed_options = [True]
 
+
 for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
     bit_widths, bit_widths, bit_widths, bit_widths
 ):
@@ -77,8 +78,8 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
 
     quanted = to_quantized_online(
         model,
-        wspecs,
         inpspecs,
+        wspecs,
         inplace=False,
         model_initializer=lambda: copy.deepcopy(model),
     )

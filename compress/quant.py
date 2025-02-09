@@ -17,6 +17,15 @@ class IntQuantizationSpec:
     nbits: int
     signed: bool
 
+    group_dims: list[int] = None
+
+    # Example
+    # We have a (O, I, H, W) tensor and we want to quantize the (output) channels, we can set group_dims=[1, 2, 3]
+
+    def __post_init__(self):
+        if self.group_dims == []:
+            self.group_dims = None
+
     @property
     def qmin(self):
         return -(1 << (self.nbits - 1)) if self.signed else 0
@@ -47,8 +56,8 @@ class IntQuantizationSpec:
 @dataclass
 class IntQuantizationInfo:
     spec: IntQuantizationSpec
-    scale: float
-    zero_point: int
+    scale: torch.Tensor
+    zero_point: torch.Tensor
 
     @property
     def nbits(self):
@@ -66,23 +75,45 @@ class IntQuantizationInfo:
     def qmax(self):
         return self.spec.qmax
 
+    @property
+    def group_dims(self):
+        return self.spec.group_dims
+
     def get_dtype(self):
         return self.spec.get_dtype()
 
 
+def dims_sub(dims1: list[int], dims2: list[int]):
+    # dims in 1 but not in 2
+    return [dim for dim in dims1 if dim not in dims2]
+
+
 def calibrate(x: torch.Tensor, spec: IntQuantizationSpec, symmetric: bool = True):
+    reduction_dims = (
+        spec.group_dims if spec.group_dims is not None else list(range(x.ndim))
+    )
     if not symmetric:
-        xmin = x.min().item()
-        xmax = x.max().item()
-        if (xmin == 0 and xmax == 0) or (xmin == xmax):
-            return IntQuantizationInfo(spec, 1.0, 0)  # avoid division by zero
+        xmin = x.amin(reduction_dims)
+        xmax = x.amax(reduction_dims)
         scale = (xmax - xmin) / (spec.qmax - spec.qmin)
         zero_point = round(spec.qmin - xmin / scale)
+
+        shape = [1] * x.ndim
+        for dim in dims_sub(list(range(x.ndim)), reduction_dims):
+            shape[dim] = x.shape[dim]
+
+        scale = scale.reshape(shape)
+        zero_point = zero_point.reshape(shape)
         return IntQuantizationInfo(spec, scale, zero_point)
     else:
-        xmax = x.abs().max().item()
+        xmax = x.abs().amax(reduction_dims)
         scale = xmax / spec.qmax
-        zero_point = 0
+        shape = [1] * x.ndim
+
+        for dim in dims_sub(list(range(x.ndim)), reduction_dims):
+            shape[dim] = x.shape[dim]
+        scale = scale.reshape(shape)
+        zero_point = torch.tensor(0)
         return IntQuantizationInfo(spec, scale, zero_point)
 
 
