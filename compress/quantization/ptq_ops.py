@@ -93,7 +93,7 @@ def is_supported_conv2d(spec_a: IntQuantizationSpec, spec_b: IntQuantizationSpec
         and spec_a.signed
         and spec_b.signed
         and conv.stride == (1, 1)
-        and conv.padding == (1, 1)
+        and conv.padding == (0, 0)
         and conv.dilation == (1, 1)
         and conv.groups == 1
     )

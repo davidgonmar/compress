@@ -140,6 +140,7 @@ def triton_quantized_int8_conv2d_batched_kernel(
     pid_w = tl.program_id(2)
     oh_offset = pid_h * BLOCK_H
     ow_offset = pid_w * BLOCK_W
+
     scale_a_val = tl.load(scale_a)
     scale_b_val = tl.load(scale_b)
     zp_a = tl.load(zero_point_a)

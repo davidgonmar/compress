@@ -57,6 +57,9 @@ def main(args):
         simulated=False,
     ).to(device)
 
+    # Compile the simulated quantized conv2d using torch.compile
+    qconv2d_simulated_compiled = torch.compile(qconv2d_simulated)
+
     with torch.no_grad():
         out_fp32 = fp32_conv2d(x)
         out_q_sim = qconv2d_simulated(x)
@@ -77,11 +80,15 @@ def main(args):
     t_non_sim = benchmark_module(
         qconv2d_non_simulated, x, num_iters=num_iters, device=device
     )
+    t_sim_compiled = benchmark_module(
+        qconv2d_simulated_compiled, x, num_iters=num_iters, device=device
+    )
 
     print("\nAverage inference time per forward pass:")
     print(f"  FP32 nn.Conv2d                : {t_fp32:.3f} ms")
     print(f"  Simulated QuantizedConv2d     : {t_sim:.3f} ms")
     print(f"  Non-simulated QuantizedConv2d : {t_non_sim:.3f} ms")
+    print(f"  Compiled Simulated QuantizedConv2d : {t_sim_compiled:.3f} ms")
 
 
 if __name__ == "__main__":
@@ -89,25 +96,25 @@ if __name__ == "__main__":
         description="Benchmark FP32 nn.Conv2d vs. Simulated and Non-simulated QuantizedConv2d"
     )
     parser.add_argument(
-        "--batch-size", type=int, default=128, help="Batch size for input"
+        "--batch-size", type=int, default=32, help="Batch size for input"
     )
     parser.add_argument(
-        "--in-channels", type=int, default=8, help="Number of input channels"
+        "--in-channels", type=int, default=4, help="Number of input channels"
     )
     parser.add_argument(
-        "--out-channels", type=int, default=96, help="Number of output channels"
+        "--out-channels", type=int, default=32, help="Number of output channels"
     )
     parser.add_argument(
-        "--kernel-size", type=int, default=4, help="Kernel size for Conv2d"
+        "--kernel-size", type=int, default=3, help="Kernel size for Conv2d"
     )
     parser.add_argument(
-        "--height", type=int, default=64, help="Height of the input image"
+        "--height", type=int, default=32, help="Height of the input image"
     )
     parser.add_argument(
-        "--width", type=int, default=64, help="Width of the input image"
+        "--width", type=int, default=32, help="Width of the input image"
     )
     parser.add_argument(
-        "--iters", type=int, default=500, help="Number of iterations for timing"
+        "--iters", type=int, default=100, help="Number of iterations for timing"
     )
     parser.add_argument(
         "--cpu", action="store_true", help="Force CPU even if CUDA is available"

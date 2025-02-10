@@ -51,6 +51,9 @@ def main(args):
         simulated=False,
     ).to(device)
 
+    # Compile the simulated quantized linear using torch.compile
+    qlinear_simulated_compiled = torch.compile(qlinear_simulated)
+
     with torch.no_grad():
         out_fp32 = fp32_linear(x)
         out_q_sim = qlinear_simulated(x)
@@ -71,11 +74,15 @@ def main(args):
     t_non_sim = benchmark_module(
         qlinear_non_simulated, x, num_iters=num_iters, device=device
     )
+    t_sim_compiled = benchmark_module(
+        qlinear_simulated_compiled, x, num_iters=num_iters, device=device
+    )
 
     print("\nAverage inference time per forward pass:")
     print(f"  FP32 nn.Linear                : {t_fp32:.3f} ms")
     print(f"  Simulated QuantizedLinear     : {t_sim:.3f} ms")
     print(f"  Non-simulated QuantizedLinear : {t_non_sim:.3f} ms")
+    print(f"  Compiled Simulated QuantizedLinear : {t_sim_compiled:.3f} ms")
 
 
 if __name__ == "__main__":
