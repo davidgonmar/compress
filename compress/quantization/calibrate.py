@@ -3,7 +3,12 @@ from compress.quantization.util import IntQuantizationInfo, IntQuantizationSpec
 from compress.utils import dims_sub
 
 
-def calibrate(x: torch.Tensor, spec: IntQuantizationSpec, symmetric: bool = True):
+def calibrate(
+    x: torch.Tensor,
+    spec: IntQuantizationSpec,
+    symmetric: bool = True,
+    return_z_as_int: bool = True,
+):
     reduction_dims = (
         spec.group_dims if spec.group_dims is not None else list(range(x.ndim))
     )
@@ -19,6 +24,8 @@ def calibrate(x: torch.Tensor, spec: IntQuantizationSpec, symmetric: bool = True
 
         scale = scale.reshape(shape)
         zero_point = zero_point.reshape(shape)
+        if return_z_as_int:
+            zero_point = zero_point.to(torch.int8)
         return IntQuantizationInfo(spec, scale.detach(), zero_point.detach())
     else:
         xmax = x.abs().amax(reduction_dims)
@@ -29,4 +36,6 @@ def calibrate(x: torch.Tensor, spec: IntQuantizationSpec, symmetric: bool = True
             shape[dim] = x.shape[dim]
         scale = scale.reshape(shape)
         zero_point = torch.tensor(0).to(x.device).to(x.dtype)
+        if return_z_as_int:
+            zero_point = zero_point.to(torch.int8)
         return IntQuantizationInfo(spec, scale.detach(), zero_point.detach())
