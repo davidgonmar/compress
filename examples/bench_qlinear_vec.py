@@ -2,7 +2,7 @@ import argparse
 import time
 import torch
 import torch.nn as nn
-from compress.quantization import IntQuantizationSpec, QuantizedLinear
+from compress.quantization import IntQuantizationSpec, QuantizedLinear, calibrate
 
 
 def benchmark_module(module, x, num_warmup=10, num_iters=1000, device="cpu"):
@@ -29,12 +29,13 @@ def main(args):
     weight_spec = IntQuantizationSpec(nbits=8, signed=True)
     input_spec = IntQuantizationSpec(nbits=8, signed=True)
 
-    batch_size = args.batch_size
+    input_spec = calibrate(torch.randn(1, 1), input_spec)
+
     in_features = args.in_features
     out_features = args.out_features
-    x = torch.randn(batch_size, in_features, device=device)
+    x = torch.randn(1, in_features, device=device)
 
-    fp32_linear = nn.Linear(in_features, out_features, bias=True).to(device)
+    fp32_linear = nn.Linear(in_features, out_features, bias=False).to(device)
     fp32_linear.eval()
 
     qlinear_simulated = QuantizedLinear(

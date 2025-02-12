@@ -2,7 +2,7 @@ import argparse
 import time
 import torch
 import torch.nn as nn
-from compress.quantization import IntQuantizationSpec, QuantizedConv2d
+from compress.quantization import IntQuantizationSpec, QuantizedConv2d, calibrate
 
 
 def benchmark_module(module, x, num_warmup=10, num_iters=1000, device="cpu"):
@@ -30,6 +30,8 @@ def main(args):
     weight_spec = IntQuantizationSpec(nbits=8, signed=True)
     input_spec = IntQuantizationSpec(nbits=8, signed=True)
 
+    input_spec = calibrate(torch.randn(1, 1, 1, 1), input_spec)
+
     batch_size = args.batch_size
     in_channels = args.in_channels
     out_channels = args.out_channels
@@ -55,7 +57,7 @@ def main(args):
         input_info_or_spec=input_spec,
         conv2d=fp32_conv2d,
         simulated=False,
-    ).to(device)
+    )
 
     # Compile the simulated quantized conv2d using torch.compile
     qconv2d_simulated_compiled = torch.compile(qconv2d_simulated)
@@ -96,10 +98,10 @@ if __name__ == "__main__":
         description="Benchmark FP32 nn.Conv2d vs. Simulated and Non-simulated QuantizedConv2d"
     )
     parser.add_argument(
-        "--batch-size", type=int, default=32, help="Batch size for input"
+        "--batch-size", type=int, default=128, help="Batch size for input"
     )
     parser.add_argument(
-        "--in-channels", type=int, default=4, help="Number of input channels"
+        "--in-channels", type=int, default=8, help="Number of input channels"
     )
     parser.add_argument(
         "--out-channels", type=int, default=32, help="Number of output channels"
