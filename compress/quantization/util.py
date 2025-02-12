@@ -50,7 +50,7 @@ class IntQuantizationSpec:
 class IntQuantizationInfo(nn.Module):
     spec: IntQuantizationSpec
     scale: torch.Tensor
-    zero_point: torch.Tensor
+    zero_point: torch.Tensor | None
 
     @property
     def nbits(self):
@@ -76,12 +76,19 @@ class IntQuantizationInfo(nn.Module):
         return self.spec.get_dtype()
 
     def __init__(
-        self, spec: IntQuantizationSpec, scale: torch.Tensor, zero_point: torch.Tensor
+        self,
+        spec: IntQuantizationSpec,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor | None = None,
     ):
         super().__init__()
         self.spec = spec
         self.scale = nn.Parameter(scale, requires_grad=False)
-        self.zero_point = nn.Parameter(zero_point, requires_grad=False)
+        self.zero_point = (
+            nn.Parameter(zero_point, requires_grad=False)
+            if zero_point is not None
+            else None
+        )
 
 
 class STERound(torch.autograd.Function):

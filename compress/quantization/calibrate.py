@@ -35,7 +35,4 @@ def calibrate(
         for dim in dims_sub(list(range(x.ndim)), reduction_dims):
             shape[dim] = x.shape[dim]
         scale = scale.reshape(shape)
-        zero_point = torch.tensor(0).to(x.device).to(x.dtype)
-        if return_z_as_int:
-            zero_point = zero_point.to(torch.int8)
-        return IntQuantizationInfo(spec, scale.detach(), zero_point.detach())
+        return IntQuantizationInfo(spec, scale.detach(), None)

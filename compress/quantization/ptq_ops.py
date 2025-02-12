@@ -10,6 +10,11 @@ from .kernels import triton_quantized_int8_matmul, triton_quantized_int8_conv2d
 
 
 def quantize(x: torch.Tensor, info: IntQuantizationInfo):
+    if info.zero_point is None:
+        return torch.clamp(ste_round(x / info.scale), info.qmin, info.qmax).to(
+            info.get_dtype()
+        )
+
     return torch.clamp(
         ste_round(x / info.scale + info.zero_point) - info.zero_point,
         info.qmin,
@@ -33,6 +38,10 @@ def torch_simulated_int8_matmul(
     zero_point_a: int,
     zero_point_b: int,
 ):
+    if zero_point_a is None:
+        zero_point_a = torch.tensor(0).to(a.device)
+    if zero_point_b is None:
+        zero_point_b = torch.tensor(0).to(b.device)
     a, b, zero_point_a, zero_point_b = (
         a.to(torch.float32),
         b.to(torch.float32),
@@ -55,6 +64,10 @@ def torch_simulated_int8_conv2d(
     dilation,
     groups,
 ):
+    if zero_point_a is None:
+        zero_point_a = torch.tensor(0).to(input.device)
+    if zero_point_b is None:
+        zero_point_b = torch.tensor(0).to(input.device)
     input, weight, zero_point_a, zero_point_b = (
         input.to(torch.float32),
         weight.to(torch.float32),
@@ -128,9 +141,11 @@ class QuantizedLinear(nn.Linear):
             self.input_spec = input_info_or_spec
             self.online_quant = True
         self.weight = nn.Parameter(
-            quantize(linear.weight, self.weight_info), requires_grad=False
+            quantize(linear.weight.detach(), self.weight_info), requires_grad=False
         )
-        self.bias = nn.Parameter(linear.bias, requires_grad=False) if bias else None
+        self.bias = (
+            nn.Parameter(linear.bias.detach(), requires_grad=False) if bias else None
+        )
 
     def quantize_input(self, x: torch.Tensor):
         if self.online_quant:
@@ -249,6 +264,8 @@ class QuantizedConv2d(nn.Conv2d):
                 dilation=self.dilation,
                 groups=self.groups,
             )
+            if self.bias is not None:
+                conv2dres += self.bias.reshape(1, -1, 1, 1)
         else:
             conv2dres = triton_quantized_int8_conv2d(
                 x,
@@ -257,13 +274,12 @@ class QuantizedConv2d(nn.Conv2d):
                 scale_b=self.weight_info.scale,
                 zero_point_a=input_info.zero_point,
                 zero_point_b=self.weight_info.zero_point,
-                stride=self.stride,
                 padding=self.padding,
+                stride=self.stride,
                 dilation=self.dilation,
                 groups=self.groups,
+                bias=self.bias,
             )
-        if self.bias is not None:
-            conv2dres += self.bias.reshape(1, -1, 1, 1)
         return conv2dres
 
     def __repr__(self):

@@ -9,11 +9,12 @@ from compress.quantization.qat_ops import (
     QATLinear,
 )
 
-from compress.quantization.util import IntQuantizationSpec
+from compress.quantization.util import IntQuantizationSpec, IntQuantizationInfo  # noqa
 from compress.common import gather_submodules, default_should_do
 from torch import nn
 from tqdm import tqdm
 import torch
+import gc
 
 
 def to_quantized_online(
@@ -47,7 +48,14 @@ def to_quantized_online(
             if isinstance(module, nn.Linear)
             else QuantizedConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
         )
+        modules_to_replace[modules_to_replace.index((name, module))] = None
+        del module
+        gc.collect()
+        torch.cuda.empty_cache()
 
+    del modules_to_replace
+    gc.collect()
+    torch.cuda.empty_cache()
     return model
 
 
