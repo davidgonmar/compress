@@ -143,3 +143,5 @@ a.py
 lightning_logs/
 
 *.pth
+
+.pkl_memoize_py3
