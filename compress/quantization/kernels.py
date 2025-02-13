@@ -2,8 +2,11 @@ import torch
 
 try:
     from ._kernels import triton_quantized_int8_matmul, triton_quantized_int8_conv2d
+
+    TRITON_AVAILABLE = True
 except ImportError as e:
     print(e)
+    TRITON_AVAILABLE = False
 
     def triton_quantized_int8_matmul(
         A: torch.Tensor,

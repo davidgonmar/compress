@@ -7,6 +7,8 @@ from compress.quantization.ptq_ops import (
 from compress.quantization.qat_ops import (
     QATConv2d,
     QATLinear,
+    LSQConv2d,
+    LSQLinear,
 )
 
 from compress.quantization.util import IntQuantizationSpec, IntQuantizationInfo  # noqa
@@ -60,6 +62,8 @@ def to_quantized_online(
 
 
 def get_activations(model, data_loader):
+    if isinstance(data_loader, torch.Tensor):
+        data_loader = [data_loader]
     activations = {}
     hooks = []
     for _, module in gather_submodules(model, should_do=default_should_do, prefix=""):
@@ -67,7 +71,7 @@ def get_activations(model, data_loader):
 
         def hook_fn(activations):
             def _hook_fn(module, input, output):
-                activations.append(output.detach().cpu())
+                activations.append(output.detach())
 
             return _hook_fn
 
@@ -177,6 +181,80 @@ def prepare_for_qat(
     return model
 
 
+def prepare_for_qat_lsq(
+    model: nn.Module,
+    input_specs: IntQuantizationSpec,
+    weight_specs: IntQuantizationSpec,
+    data_batch: torch.Tensor,
+    inplace=True,
+    **kwargs,
+):
+    activations = get_activations(model, data_batch)
+    modules_to_replace = gather_submodules(
+        model, should_do=default_should_do, prefix=""
+    )
+    if not inplace:
+        model_initializer = kwargs.pop("model_initializer", None)
+        assert (
+            model_initializer is not None
+        ), "model_initializer must be provided if inplace=False"
+        model_ = model_initializer()
+        model_.load_state_dict(model.state_dict())
+        model = model_
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            LSQLinear(
+                weight_specs["linear"],
+                input_specs["linear"],
+                module,
+                activations[module],
+            )
+            if isinstance(module, nn.Linear)
+            else LSQConv2d(
+                weight_specs["conv2d"],
+                input_specs["conv2d"],
+                module,
+                activations[module],
+            ),
+        )
+
+    return model
+
+
+def merge_qat_lsq_into_offline_quantized_model(model: nn.Module, inplace=True):
+    modules_to_replace = gather_submodules(
+        model, should_do=default_should_do, prefix=""
+    )
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            module.to_quant_linear()
+            if hasattr(module, "to_quant_linear")
+            else module.to_quant_conv2d()
+            if hasattr(module, "to_quant_conv2d")
+            else module,
+        )
+
+    return model
+
+
 def merge_qat_model(model: nn.Module, inplace=True):
     modules_to_replace = gather_submodules(
         model, should_do=default_should_do, prefix=""
@@ -193,7 +271,11 @@ def merge_qat_model(model: nn.Module, inplace=True):
         setattr(
             parent_module,
             attr_name,
-            module.to_linear() if isinstance(module, QATLinear) else module.to_conv2d(),
+            module.to_linear()
+            if hasattr(module, "to_linear")
+            else module.to_conv2d()
+            if hasattr(module, "to_conv2d")
+            else module,
         )
 
     return model

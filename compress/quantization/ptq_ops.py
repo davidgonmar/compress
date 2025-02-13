@@ -6,7 +6,11 @@ from compress.quantization.util import (
     ste_round,
 )
 from compress.quantization.calibrate import calibrate
-from .kernels import triton_quantized_int8_matmul, triton_quantized_int8_conv2d
+from .kernels import (
+    triton_quantized_int8_matmul,
+    triton_quantized_int8_conv2d,
+    TRITON_AVAILABLE,
+)
 
 
 def quantize(x: torch.Tensor, info: IntQuantizationInfo):
@@ -23,6 +27,9 @@ def quantize(x: torch.Tensor, info: IntQuantizationInfo):
 
 
 def dequantize(x: torch.Tensor, info: IntQuantizationInfo):
+    if info.zero_point is None:
+        return info.scale * x
+
     return info.scale * (x - info.zero_point)
 
 
@@ -87,6 +94,8 @@ def torch_simulated_int8_conv2d(
 
 
 def is_supported_linear(spec_a: IntQuantizationSpec, spec_b: IntQuantizationSpec):
+    if not TRITON_AVAILABLE:
+        return False
     if isinstance(spec_a, IntQuantizationInfo):
         spec_a = spec_a.spec
     if isinstance(spec_b, IntQuantizationInfo):
@@ -96,6 +105,8 @@ def is_supported_linear(spec_a: IntQuantizationSpec, spec_b: IntQuantizationSpec
 
 
 def is_supported_conv2d(spec_a: IntQuantizationSpec, spec_b: IntQuantizationSpec, conv):
+    if not TRITON_AVAILABLE:
+        return False
     if isinstance(spec_a, IntQuantizationInfo):
         spec_a = spec_a.spec
     if isinstance(spec_b, IntQuantizationInfo):

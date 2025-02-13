@@ -8,10 +8,20 @@ from tqdm import tqdm
 from compress.quantization import (
     IntQuantizationSpec,
     prepare_for_qat,
+    prepare_for_qat_lsq,
     to_quantized_online,
     merge_qat_model,
+    merge_qat_lsq_into_offline_quantized_model,
 )
 import torchvision
+import argparse
+
+
+parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
+parser.add_argument(
+    "--method", default="qat", type=str, help="method to use"
+)  # qat, lsq
+args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(
@@ -47,14 +57,30 @@ specs = {
     "linear": IntQuantizationSpec(nbits=8, signed=True),
     "conv2d": IntQuantizationSpec(nbits=8, signed=True),
 }
-model = prepare_for_qat(model, input_specs=specs, weight_specs=specs)  # W8A8
+if args.method == "qat":
+    model = prepare_for_qat(model, input_specs=specs, weight_specs=specs)  # W8A8
+elif args.method == "lsq":
+    model = prepare_for_qat_lsq(
+        model,
+        input_specs=specs,
+        weight_specs=specs,
+        data_batch=list(
+            next(
+                iter(
+                    torch.utils.data.DataLoader(
+                        train_dataset, batch_size=512, shuffle=True
+                    )
+                )
+            )
+        )[0].to(device),
+    )  # W8A8
 
 criterion = nn.CrossEntropyLoss()
 
-optimizer = optim.AdamW(model.parameters(), lr=0.001)
+optimizer = optim.AdamW(model.parameters(), lr=0.0001)
 scheduler = StepLR(optimizer, step_size=8, gamma=0.1)
 
-for epoch in range(30):
+for epoch in range(100):
     model.train()
     train_loss_acc = 0.0
     for images, labels in tqdm(
@@ -88,24 +114,51 @@ for epoch in range(30):
 
     accuracy = 100 * correct / total
     print(f"Epoch {epoch + 1}, Accuracy: {accuracy:.2f}%")
-    torch.save(merge_qat_model(model, inplace=False), "qat_resnet.pth")
 
-    model_qat = to_quantized_online(
-        merge_qat_model(model, inplace=False), input_specs=specs, weight_specs=specs
-    )  # W8A8
+    if args.method == "ptq":
+        model_requantized = to_quantized_online(
+            merge_qat_model(model, inplace=False), input_specs=specs, weight_specs=specs
+        )  # W8A8
 
-    model_qat.eval()
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for images, labels in tqdm(
-            val_loader, desc=f"Epoch {epoch + 1} - Validation", leave=False
-        ):
-            images, labels = images.to(device), labels.to(device)
-            outputs = model_qat(images)
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+        model_requantized.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for images, labels in tqdm(
+                val_loader, desc=f"Epoch {epoch + 1} - Validation", leave=False
+            ):
+                images, labels = images.to(device), labels.to(device)
+                outputs = model_requantized(images)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
 
-    accuracy = 100 * correct / total
-    print(f"Epoch {epoch + 1}, Accuracyaaa: {accuracy:.2f}%")
+        accuracy = 100 * correct / total
+        print(f"Epoch {epoch + 1}, Requantized Accuracy: {accuracy:.2f}%")
+        torch.save(merge_qat_model(model, inplace=False), "merged_qat_resnet18.pth")
+        torch.save(model, "qat_resnet18.pth")
+
+    elif args.method == "lsq":
+        model_requantized = merge_qat_lsq_into_offline_quantized_model(
+            model, inplace=False
+        )
+
+        model_requantized.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for images, labels in tqdm(
+                val_loader, desc=f"Epoch {epoch + 1} - Validation", leave=False
+            ):
+                images, labels = images.to(device), labels.to(device)
+                outputs = model_requantized(images)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+        accuracy = 100 * correct / total
+
+        print(f"Epoch {epoch + 1}, Requantized into offline Accuracy: {accuracy:.2f}%")
+
+        torch.save(model_requantized, "merged_lsq_into_offline_resnet18.pth")
+        torch.save(model, "lsq_resnet18.pth")
