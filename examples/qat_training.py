@@ -21,6 +21,14 @@ parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
 parser.add_argument(
     "--method", default="qat", type=str, help="method to use"
 )  # qat, lsq
+parser.add_argument(
+    "--nbits", default=4, type=int, help="number of bits for quantization"
+)
+parser.add_argument(
+    "--leave_last_layer_8_bits",
+    type=lambda x: (str(x).lower() == "true"),
+    default=True,
+)
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,8 +62,8 @@ del torch_weights["fc.bias"]
 # do not load weights for the final layer (classification layer)
 model.load_state_dict(torch_weights, strict=False)
 specs = {
-    "linear": IntQuantizationSpec(nbits=8, signed=True),
-    "conv2d": IntQuantizationSpec(nbits=8, signed=True),
+    "linear": IntQuantizationSpec(nbits=args.nbits, signed=True),
+    "conv2d": IntQuantizationSpec(nbits=args.nbits, signed=True),
 }
 if args.method == "qat":
     model = prepare_for_qat(model, input_specs=specs, weight_specs=specs)  # W8A8
@@ -115,7 +123,7 @@ for epoch in range(100):
     accuracy = 100 * correct / total
     print(f"Epoch {epoch + 1}, Accuracy: {accuracy:.2f}%")
 
-    if args.method == "ptq":
+    if args.method == "qat":
         model_requantized = to_quantized_online(
             merge_qat_model(model, inplace=False), input_specs=specs, weight_specs=specs
         )  # W8A8

@@ -9,7 +9,11 @@ from compress.quantization.qat_ops import (
     QATLinear,
     LSQConv2d,
     LSQLinear,
+    quantize,
+    fake_quantize,
 )
+
+import torch.nn.functional as F
 
 from compress.quantization.util import IntQuantizationSpec, IntQuantizationInfo  # noqa
 from compress.common import gather_submodules, default_should_do
@@ -276,6 +280,37 @@ def merge_qat_model(model: nn.Module, inplace=True):
             else module.to_conv2d()
             if hasattr(module, "to_conv2d")
             else module,
+        )
+
+    return model
+
+
+def to_quantized_adaround(
+    model: nn.Module,
+    input_specs: IntQuantizationSpec,
+    weight_specs: IntQuantizationSpec,
+    data_loader,
+    inplace=True,
+    should_do=default_should_do,
+    **kwargs,
+):
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        # TODO: Implement Adaround
+        setattr(
+            parent_module,
+            attr_name,
+            QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
+            if isinstance(module, nn.Linear)
+            else QuantizedConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
         )
 
     return model

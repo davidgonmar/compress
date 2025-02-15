@@ -29,9 +29,11 @@ class IntQuantizationSpec:
             (8, True): torch.int8,
             (16, False): torch.uint16,
             (16, True): torch.int16,
-        }[(self.nbits, self.signed)]
+        }.get((self.nbits, self.signed), torch.float32)
 
     def from_dtype(dtype: torch.dtype | str):
+        if dtype in ["int2, int4"]:
+            return IntQuantizationSpec(2 if dtype == "int2" else 4, True)
         if isinstance(dtype, str):
             dtype = torch.dtype(dtype)
         return {
