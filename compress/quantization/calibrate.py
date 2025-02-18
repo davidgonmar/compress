@@ -29,7 +29,7 @@ def calibrate(
         return IntQuantizationInfo(spec, scale.detach(), zero_point.detach())
     else:
         assert spec.signed is True
-        xmax = x.abs().amax(reduction_dims) 
+        xmax = x.abs().amax(reduction_dims)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         shape = [1] * x.ndim
 

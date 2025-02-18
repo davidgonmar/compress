@@ -20,7 +20,7 @@ def quantize(x: torch.Tensor, info: IntQuantizationInfo):
         )
 
     return torch.clamp(
-        ste_round(x / info.scale + info.zero_point) - info.zero_point,
+        ste_round(x / info.scale + info.zero_point),
         info.qmin,
         info.qmax,
     ).to(info.get_dtype())
