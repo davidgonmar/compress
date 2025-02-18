@@ -7,6 +7,7 @@ from compress.quantization import (
     to_quantized_offline,
     get_activations,
     to_quantized_adaround,
+    to_quantized_kmeans,
 )
 import argparse
 import copy
@@ -18,6 +19,7 @@ parser.add_argument("--save_path", type=str, default="qat_resnet.pth")
 parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--offline", action="store_true")
 parser.add_argument("--adaround", action="store_true")
+parser.add_argument("--kmeans", action="store_true")
 
 args = parser.parse_args()
 
@@ -65,7 +67,7 @@ loss = evaluate(model, test_loader, criterion, device)
 print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
 
 
-bit_widths = [8]
+bit_widths = [4, 8]
 signed_options = [True]
 
 train_dataset = datasets.CIFAR10(
@@ -123,6 +125,14 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
             inplace=False,
             model_initializer=lambda: copy.deepcopy(model),
             activations=activations,
+        )
+    elif args.kmeans:
+        quanted = to_quantized_kmeans(
+            model,
+            inpspecs,
+            wspecs,
+            inplace=False,
+            model_initializer=lambda: copy.deepcopy(model),
         )
     else:
         quanted = to_quantized_online(

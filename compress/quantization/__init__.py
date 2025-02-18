@@ -3,6 +3,8 @@ from compress.quantization.calibrate import calibrate
 from compress.quantization.ptq_ops import (
     QuantizedLinear,
     QuantizedConv2d,
+    KMeansQuantizedConv2d,
+    KMeansQuantizedLinear,
 )
 from compress.quantization.qat_ops import (
     QATConv2d,
@@ -412,6 +414,36 @@ def to_quantized_adaround(
             QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
             if isinstance(module, nn.Linear)
             else QuantizedConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
+        )
+
+    return model
+
+
+def to_quantized_kmeans(
+    model: nn.Module,
+    input_specs: IntQuantizationSpec,
+    weight_specs: IntQuantizationSpec,
+    inplace=True,
+    should_do=default_should_do,
+    **kwargs,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            KMeansQuantizedLinear(module, weight_specs["linear"], input_specs["linear"])
+            if isinstance(module, nn.Linear)
+            else KMeansQuantizedConv2d(
+                module, weight_specs["conv2d"], input_specs["conv2d"]
+            ),
         )
 
     return model

@@ -297,6 +297,117 @@ class QuantizedConv2d(nn.Conv2d):
         return f"QuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
 
 
+# ================================== CODEBOOK QUANTIZATION ==================================
+
+
+class KMeansQuantizer:
+    def _get_quantized_codebook(self, x: torch.Tensor, nbits: int, signed: bool):
+        from sklearn.cluster import KMeans
+
+        kmeans = KMeans(n_clusters=2**nbits, random_state=0, n_init="auto").fit(
+            x.cpu().detach().numpy().reshape(-1, 1)
+        )
+        codebook = torch.tensor(kmeans.cluster_centers_).to(x.device).reshape(-1)
+        return codebook
+
+    def __init__(self, tensor: torch.Tensor, nbits: int, signed: bool):
+        super().__init__()
+        self.codebook = nn.Parameter(
+            self._get_quantized_codebook(tensor, nbits, signed), requires_grad=False
+        )
+        self.nbits = nbits
+        self.signed = signed
+
+    def quantize(self, x: torch.Tensor):
+        arange = torch.arange(2**self.nbits).to(x.device)
+        best_idxs = torch.argmin(
+            (x.reshape(-1, 1) - self.codebook.reshape(1, -1)) ** 2, dim=1
+        )
+        ret = arange[best_idxs]
+        ret = ret.reshape(x.shape)
+        return ret
+
+    def dequantize(self, x: torch.Tensor):
+        return self.codebook[x]
+
+
+class KMeansQuantizedLinear(nn.Linear):
+    def __init__(
+        self,
+        linear: nn.Linear,
+        weight_spec: IntQuantizationSpec,
+        input_spec: IntQuantizationSpec | None = None,
+    ):
+        super().__init__(
+            linear.in_features, linear.out_features, linear.bias is not None
+        )
+        self.weight_spec = weight_spec
+        self.input_spec = input_spec
+        self.weight_quantizer = KMeansQuantizer(
+            linear.weight, weight_spec.nbits, weight_spec.signed
+        )
+        self.weight = nn.Parameter(
+            self.weight_quantizer.quantize(linear.weight), requires_grad=False
+        )
+        self.bias = (
+            nn.Parameter(linear.bias, requires_grad=False)
+            if linear.bias is not None
+            else None
+        )
+
+    def forward(self, x: torch.Tensor):
+        w = self.weight_quantizer.dequantize(self.weight)
+        if self.input_spec is not None:
+            x = quantize(x, calibrate(x, self.input_spec)).to(torch.float32)
+        return nn.functional.linear(x, w, self.bias)
+
+    def __repr__(self):
+        return f"KMeansQuantizedLinear({self.in_features}, {self.out_features}, {self.bias})"
+
+
+class KMeansQuantizedConv2d(nn.Conv2d):
+    def __init__(
+        self,
+        conv2d: nn.Conv2d,
+        weight_spec: IntQuantizationSpec,
+        input_spec: IntQuantizationSpec | None = None,
+    ):
+        super().__init__(
+            conv2d.in_channels,
+            conv2d.out_channels,
+            conv2d.kernel_size,
+            conv2d.stride,
+            conv2d.padding,
+            conv2d.dilation,
+            conv2d.groups,
+            conv2d.bias is not None,
+        )
+        self.weight_spec = weight_spec
+        self.input_spec = input_spec
+        self.weight_quantizer = KMeansQuantizer(
+            conv2d.weight, weight_spec.nbits, weight_spec.signed
+        )
+        self.weight = nn.Parameter(
+            self.weight_quantizer.quantize(conv2d.weight), requires_grad=False
+        )
+        self.bias = (
+            nn.Parameter(conv2d.bias, requires_grad=False)
+            if conv2d.bias is not None
+            else None
+        )
+
+    def forward(self, x: torch.Tensor):
+        w = self.weight_quantizer.dequantize(self.weight)
+        if self.input_spec is not None:
+            x = quantize(x, calibrate(x, self.input_spec)).to(torch.float32)
+        return nn.functional.conv2d(
+            x, w, self.bias, self.stride, self.padding, self.dilation, self.groups
+        )
+
+    def __repr__(self):
+        return f"KMeansQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
+
+
 if __name__ == "__main__":
     linear = nn.Linear(10, 10).to("cuda")
     qlinear = QuantizedLinear(
