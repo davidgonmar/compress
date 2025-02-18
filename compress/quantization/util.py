@@ -105,3 +105,17 @@ class STERound(torch.autograd.Function):
 
 def ste_round(x):
     return STERound.apply(x)
+
+
+class STEFloor(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return torch.floor(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
+
+def ste_floor(x):
+    return STEFloor.apply(x)

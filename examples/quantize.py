@@ -65,7 +65,7 @@ loss = evaluate(model, test_loader, criterion, device)
 print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
 
 
-bit_widths = [4, 8]
+bit_widths = [8]
 signed_options = [True]
 
 train_dataset = datasets.CIFAR10(
@@ -112,7 +112,7 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
             model,
             inpspecs,
             wspecs,
-            data_loader=DataLoader(train_dataset, batch_size=512, shuffle=True),
+            data_loader=dataloader,
             inplace=False,
         )
     elif args.offline:

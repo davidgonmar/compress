@@ -82,6 +82,8 @@ elif args.method == "lsq":
             )
         )[0].to(device),
     )  # W8A8
+elif args.method == "none":
+    pass
 
 criterion = nn.CrossEntropyLoss()
 
@@ -170,3 +172,6 @@ for epoch in range(100):
 
         torch.save(model_requantized, "merged_lsq_into_offline_resnet18.pth")
         torch.save(model, "lsq_resnet18.pth")
+
+    elif args.method == "none":
+        torch.save(model, "resnet18.pth")
