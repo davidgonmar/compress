@@ -28,8 +28,9 @@ def calibrate(
             zero_point = zero_point.to(torch.int8)
         return IntQuantizationInfo(spec, scale.detach(), zero_point.detach())
     else:
-        xmax = x.abs().amax(reduction_dims)
-        scale = xmax / spec.qmax
+        assert spec.signed is True
+        xmax = x.abs().amax(reduction_dims) 
+        scale = 2 * xmax / (spec.qmax - spec.qmin)
         shape = [1] * x.ndim
 
         for dim in dims_sub(list(range(x.ndim)), reduction_dims):
