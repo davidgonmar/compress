@@ -304,14 +304,27 @@ class KMeansQuantizer:
     def _get_quantized_codebook(self, x: torch.Tensor, nbits: int, signed: bool):
         from sklearn.cluster import KMeans
 
-        kmeans = KMeans(n_clusters=2**nbits, random_state=0, n_init="auto").fit(
-            x.cpu().detach().numpy().reshape(-1, 1)
-        )
+        if self.init_uniform:
+            amin, amax = x.min(), x.max()
+            centroids = (
+                torch.linspace(amin, amax, 2**nbits)
+                .cpu()
+                .detach()
+                .numpy()
+                .reshape(-1, 1)
+            )
+            kmeans = KMeans(n_clusters=2**nbits, init=centroids, n_init=1)
+        else:
+            kmeans = KMeans(n_clusters=2**nbits, n_init="auto")
+        kmeans.fit(x.cpu().detach().numpy().reshape(-1, 1))
         codebook = torch.tensor(kmeans.cluster_centers_).to(x.device).reshape(-1)
         return codebook
 
-    def __init__(self, tensor: torch.Tensor, nbits: int, signed: bool):
+    def __init__(
+        self, tensor: torch.Tensor, nbits: int, signed: bool, init_uniform: bool = False
+    ):
         super().__init__()
+        self.init_uniform = init_uniform
         self.codebook = nn.Parameter(
             self._get_quantized_codebook(tensor, nbits, signed), requires_grad=False
         )
@@ -331,12 +344,23 @@ class KMeansQuantizer:
         return self.codebook[x]
 
 
+def get_bias_correction_conv(kernel: torch.Tensor, quant_kernel):
+    return kernel.float().mean(dim=(1, 2, 3)) - (
+        quant_kernel.float().mean(dim=(1, 2, 3))
+    )
+
+
+def get_bias_correction_linear(kernel: torch.Tensor, quant_kernel):
+    return kernel.float().mean(dim=1) - quant_kernel.float().mean(dim=1)
+
+
 class KMeansQuantizedLinear(nn.Linear):
     def __init__(
         self,
         linear: nn.Linear,
         weight_spec: IntQuantizationSpec,
         input_spec: IntQuantizationSpec | None = None,
+        correct_bias: bool = False,
     ):
         super().__init__(
             linear.in_features, linear.out_features, linear.bias is not None
@@ -355,6 +379,9 @@ class KMeansQuantizedLinear(nn.Linear):
             else None
         )
 
+        if self.bias is not None and correct_bias:
+            self.bias.data += get_bias_correction_linear(linear.weight, self.weight)
+
     def forward(self, x: torch.Tensor):
         w = self.weight_quantizer.dequantize(self.weight)
         if self.input_spec is not None:
@@ -371,6 +398,7 @@ class KMeansQuantizedConv2d(nn.Conv2d):
         conv2d: nn.Conv2d,
         weight_spec: IntQuantizationSpec,
         input_spec: IntQuantizationSpec | None = None,
+        correct_bias: bool = False,
     ):
         super().__init__(
             conv2d.in_channels,
@@ -395,6 +423,9 @@ class KMeansQuantizedConv2d(nn.Conv2d):
             if conv2d.bias is not None
             else None
         )
+
+        if self.bias is not None and correct_bias:
+            self.bias.data += get_bias_correction_conv(conv2d.weight, self.weight)
 
     def forward(self, x: torch.Tensor):
         w = self.weight_quantizer.dequantize(self.weight)
