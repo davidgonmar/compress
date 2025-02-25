@@ -33,7 +33,7 @@ def evaluate(model, loader, criterion, device):
     return loss / len(loader.dataset), correct / len(loader.dataset)
 
 
-model = torch.load(args.save_path)
+model = torch.load(args.save_path, weights_only=False)
 
 transform = transforms.Compose(
     [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]

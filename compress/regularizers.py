@@ -145,6 +145,10 @@ def singular_values_scad(
     return scad(singular_values, lambda_val, a_val, reduction)
 
 
+def nuclear_norm_regularizer(matrix: torch.Tensor) -> torch.Tensor:
+    return torch.norm(matrix, p="nuc")
+
+
 # Pairs (fn, sgn) where sgn is -1 if the metric should be minimized, 1 if maximized
 _regularizers = {
     "entropy": lambda **kwargs: (lambda x, **kwargs: singular_values_entropy(x), -1.0),
@@ -165,6 +169,10 @@ _regularizers = {
             x, kwargs.get("normalize", DEFAULT_NORMALIZE)
         ),
         -1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else 1.0,
+    ),
+    "nuclear_norm": lambda **kwargs: (
+        lambda x, **kwargs: nuclear_norm_regularizer(x),
+        1.0,
     ),
     "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
 }

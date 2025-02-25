@@ -129,6 +129,7 @@ regularizer_kwargs = {
     "hoyer_sparsity": {"normalize": True},
     "scad": {"lambda_val": 0.1, "a_val": 3.7},
     "squared_hoyer_sparsity": {"normalize": True},
+    "nuclear_norm": {},
     "noop": {},
 }
 
