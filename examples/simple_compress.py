@@ -10,6 +10,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")
 parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--dataset", type=str, default="mnist")
+parser.add_argument("--keep_last_layer", action="store_true")
 args = parser.parse_args()
 
 
@@ -58,12 +59,21 @@ print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
 
 energies_to_remove = [0, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
 energies_to_keep = [1 - energy for energy in energies_to_remove]
+
+
+def should_do(module, name):
+    return isinstance(module, torch.nn.Conv2d) or (
+        isinstance(module, torch.nn.Linear) and (not args.keep_last_layer)
+    )
+
+
 for energy_keep, energy_remove in zip(energies_to_keep, energies_to_remove):
     model_lr = to_low_rank(
         model,
         energy_to_keep=energy_keep,
         inplace=False,
         model_initializer=lambda: copy.deepcopy(model),
+        should_do=should_do,
     )
     test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
     print(
@@ -79,6 +89,7 @@ for ratio in ratios:
         ratio_to_keep=ratio,
         inplace=False,
         model_initializer=lambda: copy.deepcopy(model),
+        should_do=should_do,
     )
     test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
     print(f"Ratio: {ratio}, Test Loss: {test_loss}, Test Accuracy: {test_acc}")

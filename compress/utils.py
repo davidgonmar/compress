@@ -5,6 +5,8 @@ def extract_weights(
     keywords={"weight"},
     ret_module=False,
 ):
+    if isinstance(keywords, str):
+        keywords = {keywords}
     weights = []
     for name, module in model.named_modules():
         if cls_list is None or isinstance(module, tuple(cls_list)):
