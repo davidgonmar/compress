@@ -21,10 +21,12 @@ def maybe_print_model(model):
 
 
 def evaluate(model, loader, criterion, device):
+    import time
     model.eval()
     loss = 0.0
     correct = 0
     with torch.no_grad():
+        start = time.time()
         for batch in loader:
             x, y = batch
             x, y = x.to(device), y.to(device)
@@ -32,7 +34,9 @@ def evaluate(model, loader, criterion, device):
             y_hat = model(x)
             loss += criterion(y_hat, y).item() * x.size(0)
             correct += (y_hat.argmax(dim=-1) == y).sum().item()
-    return loss / len(loader.dataset), correct / len(loader.dataset)
+        torch.cuda.synchronize()
+        elapsed = time.time() - start
+    return loss / len(loader.dataset), correct / len(loader.dataset), elapsed
 
 
 model = torch.load(args.save_path, weights_only=False)
@@ -54,9 +58,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 criterion = torch.nn.CrossEntropyLoss()
-loss = evaluate(model, test_loader, criterion, device)
-
-print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
+loss0, loss1, elapsed= evaluate(model, test_loader, criterion, device)
+n_params = sum(p.numel() for p in model.parameters())
+print(f"Test Loss: {loss0}, Test Accuracy: {loss1}, Number of Parameters: {n_params}, Elapsed Time: {elapsed}")
 
 energies_to_remove = [0, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
 energies_to_keep = [1 - energy for energy in energies_to_remove]
@@ -78,6 +82,7 @@ for ratio in ratios:
         model_initializer=lambda: copy.deepcopy(model),
         should_do=should_do,
     )
-    test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
-    print(f"Ratio: {ratio}, Test Loss: {test_loss}, Test Accuracy: {test_acc}")
+    n_params = sum(p.numel() for p in model_lr.parameters())
+    test_loss, test_acc, elapsed = evaluate(model_lr, test_loader, criterion, device)
+    print(f"Ratio: {ratio:.4f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Global: {args.do_global}")
     maybe_print_model(model_lr)
