@@ -149,6 +149,24 @@ def nuclear_norm_regularizer(matrix: torch.Tensor) -> torch.Tensor:
     return torch.norm(matrix, p="nuc")
 
 
+def approximated_hoyer_sparsity_regularizer(
+    matrix: torch.Tensor, normalize: bool
+) -> torch.Tensor:
+    # Approximation of the Hoyer sparsity metric without computing the singular values
+    # the schatten-2 norm is equivalent to the frobenius norm
+    # the schatten-1 norm is approximated by sum of row norms
+
+    # So this seems to induce low rank, but idk why (found it by mistake)
+    nom = torch.norm(matrix, p=1)
+    denom = torch.norm(matrix, p=2)
+
+    return (
+        (math.sqrt(matrix.shape[0]) - (nom / denom)) / (math.sqrt(matrix.shape[0]) - 1)
+        if normalize
+        else nom / denom
+    )
+
+
 # Pairs (fn, sgn) where sgn is -1 if the metric should be minimized, 1 if maximized
 _regularizers = {
     "entropy": lambda **kwargs: (lambda x, **kwargs: singular_values_entropy(x), -1.0),
@@ -173,6 +191,12 @@ _regularizers = {
     "nuclear_norm": lambda **kwargs: (
         lambda x, **kwargs: nuclear_norm_regularizer(x),
         1.0,
+    ),
+    "approximated_hoyer_sparsity": lambda **kwargs: (
+        lambda x, **kwargs: approximated_hoyer_sparsity_regularizer(
+            x, kwargs.get("normalize", DEFAULT_NORMALIZE)
+        ),
+        1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else -1.0,
     ),
     "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
 }
