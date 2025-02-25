@@ -116,7 +116,7 @@ def plot_singular_values(model: nn.Module, should_do: Callable = default_should_
         U, S, V = torch.svd(reshaped_weight)
 
         # nornmalize singular values
-        S = S / torch.norm(S, p=2)
+        S = S / S[0]
 
         axes[i].plot(S.cpu().numpy())
         axes[i].set_xlabel("Singular value index")

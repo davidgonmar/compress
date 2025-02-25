@@ -36,3 +36,5 @@ python -m examples.simple_train  --model=resnet18 --dataset=cifar10 --finetune
 
 
 python -m examples.simple_train --sv_regularizer=approximated_hoyer_sparsity --regularizer_scheduler=exp --model=resnet18 --dataset=cifar10 --finetune --regularizer_weight=0.1 --epochs=1000
+
+python -m examples.simple_train --sv_regularizer=nuclear_norm --regularizer_scheduler=exp --model=resnet18 --dataset=cifar10 --finetune --regularizer_weight=0.002

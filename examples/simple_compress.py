@@ -22,6 +22,7 @@ def maybe_print_model(model):
 
 def evaluate(model, loader, criterion, device):
     import time
+
     model.eval()
     loss = 0.0
     correct = 0
@@ -58,9 +59,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 criterion = torch.nn.CrossEntropyLoss()
-loss0, loss1, elapsed= evaluate(model, test_loader, criterion, device)
+loss0, loss1, elapsed = evaluate(model, test_loader, criterion, device)
 n_params = sum(p.numel() for p in model.parameters())
-print(f"Test Loss: {loss0}, Test Accuracy: {loss1}, Number of Parameters: {n_params}, Elapsed Time: {elapsed}")
+print(
+    f"Test Loss: {loss0}, Test Accuracy: {loss1}, Number of Parameters: {n_params}, Elapsed Time: {elapsed}"
+)
 
 energies_to_remove = [0, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
 energies_to_keep = [1 - energy for energy in energies_to_remove]
@@ -84,5 +87,7 @@ for ratio in ratios:
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     test_loss, test_acc, elapsed = evaluate(model_lr, test_loader, criterion, device)
-    print(f"Ratio: {ratio:.4f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Global: {args.do_global}")
+    print(
+        f"Ratio: {ratio:.4f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Global: {args.do_global}"
+    )
     maybe_print_model(model_lr)
