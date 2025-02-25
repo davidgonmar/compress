@@ -4,6 +4,7 @@ from tqdm import tqdm
 from compress.low_rank_ops import LowRankLinear, LowRankConv2d
 from compress.common import gather_submodules, default_should_do
 from compress.utils import extract_weights
+import copy
 import torch
 
 
@@ -91,13 +92,9 @@ def to_low_rank(
     return model
 
 
-import torch
-import torch.nn as nn
-import matplotlib.pyplot as plt
-from typing import Callable
-
-
 def plot_singular_values(model: nn.Module, should_do: Callable = default_should_do):
+    import matplotlib.pyplot as plt
+
     mods_and_reshapers = extract_weights_and_reshapers(
         model, cls_list=[nn.Linear, nn.Conv2d]
     )
@@ -133,3 +130,107 @@ def plot_singular_values(model: nn.Module, should_do: Callable = default_should_
     plt.tight_layout()
     plt.show()
     print("Done plotting singular values")
+
+
+def maximize_energy_pulp(cum_energy_vectors, j):
+    import pulp
+
+    # We are given N vectors of cumulative energies. We want to, by selecting a total of j indices for all vectors (consecutive in each vector),
+    # maximize the sum of energies at the selected indices. This can be formulated as a binary linear program:
+    # Let x_{i, j} be a binary variable indicating whether the j-th index in the i-th vector is selected.
+    # Then, we want to maximize sum_{i, j} x_{i, j} * cum_energy_vectors[i][j] subject to the constraints:
+    # 1. sum_{j} x_{i, j} = 1 for all i
+    # 2. sum_{i, j} j * x_{i, j} = j
+    prob = pulp.LpProblem("MaximizeEnergy", pulp.LpMaximize)
+
+    selection_vars = {}
+    for vec_idx, vec in enumerate(cum_energy_vectors):
+        for idx in range(len(vec)):
+            selection_vars[(vec_idx, idx)] = pulp.LpVariable(
+                f"x_{vec_idx}_{idx}", cat="Binary"
+            )
+    prob += pulp.lpSum(
+        selection_vars[(vec_idx, idx)] * cum_energy_vectors[vec_idx][idx].item()
+        for vec_idx, vec in enumerate(cum_energy_vectors)
+        for idx in range(len(vec))
+    )
+    prob += (
+        pulp.lpSum(
+            idx * selection_vars[(vec_idx, idx)]
+            for vec_idx, vec in enumerate(cum_energy_vectors)
+            for idx in range(len(vec))
+        )
+        == j
+    )
+    for vec_idx, vec in enumerate(cum_energy_vectors):
+        prob += (
+            pulp.lpSum(selection_vars[(vec_idx, idx)] for idx in range(len(vec))) == 1
+        )
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=10))
+
+    selected_indices = {}
+    for vec_idx, vec in enumerate(cum_energy_vectors):
+        sel = [pulp.value(selection_vars[(vec_idx, idx)]) for idx in range(len(vec))]
+        selected_indices[vec_idx] = torch.argmax(torch.tensor(sel)).item()
+
+    return selected_indices
+
+
+# Given a total rank ratio, estimates the rank ratio for each layer
+def to_low_rank_global(
+    model: nn.Module, should_do: Callable = default_should_do, inplace=True, **kwargs
+):
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    def _get_cumulative_energies(module):
+        if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
+            weight = module.weight.detach()
+        elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
+            reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
+            weight = reshaped.detach()
+        else:
+            return None
+
+        vals = torch.linalg.svdvals(weight)
+        return torch.cumsum(vals**2, 0) / torch.sum(vals**2)  # range [0, 1]
+
+    cum_energies = [
+        _get_cumulative_energies(module) for _, module in modules_to_replace
+    ]
+
+    n_rank_to_keep = (
+        sum(len(energy) for energy in cum_energies) * kwargs["ratio_to_keep"]
+    )
+
+    selected_indices = maximize_energy_pulp(cum_energies, n_rank_to_keep)
+
+    selected_indices_per_module = {}
+    for i, (name, module) in enumerate(modules_to_replace):
+        selected_idx = selected_indices[i]
+        if selected_idx == -1:
+            selected_indices_per_module[name] = 1.0
+        else:
+            selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            LowRankLinear.from_linear(
+                module, ratio_to_keep=selected_indices_per_module[name]
+            )
+            if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
+            else LowRankConv2d.from_conv2d(
+                module, ratio_to_keep=selected_indices_per_module[name]
+            ),
+        )
+
+    return model

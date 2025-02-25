@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorize import to_low_rank
+from compress.factorize import to_low_rank_global, to_low_rank
 import copy
 import argparse
 
@@ -11,6 +11,7 @@ parser.add_argument("--save_path", type=str, default="mnist_model.pth")
 parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--dataset", type=str, default="mnist")
 parser.add_argument("--keep_last_layer", action="store_true")
+parser.add_argument("--do_global", action="store_true")
 args = parser.parse_args()
 
 
@@ -67,24 +68,10 @@ def should_do(module, name):
     )
 
 
-for energy_keep, energy_remove in zip(energies_to_keep, energies_to_remove):
-    model_lr = to_low_rank(
-        model,
-        energy_to_keep=energy_keep,
-        inplace=False,
-        model_initializer=lambda: copy.deepcopy(model),
-        should_do=should_do,
-    )
-    test_loss, test_acc = evaluate(model_lr, test_loader, criterion, device)
-    print(
-        f"Energy kept: {energy_keep}, Energy removed: {energy_remove}, Test Loss: {test_loss}, Test Accuracy: {test_acc}"
-    )
-    maybe_print_model(model_lr)
-
-
-ratios = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+fn = to_low_rank_global if args.do_global else to_low_rank
+ratios = [0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 for ratio in ratios:
-    model_lr = to_low_rank(
+    model_lr = fn(
         model,
         ratio_to_keep=ratio,
         inplace=False,
