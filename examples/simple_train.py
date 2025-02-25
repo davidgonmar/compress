@@ -12,6 +12,7 @@ from torchvision.models import resnet18
 from torch.optim.lr_scheduler import StepLR
 import torch.optim as optim
 import torchvision
+from tqdm import tqdm
 
 
 parser = argparse.ArgumentParser()
@@ -172,7 +173,7 @@ for epoch in range(num_epochs):
     train_loss = 0.0
     reg_loss = 0.0
     update_weights(regularizer, weight_sched(epoch))
-    for batch in train_loader:
+    for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
         x, y = batch
         x, y = x.to(device), y.to(device)
 
