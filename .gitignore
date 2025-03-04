@@ -145,3 +145,5 @@ lightning_logs/
 *.pth
 
 .pkl_memoize_py3
+
+bert_imdb

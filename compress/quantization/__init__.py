@@ -53,9 +53,13 @@ def to_quantized_online(
         setattr(
             parent_module,
             attr_name,
-            QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
-            if isinstance(module, nn.Linear)
-            else QuantizedConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
+            (
+                QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
+                if isinstance(module, nn.Linear)
+                else QuantizedConv2d(
+                    weight_specs["conv2d"], input_specs["conv2d"], module
+                )
+            ),
         )
         modules_to_replace[modules_to_replace.index((name, module))] = None
         del module
@@ -143,9 +147,13 @@ def to_quantized_offline(
         setattr(
             parent_module,
             attr_name,
-            QuantizedLinear(weight_specs["linear"], input_infos[module], module)
-            if isinstance(module, nn.Linear)
-            else QuantizedConv2d(weight_specs["conv2d"], input_infos[module], module),
+            (
+                QuantizedLinear(weight_specs["linear"], input_infos[module], module)
+                if isinstance(module, nn.Linear)
+                else QuantizedConv2d(
+                    weight_specs["conv2d"], input_infos[module], module
+                )
+            ),
         )
 
     return model
@@ -178,9 +186,11 @@ def prepare_for_qat(
         setattr(
             parent_module,
             attr_name,
-            QATLinear(weight_specs["linear"], input_specs["linear"], module)
-            if isinstance(module, nn.Linear)
-            else QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
+            (
+                QATLinear(weight_specs["linear"], input_specs["linear"], module)
+                if isinstance(module, nn.Linear)
+                else QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module)
+            ),
         )
 
     return model
@@ -215,18 +225,20 @@ def prepare_for_qat_lsq(
         setattr(
             parent_module,
             attr_name,
-            LSQLinear(
-                weight_specs["linear"],
-                input_specs["linear"],
-                module,
-                activations[module],
-            )
-            if isinstance(module, nn.Linear)
-            else LSQConv2d(
-                weight_specs["conv2d"],
-                input_specs["conv2d"],
-                module,
-                activations[module],
+            (
+                LSQLinear(
+                    weight_specs["linear"],
+                    input_specs["linear"],
+                    module,
+                    activations[module],
+                )
+                if isinstance(module, nn.Linear)
+                else LSQConv2d(
+                    weight_specs["conv2d"],
+                    input_specs["conv2d"],
+                    module,
+                    activations[module],
+                )
             ),
         )
 
@@ -248,11 +260,15 @@ def merge_qat_lsq_into_offline_quantized_model(model: nn.Module, inplace=True):
         setattr(
             parent_module,
             attr_name,
-            module.to_quant_linear()
-            if hasattr(module, "to_quant_linear")
-            else module.to_quant_conv2d()
-            if hasattr(module, "to_quant_conv2d")
-            else module,
+            (
+                module.to_quant_linear()
+                if hasattr(module, "to_quant_linear")
+                else (
+                    module.to_quant_conv2d()
+                    if hasattr(module, "to_quant_conv2d")
+                    else module
+                )
+            ),
         )
 
     return model
@@ -273,11 +289,11 @@ def merge_qat_model(model: nn.Module, inplace=True):
         setattr(
             parent_module,
             attr_name,
-            module.to_linear()
-            if hasattr(module, "to_linear")
-            else module.to_conv2d()
-            if hasattr(module, "to_conv2d")
-            else module,
+            (
+                module.to_linear()
+                if hasattr(module, "to_linear")
+                else module.to_conv2d() if hasattr(module, "to_conv2d") else module
+            ),
         )
 
     return model
@@ -411,9 +427,13 @@ def to_quantized_adaround(
         setattr(
             parent_module,
             attr_name,
-            QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
-            if isinstance(module, nn.Linear)
-            else QuantizedConv2d(weight_specs["conv2d"], input_specs["conv2d"], module),
+            (
+                QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
+                if isinstance(module, nn.Linear)
+                else QuantizedConv2d(
+                    weight_specs["conv2d"], input_specs["conv2d"], module
+                )
+            ),
         )
 
     return model
@@ -439,10 +459,14 @@ def to_quantized_kmeans(
         setattr(
             parent_module,
             attr_name,
-            KMeansQuantizedLinear(module, weight_specs["linear"], input_specs["linear"])
-            if isinstance(module, nn.Linear)
-            else KMeansQuantizedConv2d(
-                module, weight_specs["conv2d"], input_specs["conv2d"]
+            (
+                KMeansQuantizedLinear(
+                    module, weight_specs["linear"], input_specs["linear"]
+                )
+                if isinstance(module, nn.Linear)
+                else KMeansQuantizedConv2d(
+                    module, weight_specs["conv2d"], input_specs["conv2d"]
+                )
             ),
         )
 

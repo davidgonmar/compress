@@ -84,9 +84,11 @@ def to_low_rank(
         setattr(
             parent_module,
             attr_name,
-            LowRankLinear.from_linear(module, **kwargs)
-            if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-            else LowRankConv2d.from_conv2d(module, **kwargs),
+            (
+                LowRankLinear.from_linear(module, **kwargs)
+                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
+                else LowRankConv2d.from_conv2d(module, **kwargs)
+            ),
         )
 
     return model
@@ -224,12 +226,14 @@ def to_low_rank_global(
         setattr(
             parent_module,
             attr_name,
-            LowRankLinear.from_linear(
-                module, ratio_to_keep=selected_indices_per_module[name]
-            )
-            if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-            else LowRankConv2d.from_conv2d(
-                module, ratio_to_keep=selected_indices_per_module[name]
+            (
+                LowRankLinear.from_linear(
+                    module, ratio_to_keep=selected_indices_per_module[name]
+                )
+                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
+                else LowRankConv2d.from_conv2d(
+                    module, ratio_to_keep=selected_indices_per_module[name]
+                )
             ),
         )
 

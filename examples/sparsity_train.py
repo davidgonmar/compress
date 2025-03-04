@@ -96,9 +96,7 @@ def get_cifar10():
 train_loader, val_loader, model_params = (
     get_mnist()
     if args.dataset == "mnist"
-    else get_cifar10()
-    if args.dataset == "cifar10"
-    else (None, None, None)
+    else get_cifar10() if args.dataset == "cifar10" else (None, None, None)
 )
 
 assert train_loader is not None, "Invalid dataset"

@@ -415,9 +415,7 @@ def update_weights(reg, weights):
         * len(
             reg.params_and_pruning_granularities
             if hasattr(reg, "params_and_pruning_granularities")
-            else reg.params
-            if hasattr(reg, "params")
-            else reg.params_and_reshapers
+            else reg.params if hasattr(reg, "params") else reg.params_and_reshapers
         )
         if isinstance(weights, float)
         else weights
