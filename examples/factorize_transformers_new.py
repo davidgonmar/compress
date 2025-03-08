@@ -6,7 +6,7 @@ from evaluate import load as load_metric
 from tqdm import tqdm
 import copy
 import argparse
-from compress.factorize import to_low_rank_global, to_low_rank
+from compress.factorize import to_low_rank_global2
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -16,7 +16,6 @@ parser.add_argument("--dataset_name", type=str, default="imdb")
 parser.add_argument("--batch_size", type=int, default=128)
 parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--keep_last_layer", action="store_true")
-parser.add_argument("--do_global", action="store_true")
 args = parser.parse_args()
 
 tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -66,11 +65,11 @@ def evaluate(model, loader, device):
     return avg_loss, accuracy
 
 
-initial_loss, initial_accuracy = evaluate(model, test_loader, device)
+# initial_loss, initial_accuracy = evaluate(model, test_loader, device)
 nparams_orig = sum(p.numel() for p in model.parameters())
-print(
-    f"Initial Test Loss: {initial_loss:.4f}, Test Accuracy: {initial_accuracy:.4f}, Number of Parameters: {nparams_orig}"
-)
+# print(
+# f"Initial Test Loss: {initial_loss:.4f}, Test Accuracy: {initial_accuracy:.4f}, Number of Parameters: {nparams_orig}"
+# )
 
 
 def should_compress(module, name):
@@ -79,15 +78,15 @@ def should_compress(module, name):
     )
 
 
-compression_fn = to_low_rank_global if args.do_global else to_low_rank
 ratios = [0.05, 0.075, 0.09, 0.1, 0.11, 0.12, 0.15, 0.17, 0.2, 0.25, 0.3, 0.4, 0.5]
 for ratio in ratios:
-    compressed_model = compression_fn(
+    compressed_model = to_low_rank_global2(
         model,
         ratio_to_keep=ratio,
         inplace=False,
         model_initializer=lambda: copy.deepcopy(model),
         should_do=should_compress,
+        dataloader=DataLoader(dstrain, batch_size=4),
     )
     compressed_model.to(device)
 

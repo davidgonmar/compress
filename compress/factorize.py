@@ -183,9 +183,9 @@ def maximize_energy_pulp(cum_energy_vectors, j):
 def to_low_rank_global(
     model: nn.Module, should_do: Callable = default_should_do, inplace=True, **kwargs
 ):
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
     if not inplace:
         model = copy.deepcopy(model)
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
 
     def _get_cumulative_energies(module):
         if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
@@ -197,12 +197,192 @@ def to_low_rank_global(
             return None
 
         vals = torch.linalg.svdvals(weight)
-        return torch.cumsum(vals**2, 0) / torch.sum(vals**2)  # range [0, 1]
+        return torch.cumsum(vals**2, 0)
 
     cum_energies = [
         _get_cumulative_energies(module) for _, module in modules_to_replace
     ]
 
+    n_rank_to_keep = (
+        sum(len(energy) for energy in cum_energies) * kwargs["ratio_to_keep"]
+    )
+
+    selected_indices = maximize_energy_pulp(cum_energies, n_rank_to_keep)
+
+    selected_indices_per_module = {}
+    for i, (name, module) in enumerate(modules_to_replace):
+        selected_idx = selected_indices[i]
+        if selected_idx == -1:
+            selected_indices_per_module[name] = 1.0
+        else:
+            selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            (
+                LowRankLinear.from_linear(
+                    module, ratio_to_keep=selected_indices_per_module[name]
+                )
+                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
+                else LowRankConv2d.from_conv2d(
+                    module, ratio_to_keep=selected_indices_per_module[name]
+                )
+            ),
+        )
+
+    return model
+
+
+def get_activation_norms(model, data_loader):
+    if isinstance(data_loader, torch.Tensor):
+        data_loader = [data_loader]
+    activation_norms = {}
+    hooks = []
+    model.eval()
+    for name, module in gather_submodules(
+        model, should_do=default_should_do, prefix=""
+    ):
+        activation_norms[module] = 0
+
+        def hook_fn(activations):
+            def _hook_fn(module, input, output):
+                # first flatten the activations
+                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
+                    act = output.view(output.size(0), -1)  # (batch_size, hidden_size)
+
+                    def _norm(x):
+                        # consider all dims batched except the last one
+                        norm2 = torch.sum(x**2, dim=-1)
+                        return torch.sqrt(norm2).mean()
+
+                    activation_norms[module] = (
+                        activation_norms[module] + _norm(act).detach()
+                    )
+                elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
+                    raise NotImplementedError("Conv2d activations not supported yet")
+
+            return _hook_fn
+
+        hooks.append(module.register_forward_hook(hook_fn(activation_norms[module])))
+
+    for element in tqdm(data_loader, desc="Getting activation norms"):
+        model(element["input_ids"].cuda(), element["attention_mask"].cuda())
+
+    for hook in hooks:
+        hook.remove()
+
+    return {module: norm.item() for module, norm in activation_norms.items()}
+
+
+def get_layer_order(model, data_loader):
+    if isinstance(data_loader, torch.Tensor):
+        data_loader = [data_loader]
+    hooks = []
+    model.eval()
+    layers_called = list()
+    for name, module in gather_submodules(
+        model, should_do=default_should_do, prefix=""
+    ):
+
+        def hook_fn(activations):
+            def _hook_fn(module, input, output):
+                layers_called.append({"module": module})
+
+            return _hook_fn
+
+        hooks.append(module.register_forward_hook(hook_fn(None)))
+    element = next(iter(data_loader))
+    model(element["input_ids"].cuda(), element["attention_mask"].cuda())
+
+    for hook in hooks:
+        hook.remove()
+
+    return layers_called
+
+
+# Given a total rank ratio, estimates the rank ratio for each layer
+def to_low_rank_global2(
+    model: nn.Module,
+    dataloader,
+    should_do: Callable = default_should_do,
+    inplace=True,
+    **kwargs,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    acts = get_activation_norms(model, dataloader)
+    layers_called = get_layer_order(model, dataloader)
+
+    # filter out layers called that are not in modules_to_replace
+    layers_called = [
+        layer
+        for layer in layers_called
+        if any(layer["module"] == module for _, module in modules_to_replace)
+    ]
+    all_singular_vals = {}
+    for name, module in modules_to_replace:
+        if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
+            weight = module.weight.detach()
+        elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
+            reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
+            weight = reshaped.detach()
+        else:
+            continue
+
+        vals = torch.linalg.svdvals(weight)
+        all_singular_vals[module] = vals
+
+    first_singular_vals = {
+        module: torch.sqrt(torch.mean(vals**2))
+        for module, vals in all_singular_vals.items()
+    }
+
+    last_layer_idx = len(layers_called) - 1
+
+    def mul(seq):
+        res = 1
+        for i in seq:
+            res *= i
+        return res
+
+    def _get_cumulative_energies(module, name):
+        # first term is mult(layer_idx, last_layer_idx, val=singular_val_1[layer_idx])
+        # layers from layer_idx to last_layer_idx
+        layers_from_to = []
+        firstidx = layers_called.index({"module": module})
+        for i in range(firstidx, last_layer_idx + 1):
+            layers_from_to.append({"module": layers_called[i]["module"]})
+
+        # get the singular values for the layers
+        singvals = [first_singular_vals[layer["module"]] for layer in layers_from_to]
+
+        first_term = mul(singvals)
+
+        # second term is ||f(x, W1:Wthislayer)||_2
+        second_term = acts[module]
+
+        # now, the energy obtained from choosing a rank on this layer is first_term * second_term * sing_val[rank_chosen]
+
+        return -all_singular_vals[module] * second_term * first_term
+
+    cum_energies = [
+        _get_cumulative_energies(module, name) for name, module in modules_to_replace
+    ]
+
+    # assert none is nan/inf
+    for energy in cum_energies:
+        assert (
+            not torch.isnan(energy).any() and not torch.isinf(energy).any()
+        ), "Energy is nan or inf: {}".format(energy)
     n_rank_to_keep = (
         sum(len(energy) for energy in cum_energies) * kwargs["ratio_to_keep"]
     )

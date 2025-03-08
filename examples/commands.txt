@@ -41,4 +41,4 @@ python -m examples.simple_train --sv_regularizer=nuclear_norm --regularizer_sche
 
 
 
-python -m examples.train_factorized_transformer --sv_regularizer=hoyer_sparsity --regularizer_weight=4.0 --epochs=10
+python -m examples.train_factorized_transformer --sv_regularizer=hoyer_sparsity --regularizer_weight=4.0 --epochs=100 --model_name=bert_imdb
