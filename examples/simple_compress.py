@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorize import to_low_rank_global, to_low_rank
+from compress.factorize import to_low_rank_global, to_low_rank, to_low_rank_global2
 import copy
 import argparse
 
@@ -12,6 +12,7 @@ parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--dataset", type=str, default="mnist")
 parser.add_argument("--keep_last_layer", action="store_true")
 parser.add_argument("--do_global", action="store_true")
+parser.add_argument("--do_global2", action="store_true")
 args = parser.parse_args()
 
 
@@ -53,7 +54,17 @@ test_dataset = (
 )
 test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 
+train_set = (
+    datasets.MNIST(root="data", train=True, transform=transform, download=True)
+    if args.dataset == "mnist"
+    else datasets.CIFAR10(root="data", train=True, transform=transform, download=True)
+)
 
+subset_train_set = torch.utils.data.Subset(
+    train_set, torch.randint(0, len(train_set), (10000,))
+)
+# only get a subset of train_loader
+train_loader = DataLoader(subset_train_set, batch_size=100, shuffle=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model.to(device)
@@ -75,8 +86,17 @@ def should_do(module, name):
     )
 
 
-fn = to_low_rank_global if args.do_global else to_low_rank
-ratios = [0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+import functools
+
+fn = None
+if args.do_global:
+    fn = to_low_rank_global
+elif args.do_global2:
+    fn = functools.partial(to_low_rank_global2, dataloader=train_loader)
+else:
+    fn = to_low_rank
+
+ratios = [0.05, 0.07, 0.09, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 for ratio in ratios:
     model_lr = fn(
         model,

@@ -238,3 +238,129 @@ def to_low_rank_global(
         )
 
     return model
+
+
+def get_grads(model: torch.nn.Module, dataloader: torch.utils.data.DataLoader):
+    oneitem = next(iter(dataloader))
+    if isinstance(oneitem, dict):
+        # huggingface dataset
+        model.train()
+        model.zero_grad()
+        device = next(model.parameters()).device
+        crit = torch.nn.CrossEntropyLoss()
+        for batch in tqdm(dataloader, desc="Getting grads"):
+            inputs = {key: value.to(device) for key, value in batch.items()}
+            outputs = model(
+                inputs["input_ids"], attention_mask=inputs["attention_mask"]
+            )
+            loss = crit(outputs.logits, inputs["label"])
+            loss.backward()
+
+        with torch.no_grad():
+            mean_grads = {
+                name: param.grad.div_(len(dataloader))
+                for name, param in model.named_parameters()
+            }
+
+        model.zero_grad()
+        model.eval()
+        return mean_grads
+    else:  # torchvision cifar10
+        model.train()
+        model.zero_grad()
+        device = next(model.parameters()).device
+        crit = torch.nn.CrossEntropyLoss()
+        for batch in tqdm(dataloader, desc="Getting grads"):
+            inputs, targets = batch
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            loss = crit(outputs, targets)
+            loss.backward()
+
+        with torch.no_grad():
+            mean_grads = {
+                name: param.grad.div_(len(dataloader))
+                for name, param in model.named_parameters()
+            }
+
+        model.zero_grad()
+        model.eval()
+        return mean_grads
+
+
+# Given a total rank ratio, estimates the rank ratio for each layer
+def to_low_rank_global2(
+    model: nn.Module,
+    dataloader,
+    should_do: Callable = default_should_do,
+    inplace=True,
+    **kwargs,
+):
+
+    if not inplace:
+        model = copy.deepcopy(model)
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    grads = get_grads(model, dataloader)
+
+    cum_energies = []
+    for name, module in modules_to_replace:
+        if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
+            weight = module.weight.detach()
+        elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
+            reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
+            weight = reshaped.detach()
+        else:
+            continue
+
+        U, S, V = torch.linalg.svd(weight)
+        k = min(U.shape[1], V.shape[0])
+        # get k vectors from u and v
+        U = U[:, :k]  # shape (m, k)
+        V = V[:k, :]  # shape (k, n)
+        # get k singular values
+        S = S[:k]  # shape (k,)
+
+        grad = grads[name + ".weight"]
+        if isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
+            grad = _module_to_reshaper[(module.__class__, "weight")](grad)
+
+        uvgrads = torch.einsum("k, mk, kn, mn -> k", S, U, V, grad)  # shape (k,)
+        total = torch.sum(uvgrads)
+        cum_energy = total - torch.cumsum(uvgrads, 0)  # shape (k,)
+        cum_energies.append(cum_energy)
+
+    n_rank_to_keep = (
+        sum(len(energy) for energy in cum_energies) * kwargs["ratio_to_keep"]
+    )
+
+    selected_indices = maximize_energy_pulp(cum_energies, n_rank_to_keep)
+
+    selected_indices_per_module = {}
+    for i, (name, module) in enumerate(modules_to_replace):
+        selected_idx = selected_indices[i]
+        if selected_idx == -1:
+            selected_indices_per_module[name] = 1.0
+        else:
+            selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            (
+                LowRankLinear.from_linear(
+                    module, ratio_to_keep=selected_indices_per_module[name]
+                )
+                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
+                else LowRankConv2d.from_conv2d(
+                    module, ratio_to_keep=selected_indices_per_module[name]
+                )
+            ),
+        )
+
+    return model
