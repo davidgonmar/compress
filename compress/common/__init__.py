@@ -1,5 +1,6 @@
 from typing import Callable
 from torch import nn
+from compress.low_rank_ops import LowRankConv2d, LowRankLinear
 
 
 def default_should_do(module: nn.Module, full_name: str):
@@ -18,6 +19,12 @@ def gather_submodules(model: nn.Module, should_do: Callable, prefix=""):
             if should_do(module, full_name):
                 mods.append((full_name, module))
         elif isinstance(module, nn.Conv2d):
+            if should_do(module, full_name):
+                mods.append((full_name, module))
+        elif isinstance(module, LowRankConv2d):
+            if should_do(module, full_name):
+                mods.append((full_name, module))
+        elif isinstance(module, LowRankLinear):
             if should_do(module, full_name):
                 mods.append((full_name, module))
         elif isinstance(module, nn.Sequential):

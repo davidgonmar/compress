@@ -92,6 +92,13 @@ class LowRankLinear(nn.Module):
     def __repr__(self):
         return f"LowRankLinear(in_features={self.w0.shape[0]}, out_features={self.w1.shape[1]}, rank={self.w0.shape[1]}, bias={self.bias is not None})"
 
+    def to_linear(self):
+        res = nn.Linear(self.w0.shape[0], self.w1.shape[1], bias=self.bias is not None)
+        res.weight = nn.Parameter(self.w0 @ self.w1)
+        if self.bias is not None:
+            res.bias = self.bias
+        return res
+
 
 class LowRankConv2d(nn.Module):
     def __init__(
@@ -209,3 +216,31 @@ class LowRankConv2d(nn.Module):
 
     def __repr__(self):
         return f"LowRankConv2d(in_channels={self.input_channels}, out_channels={self.out_channels}, kernel_size={self.kernel_size}, rank={self.rank}, stride={self.stride}, padding={self.padding}, dilation={self.dilation}, groups={self.groups}, bias={self.bias is not None})"
+
+    def to_conv2d(self):
+        res = nn.Conv2d(
+            self.input_channels,
+            self.out_channels,
+            self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+            bias=self.bias is not None,
+        )
+        w0, w1 = self.get_weights_as_matrices(
+            self.w0, "w0"
+        ), self.get_weights_as_matrices(self.w1, "w1")
+        w = torch.reshape(
+            (w0 @ w1).T,
+            (
+                self.out_channels,
+                self.input_channels,
+                self.kernel_size,
+                self.kernel_size,
+            ),
+        )
+        res.weight = nn.Parameter(w)
+        if self.bias is not None:
+            res.bias = self.bias
+        return res

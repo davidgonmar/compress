@@ -41,4 +41,13 @@ python -m examples.simple_train --sv_regularizer=nuclear_norm --regularizer_sche
 
 
 
-python -m examples.train_factorized_transformer --sv_regularizer=hoyer_sparsity --regularizer_weight=4.0 --epochs=10
+python -m examples.train_factorized_transformer --sv_regularizer=hoyer_sparsity --regularizer_weight=10.0 --epochs=100
+
+python -m examples.simple_compress --dataset=cifar10
+
+python -m examples.simple_compress --dataset=cifar10 --save_path=resnet_hoyer_sp.pth
+
+python -m examples.factorize_transformers_energy --model_name=bert_imdb
+
+
+python -m examples.iterative_resnet_prune --sv_regularizer=hoyer_sparsity --load_path=resnet_hoyer_sp.pth

@@ -176,6 +176,9 @@ def maximize_energy_pulp(cum_energy_vectors, j):
         sel = [pulp.value(selection_vars[(vec_idx, idx)]) for idx in range(len(vec))]
         selected_indices[vec_idx] = torch.argmax(torch.tensor(sel)).item()
 
+    print("Time to solve:", prob.solutionTime)
+    print("Status:", pulp.LpStatus[prob.status])
+    print("Objective value:", pulp.value(prob.objective))
     return selected_indices
 
 
@@ -359,6 +362,38 @@ def to_low_rank_global2(
                 if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
                 else LowRankConv2d.from_conv2d(
                     module, ratio_to_keep=selected_indices_per_module[name]
+                )
+            ),
+        )
+
+    return model
+
+
+def merge_back(model: nn.Module, inplace=True):
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    def _sd(mod, name):
+        return isinstance(mod, LowRankLinear) or isinstance(mod, LowRankConv2d)
+
+    modules_to_replace = gather_submodules(model, should_do=_sd, prefix="")
+    # print("mods to replace", list(modules_to_replace))
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            (
+                LowRankLinear.to_linear(module)
+                if isinstance(module, LowRankLinear)
+                else (
+                    LowRankConv2d.to_conv2d(module)
+                    if isinstance(module, LowRankConv2d)
+                    else module
                 )
             ),
         )
