@@ -82,6 +82,40 @@ class LowRankLinear(nn.Module):
         low_rank_linear.keep_singular_values_separated = keep_singular_values_separated
         return low_rank_linear
 
+    def from_linear_activation(
+        linear: nn.Linear,
+        act_cov_mat_chol: torch.Tensor,  # shape (in_features, in_features). Result of cholesky factorization of the input activations covariance matrix (X @ X^T) = L @ L^T
+        ratio_to_keep: float | None = None,
+        energy_to_keep: float | None = None,
+    ):
+        # adapted from https://arxiv.org/abs/2403.07378
+        W, b = linear.weight, linear.bias
+        U, S, V_T = torch.linalg.svd(W @ act_cov_mat_chol, full_matrices=True)
+        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
+        S = torch.diag(S[:rank])
+        out_f, in_f = W.shape
+        assert S.shape == (rank, rank)
+        assert U.shape == (out_f, out_f)
+        assert V_T.shape == (in_f, in_f)
+        act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
+        W0 = U[:, :rank] @ S
+        W1 = V_T[:rank, :] @ act_cov_mat_cholinv
+        low_rank_linear = LowRankLinear(
+            linear.weight.shape[1],
+            linear.weight.shape[0],
+            rank,
+            bias=linear.bias is not None,
+        )
+
+        low_rank_linear.w0.data = W0
+        low_rank_linear.w1.data = W1
+        if b is not None and linear.bias is not None:
+            low_rank_linear.bias.data = b
+        else:
+            low_rank_linear.bias = None
+        low_rank_linear.keep_singular_values_separated = False
+        return low_rank_linear
+
     def forward(self, x: torch.Tensor):
         # X in R^{BATCH x IN}, W0 in R^{OUT x RANK}, W1 in R^{RANK x IN}
         w0, w1 = self.w0, self.w1
@@ -176,6 +210,57 @@ class LowRankConv2d(nn.Module):
             low_rank_conv2d.S = nn.Parameter(S[:rank])
 
         low_rank_conv2d.keep_singular_values_separated = keep_singular_values_separated
+
+        return low_rank_conv2d
+
+    def from_conv2d_activation(
+        conv2d: nn.Conv2d,
+        act_cov_mat_chol: torch.Tensor,  # shape (i * h * w)^2. Result of cholesky factorization of the input activations covariance matrix (X @ X^T) = L @ L^T
+        ratio_to_keep: float | None = None,
+        energy_to_keep: float | None = None,
+    ):
+        # adapted from https://arxiv.org/abs/2403.07378
+        W, b = conv2d.weight, conv2d.bias
+        o, i, h, w = W.shape
+        U, S, V_T = torch.linalg.svd(
+            act_cov_mat_chol @ W.permute(1, 2, 3, 0).reshape(i * h * w, o),
+            full_matrices=True,
+        )
+        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
+        act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
+        W0 = (
+            (
+                (U[:, :rank] @ torch.diag(S[:rank]))
+                .reshape(i, h, w, rank)
+                .permute(3, 0, 1, 2)
+            ).reshape(rank, -1)
+            @ act_cov_mat_cholinv.T
+        ).reshape(
+            rank, i, h, w
+        )  # shape = (rank, i, h, w)
+        W1 = (
+            V_T[:rank, :].reshape(rank, o, 1, 1).permute(1, 0, 2, 3)
+        )  # shape = (o, rank, 1, 1)
+        low_rank_conv2d = LowRankConv2d(
+            conv2d.in_channels,
+            conv2d.out_channels,
+            conv2d.kernel_size[0],
+            rank,
+            stride=conv2d.stride[0],
+            padding=conv2d.padding[0],
+            dilation=conv2d.dilation[0],
+            groups=conv2d.groups,
+            bias=conv2d.bias is not None,
+        )
+        low_rank_conv2d.w0.data = W0
+        low_rank_conv2d.w1.data = W1
+
+        if b is not None and conv2d.bias is not None:
+            low_rank_conv2d.bias.data = b
+        else:
+            low_rank_conv2d.bias = None
+
+        low_rank_conv2d.keep_singular_values_separated = False
 
         return low_rank_conv2d
 

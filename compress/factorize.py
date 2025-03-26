@@ -67,13 +67,7 @@ def to_low_rank(
 ):
     modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
     if not inplace:
-        model_initializer = kwargs.pop("model_initializer", None)
-        assert (
-            model_initializer is not None
-        ), "model_initializer must be provided if inplace=False"
-        model_ = model_initializer()
-        model_.load_state_dict(model.state_dict())
-        model = model_
+        model = copy.deepcopy(model)
 
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -394,6 +388,112 @@ def merge_back(model: nn.Module, inplace=True):
                     LowRankConv2d.to_conv2d(module)
                     if isinstance(module, LowRankConv2d)
                     else module
+                )
+            ),
+        )
+
+    return model
+
+
+def factorize_with_activation_aware_svd(
+    model: nn.Module,
+    dataloader,
+    inplace=True,
+    should_do=default_should_do,
+    energy_to_keep=None,
+    ratio_to_keep=None,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    acts = {}
+    hooks = []
+
+    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+
+    def hook_fn(module, input, output):
+        input = input[0] if isinstance(input, tuple) else input
+        acts[module] = input
+
+    for name, module in modules_to_replace:
+        hook = module.register_forward_hook(hook_fn)
+        hooks.append(hook)
+
+    for batch in tqdm(dataloader, desc="Getting activations"):
+        if isinstance(batch, dict):
+            inputs = {
+                key: value.to(next(model.parameters()).device)
+                for key, value in batch.items()
+            }
+            model(**inputs)
+        else:
+            inputs, targets = batch
+            inputs, targets = inputs.to(next(model.parameters()).device), targets.to(
+                next(model.parameters()).device
+            )
+            model(inputs)
+
+    for hook in hooks:
+        hook.remove()
+
+    # get the cholesky decomposition of the covariance matrix of each activation im2col'ed in case of conv2d
+    chols = {}
+    for module, act in acts.items():
+        if isinstance(module, nn.Conv2d):
+            # Input should be of shape (B, Cin, H, W)
+
+            assert act.dim() == 4
+            im2coled = nn.functional.unfold(
+                act,
+                kernel_size=module.kernel_size,
+                padding=module.padding,
+                stride=module.stride,
+            )  # shape (B, Cin * H_k * W_k, H_out * W_out)
+            # shape (B * H_out * W_out, Cin * H_k * W_k)
+            im2coled = im2coled.permute(0, 2, 1).reshape(
+                im2coled.shape[0] * im2coled.shape[2], -1
+            )
+        elif isinstance(module, nn.Linear):
+            # Input should be of shape (B, Cin)
+            assert act.dim() == 2
+            im2coled = act
+        else:
+            raise ValueError("Module should be either Conv2d or Linear")
+
+        m = im2coled.T @ im2coled
+        m = m.double()
+        try:
+            chol = torch.linalg.cholesky(m)
+
+        except RuntimeError:
+            eigenvalues = torch.linalg.eigvalsh(m)
+            m = (-eigenvalues[0] + 1e-6) * torch.eye(m.shape[0]).to(m.device) + m
+            chol = torch.linalg.cholesky(m)
+
+        chols[module] = chol.float()
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(
+            parent_module,
+            attr_name,
+            (
+                LowRankLinear.from_linear_activation(
+                    module,
+                    chols[module],
+                    energy_to_keep=energy_to_keep,
+                    ratio_to_keep=ratio_to_keep,
+                )
+                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
+                else LowRankConv2d.from_conv2d_activation(
+                    module,
+                    chols[module],
+                    energy_to_keep=energy_to_keep,
+                    ratio_to_keep=ratio_to_keep,
                 )
             ),
         )

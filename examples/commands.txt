@@ -4,6 +4,9 @@ python -m examples.simple_train --sv_regularizer=hoyer_sparsity --model=resnet18
 python -m examples.simple_train --sv_regularizer=squared_hoyer_sparsity --model=resnet18 --dataset=cifar10
 python -m examples.simple_train --sv_regularizer=squared_hoyer_sparsity --model=resnet18 --dataset=cifar10 --finetune
 python -m examples.simple_compress --dataset=cifar10
+python -m examples.simple_compress --dataset=cifar10 --do_activation
+python -m examples.simple_compress --dataset=cifar10 --do_activation --save_path=resnet_hoyer_sp.pth
+
 python -m examples.sparsity_train --sparsity_metric=noop --model=resnet18 --dataset=cifar10  --epochs=1000 --regularizer_weight=3.0 --linear_granularity=out_channel_grouping --conv2d_granularity=out_channel_grouping
 python -m examples.prune --dataset=cifar --linear_pruning=out_channel_grouping --conv2d_pruning=out_channel_grouping
 python -m examples.prune --dataset=cifar

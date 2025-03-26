@@ -1,8 +1,12 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorize import to_low_rank_global, to_low_rank, to_low_rank_global2
-import copy
+from compress.factorize import (
+    to_low_rank_global,
+    to_low_rank,
+    to_low_rank_global2,
+    factorize_with_activation_aware_svd,
+)
 import argparse
 
 
@@ -13,6 +17,8 @@ parser.add_argument("--dataset", type=str, default="mnist")
 parser.add_argument("--keep_last_layer", action="store_true")
 parser.add_argument("--do_global", action="store_true")
 parser.add_argument("--do_global2", action="store_true")
+parser.add_argument("--do_activation", action="store_true")
+parser.add_argument("--energy", action="store_true")
 args = parser.parse_args()
 
 
@@ -93,21 +99,44 @@ if args.do_global:
     fn = to_low_rank_global
 elif args.do_global2:
     fn = functools.partial(to_low_rank_global2, dataloader=train_loader)
+elif args.do_activation:
+    fn = functools.partial(factorize_with_activation_aware_svd, dataloader=train_loader)
 else:
     fn = to_low_rank
 
 ratios = [0.05, 0.07, 0.09, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+energies = [
+    0.8,
+    0.9,
+    0.95,
+    0.99,
+    0.999,
+    0.9992,
+    0.9995,
+    0.9997,
+    0.9999,
+    0.99993,
+    0.99995,
+    0.99997,
+    0.99999,
+    0.999993,
+    0.999995,
+    0.999997,
+    0.999999,
+]
+
+ratios = energies if args.energy else ratios
 for ratio in ratios:
     model_lr = fn(
         model,
-        ratio_to_keep=ratio,
+        ratio_to_keep=ratio if not args.energy else None,
+        energy_to_keep=ratio if args.energy else None,
         inplace=False,
-        model_initializer=lambda: copy.deepcopy(model),
         should_do=should_do,
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     test_loss, test_acc, elapsed = evaluate(model_lr, test_loader, criterion, device)
     print(
-        f"Ratio: {ratio:.4f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Global: {args.do_global}"
+        f"Ratio: {ratio:.8f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Global: {args.do_global}"
     )
     maybe_print_model(model_lr)
