@@ -20,6 +20,7 @@ parser.add_argument("--print_model", action="store_true")
 parser.add_argument("--offline", action="store_true")
 parser.add_argument("--adaround", action="store_true")
 parser.add_argument("--kmeans", action="store_true")
+parser.add_argument("--leave_edge_layers_8_bits", action="store_true")
 
 args = parser.parse_args()
 
@@ -44,7 +45,7 @@ def evaluate(model, loader, criterion, device):
     return loss / len(loader.dataset), correct / len(loader.dataset)
 
 
-model = torch.load(args.save_path)
+model = torch.load(args.save_path, weights_only=False)
 
 
 transform = transforms.Compose(
@@ -67,7 +68,7 @@ loss = evaluate(model, test_loader, criterion, device)
 print(f"Test Loss: {loss[0]}, Test Accuracy: {loss[1]}")
 
 
-bit_widths = [4, 8]
+bit_widths = [3, 4, 8]
 signed_options = [True]
 
 train_dataset = datasets.CIFAR10(
@@ -104,10 +105,22 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
         "conv2d": IntQuantizationSpec(w_conv_bits, signed_options[0]),
     }
 
+    if args.leave_edge_layers_8_bits:
+        # last layer key is "fc" for resnet18
+        wspecs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
+        # first layer key is "conv1" for resnet18
+        wspecs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
+
     inpspecs = {
         "linear": IntQuantizationSpec(i_linear_bits, signed_options[0]),
         "conv2d": IntQuantizationSpec(i_conv_bits, signed_options[0]),
     }
+
+    if args.leave_edge_layers_8_bits:
+        # last layer key is "fc" for resnet18
+        inpspecs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
+        # first layer key is "conv1" for resnet18
+        inpspecs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
 
     if args.adaround:
         quanted = to_quantized_adaround(

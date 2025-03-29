@@ -7,7 +7,9 @@ from compress.quantization.ptq_ops import (
     QuantizedConv2d,
     QuantizedLinear,
     quantize,
+    dequantize,
 )
+from collections import defaultdict
 import math
 
 
@@ -42,9 +44,7 @@ class QATLinear(nn.Linear):
         return nn.functional.linear(x, w, self.bias)
 
     def __repr__(self):
-        return (
-            f"FakeQuantizedLinear({self.in_features}, {self.out_features}, {self.bias})"
-        )
+        return f"FakeQuantizedLinear({self.in_features}, {self.out_features}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
 
     def to_linear(self):
         ret = nn.Linear(self.in_features, self.out_features, self.bias is not None)
@@ -109,7 +109,7 @@ class QATConv2d(nn.Conv2d):
         )
 
     def __repr__(self):
-        return f"FakeQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
+        return f"FakeQuantizedConv2d({self.in_channels}, {self.out_channels}, ..., act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
 
     def to_conv2d(self):
         ret = nn.Conv2d(
@@ -125,6 +125,117 @@ class QATConv2d(nn.Conv2d):
         ret.weight = self.weight
         ret.bias = self.bias
         return ret
+
+
+def mse(x, y):
+    return (x - y).pow(2).mean()
+
+
+def _snap_loss_layer_params(
+    layer: QATConv2d | QATLinear,
+):
+    weight = layer.weight
+    quanted = quantize(weight, calibrate(weight, layer.weight_spec))
+    dequanted = dequantize(quanted, calibrate(weight, layer.weight_spec)).detach()
+    return mse(weight, dequanted)
+
+
+def snap_loss_model_params(
+    model: nn.Module,
+):
+    loss = 0
+    for _, layer in model.named_modules():
+        if isinstance(layer, (QATConv2d, QATLinear)):
+            loss += _snap_loss_layer_params(layer)
+    return loss
+
+
+def snap_loss_model_activations(
+    model: nn.Module,
+    activations: dict[str, torch.Tensor],
+):
+    loss = 0
+    for name, layer in model.named_modules():
+        if isinstance(layer, (QATConv2d, QATLinear)) and name in activations:
+            loss += mse(
+                activations[name],
+                dequantize(
+                    quantize(
+                        activations[name],
+                        calibrate(activations[name], layer.input_spec),
+                    ),
+                    calibrate(activations[name], layer.input_spec),
+                ),
+            )
+    return loss
+
+
+class ActivationCatcher:
+    def __init__(self, layer_types=(nn.ReLU, nn.Linear)):
+        self.layer_types = layer_types
+        self._activations = defaultdict(dict)
+        self._hooks = defaultdict(list)
+
+    def initialize(self, model, model_id=None):
+        model_id = model_id or id(model)
+
+        def get_hook(name):
+            def hook(module, input, output):
+                self._activations[model_id][name] = output.detach()
+
+            return hook
+
+        for name, module in model.named_modules():
+            if isinstance(module, self.layer_types):
+                h = module.register_forward_hook(get_hook(name))
+                self._hooks[model_id].append(h)
+
+    def get_last_activations(self, model, model_id=None):
+        model_id = model_id or id(model)
+        return self._activations.get(model_id, {})
+
+    def clear(self, model=None):
+        if model:
+            model_id = id(model)
+            self._activations.pop(model_id, None)
+        else:
+            self._activations.clear()
+
+    def remove_hooks(self, model=None):
+        if model:
+            model_id = id(model)
+            for h in self._hooks.get(model_id, []):
+                h.remove()
+            self._hooks.pop(model_id, None)
+        else:
+            for hooks in self._hooks.values():
+                for h in hooks:
+                    h.remove()
+            self._hooks.clear()
+
+
+class SnapRegularizer:
+    def __init__(self, model, do_activations=True, do_params=True):
+        self.model = model
+        self.activations = ActivationCatcher(layer_types=(QATLinear, QATConv2d))
+        if do_activations:
+            self.activations.initialize(model)
+        self.do_activations, self.do_params = do_activations, do_params
+
+        assert (
+            do_activations or do_params
+        ), "At least one of activations or params must be True"
+
+    def snap_loss(self):
+        res = {}
+        if self.do_activations:
+            res["activations"] = snap_loss_model_activations(
+                self.model,
+                self.activations.get_last_activations(self.model),
+            )
+        if self.do_params:
+            res["params"] = snap_loss_model_params(self.model)
+        return res
 
 
 class LSQQuantize(torch.autograd.Function):

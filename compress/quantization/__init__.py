@@ -11,6 +11,9 @@ from compress.quantization.qat_ops import (
     QATLinear,
     LSQConv2d,
     LSQLinear,
+    snap_loss_model_activations,
+    snap_loss_model_params,
+    SnapRegularizer,
 )
 
 import torch.nn.functional as F
@@ -183,14 +186,24 @@ def prepare_for_qat(
         for part in parent_path:
             parent_module = getattr(parent_module, part)
 
+        if isinstance(module, nn.Linear):
+            if name in weight_specs:
+                assert name in input_specs, f"Input spec for {name} not found"
+                mod = QATLinear(weight_specs[name], input_specs[name], module)
+            else:
+                mod = QATLinear(weight_specs["linear"], input_specs["linear"], module)
+        elif isinstance(module, nn.Conv2d):
+            if name in weight_specs:
+                assert name in input_specs, f"Input spec for {name} not found"
+                mod = QATConv2d(weight_specs[name], input_specs[name], module)
+            else:
+                mod = QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module)
+        else:
+            continue
         setattr(
             parent_module,
             attr_name,
-            (
-                QATLinear(weight_specs["linear"], input_specs["linear"], module)
-                if isinstance(module, nn.Linear)
-                else QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module)
-            ),
+            (mod),
         )
 
     return model

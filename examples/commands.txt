@@ -54,3 +54,12 @@ python -m examples.factorize_transformers_energy --model_name=bert_imdb
 
 
 python -m examples.iterative_resnet_prune --sv_regularizer=hoyer_sparsity --load_path=resnet_hoyer_sp.pth
+
+
+# 8 -> 4 -> 2
+python -m examples.train_snap_quant --leave_edge_layers_8_bits  --snap_loss_params --snap_loss_activations --load_from=resnet18.pth --bits_schedule=8,4,2 --epochs_schedule=0,3,10
+python -m examples.quantize --save_path=qat_snap_resnet18.pth --leave_edge_layers_8_bits 
+
+# 9 -> 6 -> 3
+python -m examples.train_snap_quant --leave_edge_layers_8_bits  --snap_loss_params --snap_loss_activations --load_from=resnet18.pth --bits_schedule=9,6,3 --epochs_schedule=0,3,10
+python -m examples.quantize --save_path=qat_snap_resnet18.pth --leave_edge_layers_8_bits 
