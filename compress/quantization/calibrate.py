@@ -32,6 +32,8 @@ def calibrate(
         xmax = x.abs().amax(reduction_dims)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         shape = [1] * x.ndim
+        if scale == 0:
+            scale = torch.tensor(1.0).to(x.device)
 
         for dim in dims_sub(list(range(x.ndim)), reduction_dims):
             shape[dim] = x.shape[dim]

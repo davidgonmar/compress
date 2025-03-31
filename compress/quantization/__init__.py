@@ -14,6 +14,8 @@ from compress.quantization.qat_ops import (
     snap_loss_model_activations,
     snap_loss_model_params,
     SnapRegularizer,
+    PACTReLU,
+    get_regularizer_for_pact,
 )
 
 import torch.nn.functional as F
@@ -59,8 +61,12 @@ def to_quantized_online(
             (
                 QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
                 if isinstance(module, nn.Linear)
-                else QuantizedConv2d(
-                    weight_specs["conv2d"], input_specs["conv2d"], module
+                else (
+                    QuantizedConv2d(
+                        weight_specs["conv2d"], input_specs["conv2d"], module
+                    )
+                    if isinstance(module, nn.Conv2d)
+                    else module
                 )
             ),
         )
@@ -166,6 +172,7 @@ def prepare_for_qat(
     model: nn.Module,
     input_specs: IntQuantizationSpec,
     weight_specs: IntQuantizationSpec,
+    use_PACT=False,
     inplace=True,
     **kwargs,
 ):
@@ -198,6 +205,8 @@ def prepare_for_qat(
                 mod = QATConv2d(weight_specs[name], input_specs[name], module)
             else:
                 mod = QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module)
+        elif isinstance(module, nn.ReLU) and use_PACT:
+            mod = PACTReLU()
         else:
             continue
         setattr(

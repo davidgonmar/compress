@@ -159,15 +159,16 @@ def snap_loss_model_activations(
         if isinstance(layer, (QATConv2d, QATLinear)) and name in activations:
             loss += mse(
                 activations[name],
-                dequantize(
-                    quantize(
-                        activations[name],
-                        calibrate(activations[name], layer.input_spec),
-                    ),
-                    calibrate(activations[name], layer.input_spec),
+                fake_quantize(
+                    activations[name], calibrate(activations[name], layer.input_spec)
                 ),
             )
-    return loss
+            # assert act and fake_quantize are not nan
+            # $print(calibrate(activations[name], layer.input_spec))
+            # assert not torch.isnan(activations[name]).any()
+            # assert not torch.isnan(fake_quantize(activations[name], calibrate(activations[name], layer.input_spec))).any()
+            # assert not torch.isnan(loss).any()
+    return loss / len(activations)
 
 
 class ActivationCatcher:
@@ -409,3 +410,33 @@ class LSQConv2d(nn.Conv2d):
             quantize(self.weight, self.weight_info), requires_grad=False
         )
         return ret
+
+
+class PACTReLU(nn.ReLU):
+    def __init__(self, alpha=2.0, inplace=False):
+        super().__init__(inplace)
+        self.alpha = torch.nn.Parameter(torch.tensor(alpha), requires_grad=True)
+
+    def forward(self, x):
+        # print(self.alpha.grad, self.alpha)
+        return torch.clamp(x, torch.tensor(0).to(x.device), self.alpha)
+
+    def __repr__(self):
+        return f"PACTReLU(alpha={self.alpha}, inplace={self.inplace})"
+
+
+def get_regularizer_for_pact(model):
+    # finds PACT layers and returns a regularizer for them: L2 of the alpha parameter
+    pact_layers = []
+    for name, module in model.named_modules():
+        if isinstance(module, PACTReLU):
+            pact_layers.append(module)
+    if not pact_layers:
+
+        def pact_regularizer():
+            return torch.tensor(0.0)
+
+    def pact_regularizer():
+        return sum((layer.alpha**2).sum() for layer in pact_layers)
+
+    return pact_regularizer

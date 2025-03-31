@@ -10,6 +10,7 @@ from compress.quantization import (
     prepare_for_qat,
     to_quantized_online,
     merge_qat_model,
+    get_regularizer_for_pact,
     SnapRegularizer,
 )
 import torchvision
@@ -26,12 +27,11 @@ parser.add_argument("--snap_loss_activations", action="store_true")
 parser.add_argument("--snap_loss_params", action="store_true")
 parser.add_argument("--load_from", type=str, default=None)
 
-# usage example --bits_schedule=8,4,2 --epochs_schedule=10,20,30
 parser.add_argument(
     "--bits_schedule",
     type=str,
-    default="8",
-    help="comma separated list of bitwidths",
+    default="8*8",
+    help="format: weights_bits,weights_bits*acts_bits,acts_bits",
 )
 
 parser.add_argument(
@@ -43,10 +43,12 @@ parser.add_argument(
 
 args = parser.parse_args()
 
-sched1 = list(map(int, args.bits_schedule.split(",")))
+weight_sched_str, act_sched_str = args.bits_schedule.split("*")
+sched1_w = list(map(int, weight_sched_str.split(",")))
+sched1_a = list(map(int, act_sched_str.split(",")))
 sched2 = list(map(int, args.epochs_schedule.split(",")))
-sched = list(zip(sched1, sched2))
-print("Bits schedule:", sched, sched1, sched2)
+sched = list(zip(sched1_w, sched1_a, sched2))
+print("Bits schedule (weight, act, epoch):", sched)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(
@@ -72,11 +74,9 @@ val_dataset = datasets.CIFAR10(
 )
 val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=512, shuffle=False)
 model = resnet18(num_classes=10).to(device)
-# load weights from torch's pretrained model
 torch_weights = torchvision.models.resnet18(pretrained=True).state_dict()
 del torch_weights["fc.weight"]
 del torch_weights["fc.bias"]
-# do not load weights for the final layer (classification layer)
 model.load_state_dict(torch_weights, strict=False)
 
 if args.load_from:
@@ -86,29 +86,35 @@ if args.load_from:
     else:
         model = loaded
 
-args.nbits = sched[0][0]
+args.nbits_w = sched[0][0]
+args.nbits_a = sched[0][1]
 
 specs = {
-    "linear": IntQuantizationSpec(nbits=args.nbits, signed=True),
-    "conv2d": IntQuantizationSpec(nbits=args.nbits, signed=True),
+    "linear": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
+    "conv2d": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
+}
+weight_specs = {
+    "linear": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
+    "conv2d": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
 }
 
-
 if args.leave_edge_layers_8_bits:
-    # last layer key is "fc" for resnet18
     specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
-    # first layer key is "conv1" for resnet18
     specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
+    weight_specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
+    weight_specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
 
-model = prepare_for_qat(model, input_specs=specs, weight_specs=specs)  # W8A8
+model = prepare_for_qat(
+    model, input_specs=specs, use_PACT=False, weight_specs=weight_specs
+)
+model.to(device)
 
-
+pact_reg = get_regularizer_for_pact(model)
 reg = SnapRegularizer(
     model,
     do_activations=args.snap_loss_activations,
     do_params=args.snap_loss_params,
 )
-
 
 criterion = nn.CrossEntropyLoss()
 
@@ -117,39 +123,55 @@ scheduler = StepLR(optimizer, step_size=8, gamma=0.1)
 
 print("Starting training. Bits schedule:", sched)
 del sched[0]
-
 for epoch in range(100):
-    # update nbits
-    if sched and epoch == sched[0][1]:
-        print(f"Changing nbits to {sched[0][0]}")
+    if sched and epoch == sched[0][2]:
+        print(f"Changing nbits: weights={sched[0][0]}, activations={sched[0][1]}")
         model = merge_qat_model(model, inplace=False)
-        args.nbits = sched[0][0]
+
+        args.nbits_w = sched[0][0]
+        args.nbits_a = sched[0][1]
         del sched[0]
+
         specs = {
-            "linear": IntQuantizationSpec(nbits=args.nbits, signed=True),
-            "conv2d": IntQuantizationSpec(nbits=args.nbits, signed=True),
+            "linear": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
+            "conv2d": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
         }
+        weight_specs = {
+            "linear": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
+            "conv2d": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
+        }
+
         if args.leave_edge_layers_8_bits:
             specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
             specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
+            weight_specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
+            weight_specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
 
-        model = prepare_for_qat(model, input_specs=specs, weight_specs=specs)  # W8A8
+        model = prepare_for_qat(model, input_specs=specs, weight_specs=weight_specs)
         reg = SnapRegularizer(
             model,
             do_activations=args.snap_loss_activations,
             do_params=args.snap_loss_params,
         )
 
+        model.to(device)
+        pact_reg = get_regularizer_for_pact(model)
+
+        optimizer = optim.AdamW(model.parameters(), lr=0.0001)
+        scheduler = StepLR(optimizer, step_size=8, gamma=0.1)
+
     model.train()
     train_loss_acc = 0.0
     snap_loss_params_acc = 0.0
     snap_loss_acts_acc = 0.0
+    pact_reg_loss = 0.0
 
     for images, labels in tqdm(
         train_loader, desc=f"Epoch {epoch + 1} - Training", leave=False
     ):
-        images, labels = images.to(device), labels.to(device)
         optimizer.zero_grad()
+        images, labels = images.to(device), labels.to(device)
+
         outputs = model(images)
         train_loss = criterion(outputs, labels)
         snap_loss_dict = reg.snap_loss()
@@ -157,18 +179,26 @@ for epoch in range(100):
             snap_loss_dict["activations"] if args.snap_loss_activations else 0
         )
         snap_loss_params = snap_loss_dict["params"] if args.snap_loss_params else 0
-        (train_loss + snap_loss_acts * 0.5 + snap_loss_params * 0.5).backward()
+        pact_reg_loss = pact_reg()
+        (
+            train_loss
+            + 0.05 * snap_loss_params
+            + 0.05 * snap_loss_acts
+            + 0.0 * pact_reg_loss
+        ).backward()
+
         optimizer.step()
+
         train_loss_acc += train_loss.item() * images.size(0)
         snap_loss_params_acc += snap_loss_params * images.size(0)
         snap_loss_acts_acc += snap_loss_acts * images.size(0)
+        pact_reg_loss = pact_reg_loss * images.size(0)
 
     scheduler.step()
 
     print(
-        f"Epoch {epoch + 1}, Loss: {train_loss_acc / len(train_loader.dataset):.4f}, Snap Loss Params: {snap_loss_params_acc / len(train_loader.dataset):.4f}, Snap Loss Acts: {snap_loss_acts_acc / len(train_loader.dataset):.4f}"
+        f"Epoch {epoch + 1}, Loss: {train_loss_acc / len(train_loader.dataset):.4f}, Snap Loss Params: {snap_loss_params_acc / len(train_loader.dataset):.4f}, Snap Loss Acts: {snap_loss_acts_acc / len(train_loader.dataset):.4f}, Pact Reg Loss: {pact_reg_loss / len(train_loader.dataset):.4f}"
     )
-
     model.eval()
     correct = 0
     total = 0
@@ -186,8 +216,10 @@ for epoch in range(100):
     print(f"Epoch {epoch + 1}, Accuracy: {accuracy:.2f}%")
 
     model_requantized = to_quantized_online(
-        merge_qat_model(model, inplace=False), input_specs=specs, weight_specs=specs
-    )  # W8A8
+        merge_qat_model(model, inplace=False),
+        input_specs=specs,
+        weight_specs=weight_specs,
+    )
     model_requantized.eval()
     correct = 0
     total = 0

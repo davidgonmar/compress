@@ -92,6 +92,9 @@ class IntQuantizationInfo(nn.Module):
             else None
         )
 
+    def __repr__(self):
+        return f"IntQuantizationInfo(spec={self.spec}, scale={self.scale}, zero_point={self.zero_point})"
+
 
 class STERound(torch.autograd.Function):
     @staticmethod
