@@ -1,30 +1,32 @@
 from typing import Callable
 from torch import nn
-from compress.low_rank_ops import LowRankConv2d, LowRankLinear
+import functools as ft
 
 
 def default_should_do(module: nn.Module, full_name: str):
     return True
 
 
-def gather_submodules(model: nn.Module, should_do: Callable, prefix=""):
-    mods = []
-    for name, module in model.named_children():
-        full_name = f"{prefix}.{name}" if prefix else name
-        if isinstance(module, nn.Sequential):
-            for idx, sub_module in enumerate(module):
-                sub_full_name = f"{full_name}.{idx}"
-                if should_do(sub_module, sub_full_name):
-                    mods.append((sub_full_name, sub_module))
-                    mods.extend(
-                        gather_submodules(sub_module, should_do, prefix=sub_full_name)
-                    )
-                else:
-                    mods.extend(
-                        gather_submodules(sub_module, should_do, prefix=sub_full_name)
-                    )
-        else:
-            if should_do(module, full_name):
-                mods.append((full_name, module))
-            mods.extend(gather_submodules(module, should_do, prefix=full_name))
-    return mods
+def gather_submodules(model: nn.Module, should_do: Callable) -> list:
+    return [
+        (name, module)
+        for name, module in model.named_modules()
+        if should_do(module, name)
+    ]
+
+
+def keys_passlist_should_do(keys):
+    return ft.partial(lambda keys, module, full_name: full_name in keys, keys)
+
+
+def cls_passlist_should_do(cls_list):
+    return ft.partial(
+        lambda cls_list, module, full_name: isinstance(module, tuple(cls_list)),
+        cls_list,
+    )
+
+
+def combine_should_do(should_do1: Callable, should_do2: Callable) -> Callable:
+    return lambda module, full_name: should_do1(module, full_name) and should_do2(
+        module, full_name
+    )

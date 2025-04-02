@@ -6,12 +6,13 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 from tqdm import tqdm
 from compress.quantization import (
-    IntQuantizationSpec,
+    IntAffineQuantizationSpec,
     prepare_for_qat,
     to_quantized_online,
     merge_qat_model,
     get_regularizer_for_pact,
     SnapRegularizer,
+    IntAffineQuantizationMode,
 )
 import torchvision
 import argparse
@@ -90,22 +91,38 @@ args.nbits_w = sched[0][0]
 args.nbits_a = sched[0][1]
 
 specs = {
-    "linear": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
-    "conv2d": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
+    "linear": IntAffineQuantizationSpec(
+        nbits=args.nbits_a, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    ),
+    "conv2d": IntAffineQuantizationSpec(
+        nbits=args.nbits_a, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    ),
 }
 weight_specs = {
-    "linear": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
-    "conv2d": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
+    "linear": IntAffineQuantizationSpec(
+        nbits=args.nbits_w, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    ),
+    "conv2d": IntAffineQuantizationSpec(
+        nbits=args.nbits_w, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    ),
 }
 
 if args.leave_edge_layers_8_bits:
-    specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
-    specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
-    weight_specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
-    weight_specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
+    specs["fc"] = IntAffineQuantizationSpec(
+        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    )
+    specs["conv1"] = IntAffineQuantizationSpec(
+        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    )
+    weight_specs["fc"] = IntAffineQuantizationSpec(
+        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    )
+    weight_specs["conv1"] = IntAffineQuantizationSpec(
+        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+    )
 
 model = prepare_for_qat(
-    model, input_specs=specs, use_PACT=False, weight_specs=weight_specs
+    model, input_specs=specs, use_PACT=True, weight_specs=weight_specs
 )
 model.to(device)
 
@@ -123,7 +140,11 @@ scheduler = StepLR(optimizer, step_size=8, gamma=0.1)
 
 print("Starting training. Bits schedule:", sched)
 del sched[0]
-for epoch in range(100):
+
+print(model)
+
+print(merge_qat_model(model, inplace=False))
+for epoch in range(1000):
     if sched and epoch == sched[0][2]:
         print(f"Changing nbits: weights={sched[0][0]}, activations={sched[0][1]}")
         model = merge_qat_model(model, inplace=False)
@@ -133,19 +154,43 @@ for epoch in range(100):
         del sched[0]
 
         specs = {
-            "linear": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
-            "conv2d": IntQuantizationSpec(nbits=args.nbits_a, signed=True),
+            "linear": IntAffineQuantizationSpec(
+                nbits=args.nbits_a,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            ),
+            "conv2d": IntAffineQuantizationSpec(
+                nbits=args.nbits_a,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            ),
         }
         weight_specs = {
-            "linear": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
-            "conv2d": IntQuantizationSpec(nbits=args.nbits_w, signed=True),
+            "linear": IntAffineQuantizationSpec(
+                nbits=args.nbits_w,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            ),
+            "conv2d": IntAffineQuantizationSpec(
+                nbits=args.nbits_w,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            ),
         }
 
         if args.leave_edge_layers_8_bits:
-            specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
-            specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
-            weight_specs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
-            weight_specs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
+            specs["fc"] = IntAffineQuantizationSpec(
+                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+            )
+            specs["conv1"] = IntAffineQuantizationSpec(
+                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+            )
+            weight_specs["fc"] = IntAffineQuantizationSpec(
+                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+            )
+            weight_specs["conv1"] = IntAffineQuantizationSpec(
+                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
+            )
 
         model = prepare_for_qat(model, input_specs=specs, weight_specs=weight_specs)
         reg = SnapRegularizer(
@@ -184,7 +229,7 @@ for epoch in range(100):
             train_loss
             + 0.05 * snap_loss_params
             + 0.05 * snap_loss_acts
-            + 0.0 * pact_reg_loss
+            + 1 * pact_reg_loss
         ).backward()
 
         optimizer.step()

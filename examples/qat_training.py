@@ -6,7 +6,7 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 from tqdm import tqdm
 from compress.quantization import (
-    IntQuantizationSpec,
+    IntAffineQuantizationSpec,
     prepare_for_qat,
     prepare_for_qat_lsq,
     to_quantized_online,
@@ -62,8 +62,8 @@ del torch_weights["fc.bias"]
 # do not load weights for the final layer (classification layer)
 model.load_state_dict(torch_weights, strict=False)
 specs = {
-    "linear": IntQuantizationSpec(nbits=args.nbits, signed=True),
-    "conv2d": IntQuantizationSpec(nbits=args.nbits, signed=True),
+    "linear": IntAffineQuantizationSpec(nbits=args.nbits, signed=True),
+    "conv2d": IntAffineQuantizationSpec(nbits=args.nbits, signed=True),
 }
 if args.method == "qat":
     model = prepare_for_qat(model, input_specs=specs, weight_specs=specs)  # W8A8

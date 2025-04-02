@@ -1,67 +1,72 @@
-from compress.common import gather_submodules
-import torch.nn as nn
-import pytest
+import unittest
+from torch import nn
+from compress.common import default_should_do, gather_submodules, extract_from_keys
 
 
-class DummyModel(nn.Module):
+class DummyModule(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc = nn.Linear(10, 5)
-        self.conv = nn.Conv2d(3, 6, kernel_size=3)
-        self.seq = nn.Sequential(
-            nn.Linear(5, 2),
-            nn.Conv2d(6, 3, kernel_size=1),
-            nn.Sequential(nn.Linear(2, 2)),
+        self.conv = nn.Conv2d(3, 3, kernel_size=3)
+        self.relu = nn.ReLU()
+        self.seq = nn.Sequential(nn.Linear(10, 5), nn.BatchNorm1d(5))
+
+
+class NestedModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer1 = nn.Sequential(nn.Conv2d(1, 1, kernel_size=1), nn.ReLU())
+        self.layer2 = nn.ModuleList([nn.Linear(4, 2), nn.Linear(2, 1)])
+
+
+class TestCompressCommon(unittest.TestCase):
+    def setUp(self):
+        self.model = DummyModule()
+
+    def test_gather_submodules_default(self):
+        result = gather_submodules(self.model, default_should_do)
+        names = set(name for name, _ in result)
+        expected_names = {"", "conv", "relu", "seq", "seq.0", "seq.1"}
+        self.assertEqual(names, expected_names)
+
+    def test_gather_submodules_custom_lambda(self):
+        result = gather_submodules(
+            self.model, lambda module, full_name: full_name.startswith("seq")
         )
-        self.submodule = nn.Module()
-        self.submodule.inner = nn.Linear(4, 2)
+        names = set(name for name, _ in result)
+        expected_names = {"seq", "seq.0", "seq.1"}
+        self.assertEqual(names, expected_names)
 
-    def forward(self, x):
-        return x
+    def test_extract_from_keys_valid(self):
+        keys = ["", "conv", "seq.1"]
+        result = extract_from_keys(self.model, keys)
+        names = set(name for name, _ in result)
+        expected_names = set(keys)
+        self.assertEqual(names, expected_names)
+
+    def test_extract_from_keys_empty_keys(self):
+        result = extract_from_keys(self.model, [])
+        self.assertEqual(result, [])
+
+    def test_extract_from_keys_nonexistent_keys(self):
+        keys = ["nonexistent", "invalid"]
+        result = extract_from_keys(self.model, keys)
+        self.assertEqual(result, [])
+
+    def test_nested_module_structure(self):
+        nested_model = NestedModule()
+        result = gather_submodules(nested_model, default_should_do)
+        names = set(name for name, _ in result)
+        expected_names = {
+            "",
+            "layer1",
+            "layer1.0",
+            "layer1.1",
+            "layer2",
+            "layer2.0",
+            "layer2.1",
+        }
+        self.assertEqual(names, expected_names)
 
 
-@pytest.fixture
-def model():
-    return DummyModel()
-
-
-def test_gather_linear(model):
-    def is_linear(module, name):
-        return isinstance(module, nn.Linear)
-
-    gathered = gather_submodules(model, is_linear)
-    expected = {
-        "fc": model.fc,
-        "seq.0": model.seq[0],
-        "seq.2.0": model.seq[2][0],
-        "submodule.inner": model.submodule.inner,
-    }
-    gathered_dict = {name: mod for name, mod in gathered}
-    assert gathered_dict == expected
-
-
-def test_gather_conv(model):
-    def is_conv(module, name):
-        return isinstance(module, nn.Conv2d)
-
-    gathered = gather_submodules(model, is_conv)
-    expected = {"conv": model.conv, "seq.1": model.seq[1]}
-    gathered_dict = {name: mod for name, mod in gathered}
-    assert gathered_dict == expected
-
-
-def test_gather_all(model):
-    def always_true(module, name):
-        return True
-
-    gathered = gather_submodules(model, always_true)
-    expected = {
-        "fc": model.fc,
-        "conv": model.conv,
-        "seq.0": model.seq[0],
-        "seq.1": model.seq[1],
-        "seq.2": model.seq[2],
-        "submodule.inner": model.submodule.inner,
-    }
-    gathered_dict = {name: mod for name, mod in gathered}
-    assert gathered_dict == expected
+if __name__ == "__main__":
+    unittest.main()

@@ -1,9 +1,9 @@
 import torch
 from torch import nn
-from compress.quantization.util import (
-    IntQuantizationInfo,
-    IntQuantizationSpec,
-    ste_round,
+from compress.quantization.common import (
+    IntAffineQuantizationInfo,
+    IntAffineQuantizationSpec,
+    quantize,
 )
 from compress.quantization.calibrate import calibrate
 from .kernels import (
@@ -11,30 +11,6 @@ from .kernels import (
     triton_quantized_int8_conv2d,
     TRITON_AVAILABLE,
 )
-
-
-def quantize(x: torch.Tensor, info: IntQuantizationInfo):
-    if info.zero_point is None:
-        return torch.clamp(ste_round(x / info.scale), info.qmin, info.qmax).to(
-            info.get_dtype()
-        )
-
-    return torch.clamp(
-        ste_round(x / info.scale + info.zero_point),
-        info.qmin,
-        info.qmax,
-    ).to(info.get_dtype())
-
-
-def dequantize(x: torch.Tensor, info: IntQuantizationInfo):
-    if info.zero_point is None:
-        return info.scale * x
-
-    return info.scale * (x - info.zero_point)
-
-
-def fake_quantize(x: torch.Tensor, info: IntQuantizationInfo):
-    return dequantize(quantize(x, info), info)
 
 
 def torch_simulated_int8_matmul(
@@ -93,23 +69,27 @@ def torch_simulated_int8_conv2d(
     return ret.to(torch.float32) * scale_a * scale_b
 
 
-def is_supported_linear(spec_a: IntQuantizationSpec, spec_b: IntQuantizationSpec):
+def is_supported_linear(
+    spec_a: IntAffineQuantizationSpec, spec_b: IntAffineQuantizationSpec
+):
     if not TRITON_AVAILABLE:
         return False
-    if isinstance(spec_a, IntQuantizationInfo):
+    if isinstance(spec_a, IntAffineQuantizationInfo):
         spec_a = spec_a.spec
-    if isinstance(spec_b, IntQuantizationInfo):
+    if isinstance(spec_b, IntAffineQuantizationInfo):
         spec_b = spec_b.spec
 
     return spec_a.nbits == 8 and spec_b.nbits == 8 and spec_a.signed and spec_b.signed
 
 
-def is_supported_conv2d(spec_a: IntQuantizationSpec, spec_b: IntQuantizationSpec, conv):
+def is_supported_conv2d(
+    spec_a: IntAffineQuantizationSpec, spec_b: IntAffineQuantizationSpec, conv
+):
     if not TRITON_AVAILABLE:
         return False
-    if isinstance(spec_a, IntQuantizationInfo):
+    if isinstance(spec_a, IntAffineQuantizationInfo):
         spec_a = spec_a.spec
-    if isinstance(spec_b, IntQuantizationInfo):
+    if isinstance(spec_b, IntAffineQuantizationInfo):
         spec_b = spec_b.spec
     return (
         spec_a.nbits == 8
@@ -126,8 +106,8 @@ def is_supported_conv2d(spec_a: IntQuantizationSpec, spec_b: IntQuantizationSpec
 class QuantizedLinear(nn.Linear):
     def __init__(
         self,
-        weight_spec: IntQuantizationSpec,
-        input_info_or_spec: IntQuantizationInfo | IntQuantizationSpec,
+        weight_spec: IntAffineQuantizationSpec,
+        input_info_or_spec: IntAffineQuantizationInfo | IntAffineQuantizationSpec,
         linear: nn.Linear,
         simulated: bool = False,
     ):
@@ -142,10 +122,8 @@ class QuantizedLinear(nn.Linear):
         assert isinstance(linear, nn.Linear), "Only nn.Linear is supported"
         super().__init__(in_features, out_features, bias)
         self.weight_spec = weight_spec
-        self.weight_info = calibrate(
-            linear.weight, weight_spec, return_z_as_int=not self.simulated
-        )
-        if isinstance(input_info_or_spec, IntQuantizationInfo):
+        self.weight_info = calibrate(linear.weight, weight_spec)
+        if isinstance(input_info_or_spec, IntAffineQuantizationInfo):
             self.input_info = input_info_or_spec
             self.online_quant = False
         else:
@@ -160,9 +138,7 @@ class QuantizedLinear(nn.Linear):
 
     def quantize_input(self, x: torch.Tensor):
         if self.online_quant:
-            input_info = calibrate(
-                x, self.input_spec, return_z_as_int=not self.simulated
-            )
+            input_info = calibrate(x, self.input_spec)
             return quantize(x, input_info), input_info
         return quantize(x, self.input_info), self.input_info
 
@@ -197,8 +173,8 @@ class QuantizedLinear(nn.Linear):
 class QuantizedConv2d(nn.Conv2d):
     def __init__(
         self,
-        weight_spec: IntQuantizationSpec,
-        input_info_or_spec: IntQuantizationInfo | IntQuantizationSpec,
+        weight_spec: IntAffineQuantizationSpec,
+        input_info_or_spec: IntAffineQuantizationInfo | IntAffineQuantizationSpec,
         conv2d: nn.Conv2d,
         simulated: bool = False,
     ):
@@ -238,10 +214,8 @@ class QuantizedConv2d(nn.Conv2d):
         )
         assert isinstance(conv2d, nn.Conv2d), "Only nn.Conv2d is supported"
         self.weight_spec = weight_spec
-        self.weight_info = calibrate(
-            conv2d.weight, weight_spec, return_z_as_int=not simulated
-        )
-        if isinstance(input_info_or_spec, IntQuantizationInfo):
+        self.weight_info = calibrate(conv2d.weight, weight_spec)
+        if isinstance(input_info_or_spec, IntAffineQuantizationInfo):
             self.input_info = input_info_or_spec
             self.online_quant = False
         else:
@@ -254,9 +228,7 @@ class QuantizedConv2d(nn.Conv2d):
 
     def quantize_input(self, x: torch.Tensor):
         if self.online_quant:
-            input_info = calibrate(
-                x, self.input_spec, return_z_as_int=not self.simulated
-            )
+            input_info = calibrate(x, self.input_spec)
             return quantize(x, input_info), input_info
         return quantize(x, self.input_info), self.input_info
 
@@ -358,8 +330,8 @@ class KMeansQuantizedLinear(nn.Linear):
     def __init__(
         self,
         linear: nn.Linear,
-        weight_spec: IntQuantizationSpec,
-        input_spec: IntQuantizationSpec | None = None,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec | None = None,
         correct_bias: bool = False,
     ):
         super().__init__(
@@ -396,8 +368,8 @@ class KMeansQuantizedConv2d(nn.Conv2d):
     def __init__(
         self,
         conv2d: nn.Conv2d,
-        weight_spec: IntQuantizationSpec,
-        input_spec: IntQuantizationSpec | None = None,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec | None = None,
         correct_bias: bool = False,
     ):
         super().__init__(
@@ -442,14 +414,14 @@ class KMeansQuantizedConv2d(nn.Conv2d):
 if __name__ == "__main__":
     linear = nn.Linear(10, 10).to("cuda")
     qlinear = QuantizedLinear(
-        IntQuantizationSpec(8, True), IntQuantizationSpec(8, True), linear
+        IntAffineQuantizationSpec(8, True), IntAffineQuantizationSpec(8, True), linear
     )
 
     inp = torch.randn(10, 10).to("cuda")
 
     qlinearsim = QuantizedLinear(
-        IntQuantizationSpec(8, True),
-        IntQuantizationSpec(8, True),
+        IntAffineQuantizationSpec(8, True),
+        IntAffineQuantizationSpec(8, True),
         linear,
         simulated=True,
     )
@@ -462,14 +434,14 @@ if __name__ == "__main__":
 
     conv2d = nn.Conv2d(3, 3, 3).to("cuda")
     qconv2d = QuantizedConv2d(
-        IntQuantizationSpec(8, True), IntQuantizationSpec(8, True), conv2d
+        IntAffineQuantizationSpec(8, True), IntAffineQuantizationSpec(8, True), conv2d
     )
 
     inp = torch.randn(1, 3, 10, 10).to("cuda")
 
     qconv2dsim = QuantizedConv2d(
-        IntQuantizationSpec(8, True),
-        IntQuantizationSpec(8, True),
+        IntAffineQuantizationSpec(8, True),
+        IntAffineQuantizationSpec(8, True),
         conv2d,
         simulated=True,
     )

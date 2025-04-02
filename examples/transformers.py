@@ -6,7 +6,7 @@ import argparse
 import time
 import torch
 from transformers import AutoModelForCausalLM
-from compress.quantization import to_quantized_online, IntQuantizationSpec
+from compress.quantization import to_quantized_online, IntAffineQuantizationSpec
 
 
 def main():
@@ -22,8 +22,8 @@ def main():
     model_name = "andrijdavid/Llama3-1B-Base"
     model = AutoModelForCausalLM.from_pretrained(model_name).to("cuda")
     if args.quantize:
-        w8 = IntQuantizationSpec(nbits=8, signed=True)
-        a8 = IntQuantizationSpec(nbits=8, signed=True)
+        w8 = IntAffineQuantizationSpec(nbits=8, signed=True)
+        a8 = IntAffineQuantizationSpec(nbits=8, signed=True)
         model = to_quantized_online(model, {"linear": w8}, {"linear": a8})
     model.eval()
 

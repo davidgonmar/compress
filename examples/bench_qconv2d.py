@@ -2,7 +2,7 @@ import argparse
 import time
 import torch
 import torch.nn as nn
-from compress.quantization import IntQuantizationSpec, QuantizedConv2d, calibrate
+from compress.quantization import IntAffineQuantizationSpec, QuantizedConv2d, calibrate
 
 
 def benchmark_module(module, x, num_warmup=10, num_iters=1000, device="cpu"):
@@ -27,8 +27,8 @@ def main(args):
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
     print(f"Using device: {device}")
 
-    weight_spec = IntQuantizationSpec(nbits=8, signed=True)
-    input_spec = IntQuantizationSpec(nbits=8, signed=True)
+    weight_spec = IntAffineQuantizationSpec(nbits=8, signed=True)
+    input_spec = IntAffineQuantizationSpec(nbits=8, signed=True)
 
     input_spec = calibrate(torch.randn(1, 1, 1, 1), input_spec)
 

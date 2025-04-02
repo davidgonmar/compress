@@ -1,39 +1,47 @@
 from torch import nn
-from compress.quantization.util import IntQuantizationSpec, IntQuantizationInfo
-import torch
-from compress.quantization.calibrate import calibrate
-from compress.quantization.ptq_ops import (
+from compress.quantization.common import (
+    IntAffineQuantizationSpec,
     fake_quantize,
-    QuantizedConv2d,
-    QuantizedLinear,
     quantize,
     dequantize,
 )
+import torch
+from compress.quantization.calibrate import calibrate
+from compress.quantization.ptq import (
+    QuantizedConv2d,
+    QuantizedLinear,
+)
+
 from collections import defaultdict
 import math
+
+
+# ============================================================
+# ============= REGULAR QUANTIZATION AWARE TRAINING ==========
+# ============================================================
 
 
 class QATLinear(nn.Linear):
     def __init__(
         self,
-        weight_spec: IntQuantizationSpec,
-        input_spec: IntQuantizationInfo | IntQuantizationSpec,
-        linear: nn.Linear,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
+        original_layer: nn.Linear,
     ):
         in_features, out_features, bias = (
-            linear.in_features,
-            linear.out_features,
-            linear.bias is not None,
+            original_layer.in_features,
+            original_layer.out_features,
+            original_layer.bias is not None,
         )
-        assert isinstance(linear, nn.Linear), "Only nn.Linear is supported"
+        assert isinstance(original_layer, nn.Linear), "Only nn.Linear is supported"
         super().__init__(in_features, out_features, bias)
         self.weight_spec = weight_spec
         self.input_spec = input_spec
-        self.weight = nn.Parameter(linear.weight, requires_grad=False).requires_grad_(
-            True
-        )
+        self.weight = nn.Parameter(
+            original_layer.weight, requires_grad=False
+        ).requires_grad_(True)
         self.bias = (
-            nn.Parameter(linear.bias, requires_grad=False).requires_grad_(True)
+            nn.Parameter(original_layer.bias, requires_grad=False).requires_grad_(True)
             if bias
             else None
         )
@@ -43,22 +51,22 @@ class QATLinear(nn.Linear):
         w = fake_quantize(self.weight, calibrate(self.weight, self.weight_spec))
         return nn.functional.linear(x, w, self.bias)
 
-    def __repr__(self):
-        return f"FakeQuantizedLinear({self.in_features}, {self.out_features}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
-
     def to_linear(self):
         ret = nn.Linear(self.in_features, self.out_features, self.bias is not None)
         ret.weight = self.weight
         ret.bias = self.bias
         return ret
 
+    def __repr__(self):
+        return f"FakeQuantizedLinear({self.in_features}, {self.out_features}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
+
 
 class QATConv2d(nn.Conv2d):
     def __init__(
         self,
-        weight_spec: IntQuantizationSpec,
-        input_spec: IntQuantizationSpec,
-        conv2d: nn.Conv2d,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
+        original_layer: nn.Conv2d,
     ):
         (
             in_channels,
@@ -70,14 +78,14 @@ class QATConv2d(nn.Conv2d):
             groups,
             bias,
         ) = (
-            conv2d.in_channels,
-            conv2d.out_channels,
-            conv2d.kernel_size,
-            conv2d.stride,
-            conv2d.padding,
-            conv2d.dilation,
-            conv2d.groups,
-            conv2d.bias is not None,
+            original_layer.in_channels,
+            original_layer.out_channels,
+            original_layer.kernel_size,
+            original_layer.stride,
+            original_layer.padding,
+            original_layer.dilation,
+            original_layer.groups,
+            original_layer.bias is not None,
         )
         super().__init__(
             in_channels,
@@ -89,14 +97,14 @@ class QATConv2d(nn.Conv2d):
             groups,
             bias,
         )
-        assert isinstance(conv2d, nn.Conv2d), "Only nn.Conv2d is supported"
+        assert isinstance(original_layer, nn.Conv2d), "Only nn.Conv2d is supported"
         self.weight_spec = weight_spec
         self.input_spec = input_spec
-        self.weight = nn.Parameter(conv2d.weight, requires_grad=False).requires_grad_(
-            True
-        )
+        self.weight = nn.Parameter(
+            original_layer.weight, requires_grad=False
+        ).requires_grad_(True)
         self.bias = (
-            nn.Parameter(conv2d.bias, requires_grad=False).requires_grad_(True)
+            nn.Parameter(original_layer.bias, requires_grad=False).requires_grad_(True)
             if bias
             else None
         )
@@ -127,8 +135,9 @@ class QATConv2d(nn.Conv2d):
         return ret
 
 
-def mse(x, y):
-    return (x - y).pow(2).mean()
+# ============================================================
+# ============= SNAP REGULARIZATION ==========================
+# ============================================================
 
 
 def _snap_loss_layer_params(
@@ -137,7 +146,7 @@ def _snap_loss_layer_params(
     weight = layer.weight
     quanted = quantize(weight, calibrate(weight, layer.weight_spec))
     dequanted = dequantize(quanted, calibrate(weight, layer.weight_spec)).detach()
-    return mse(weight, dequanted)
+    return (weight - dequanted).pow(2).mean()
 
 
 def snap_loss_model_params(
@@ -157,17 +166,17 @@ def snap_loss_model_activations(
     loss = 0
     for name, layer in model.named_modules():
         if isinstance(layer, (QATConv2d, QATLinear)) and name in activations:
-            loss += mse(
-                activations[name],
-                fake_quantize(
-                    activations[name], calibrate(activations[name], layer.input_spec)
-                ),
+            loss += (
+                (
+                    activations[name]
+                    - fake_quantize(
+                        activations[name],
+                        calibrate(activations[name], layer.input_spec),
+                    )
+                )
+                .pow(2)
+                .mean()
             )
-            # assert act and fake_quantize are not nan
-            # $print(calibrate(activations[name], layer.input_spec))
-            # assert not torch.isnan(activations[name]).any()
-            # assert not torch.isnan(fake_quantize(activations[name], calibrate(activations[name], layer.input_spec))).any()
-            # assert not torch.isnan(loss).any()
     return loss / len(activations)
 
 
@@ -239,6 +248,11 @@ class SnapRegularizer:
         return res
 
 
+# ============================================================
+# ============= LEARNED STEP QUANTIZATION (LSQ) ==============
+# ============================================================
+
+
 class LSQQuantize(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, scale, info):
@@ -275,8 +289,8 @@ class LSQQuantize(torch.autograd.Function):
 class LSQLinear(nn.Linear):
     def __init__(
         self,
-        weight_spec: IntQuantizationSpec,
-        input_spec: IntQuantizationSpec,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
         linear: nn.Linear,
         data_batch: torch.Tensor,
     ):
@@ -329,8 +343,8 @@ class LSQLinear(nn.Linear):
 class LSQConv2d(nn.Conv2d):
     def __init__(
         self,
-        weight_spec: IntQuantizationSpec,
-        input_spec: IntQuantizationSpec,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
         conv2d: nn.Conv2d,
         data_batch: torch.Tensor,
     ):
@@ -412,8 +426,15 @@ class LSQConv2d(nn.Conv2d):
         return ret
 
 
+# ============================================================
+# ============= PACT QUANTIZATION ============================
+# ============================================================
+
+# References https://arxiv.org/pdf/1805.06085
+
+
 class PACTReLU(nn.ReLU):
-    def __init__(self, alpha=2.0, inplace=False):
+    def __init__(self, alpha=1.0, inplace=False):
         super().__init__(inplace)
         self.alpha = torch.nn.Parameter(torch.tensor(alpha), requires_grad=True)
 

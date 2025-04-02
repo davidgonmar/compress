@@ -1,12 +1,12 @@
 import copy
 from compress.quantization.calibrate import calibrate
-from compress.quantization.ptq_ops import (
+from compress.quantization.ptq import (
     QuantizedLinear,
     QuantizedConv2d,
     KMeansQuantizedConv2d,
     KMeansQuantizedLinear,
 )
-from compress.quantization.qat_ops import (
+from compress.quantization.qat import (
     QATConv2d,
     QATLinear,
     LSQConv2d,
@@ -20,12 +20,18 @@ from compress.quantization.qat_ops import (
 
 import torch.nn.functional as F
 
-from compress.quantization.util import (
-    IntQuantizationSpec,
-    IntQuantizationInfo,
+from compress.quantization.common import (
+    IntAffineQuantizationSpec,
+    IntAffineQuantizationInfo,
+    IntAffineQuantizationMode,
     ste_floor,
 )
-from compress.common import gather_submodules, default_should_do
+from compress.common import (
+    gather_submodules,
+    default_should_do,
+    cls_passlist_should_do,
+    combine_should_do,
+)
 from torch import nn
 from tqdm import tqdm
 import torch
@@ -34,8 +40,8 @@ import gc
 
 def to_quantized_online(
     model: nn.Module,
-    input_specs: IntQuantizationSpec,
-    weight_specs: IntQuantizationSpec,
+    input_specs: IntAffineQuantizationSpec,
+    weight_specs: IntAffineQuantizationSpec,
     inplace=True,
     should_do=default_should_do,
     **kwargs,
@@ -48,7 +54,15 @@ def to_quantized_online(
         model_ = model_initializer()
         model_.load_state_dict(model.state_dict())
         model = model_
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=combine_should_do(
+            should_do,
+            cls_passlist_should_do(
+                (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
+            ),
+        ),
+    )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
         *parent_path, attr_name = name.split(".")
@@ -86,7 +100,7 @@ def get_activations(model, data_loader):
         data_loader = [data_loader]
     activations = {}
     hooks = []
-    for _, module in gather_submodules(model, should_do=default_should_do, prefix=""):
+    for _, module in gather_submodules(model, should_do=default_should_do):
         activations[module] = []
 
         def hook_fn(activations):
@@ -111,8 +125,8 @@ def get_activations(model, data_loader):
 
 def to_quantized_offline(
     model: nn.Module,
-    input_specs: IntQuantizationSpec,
-    weight_specs: IntQuantizationSpec,
+    input_specs: IntAffineQuantizationSpec,
+    weight_specs: IntAffineQuantizationSpec,
     inplace=True,
     should_do=default_should_do,
     data_loader=None,
@@ -146,7 +160,10 @@ def to_quantized_offline(
         model_ = model_initializer()
         model_.load_state_dict(model.state_dict())
         model = model_
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
         *parent_path, attr_name = name.split(".")
@@ -170,22 +187,19 @@ def to_quantized_offline(
 
 def prepare_for_qat(
     model: nn.Module,
-    input_specs: IntQuantizationSpec,
-    weight_specs: IntQuantizationSpec,
+    input_specs: IntAffineQuantizationSpec,
+    weight_specs: IntAffineQuantizationSpec,
     use_PACT=False,
     inplace=True,
     **kwargs,
 ):
     if not inplace:
-        model_initializer = kwargs.pop("model_initializer", None)
-        assert (
-            model_initializer is not None
-        ), "model_initializer must be provided if inplace=False"
-        model_ = model_initializer()
-        model_.load_state_dict(model.state_dict())
-        model = model_
+        model = copy.deepcopy(model)
     modules_to_replace = gather_submodules(
-        model, should_do=default_should_do, prefix=""
+        model,
+        should_do=cls_passlist_should_do(
+            (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
+        ),
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -220,8 +234,8 @@ def prepare_for_qat(
 
 def prepare_for_qat_lsq(
     model: nn.Module,
-    input_specs: IntQuantizationSpec,
-    weight_specs: IntQuantizationSpec,
+    input_specs: IntAffineQuantizationSpec,
+    weight_specs: IntAffineQuantizationSpec,
     data_batch: torch.Tensor,
     inplace=True,
     **kwargs,
@@ -236,7 +250,8 @@ def prepare_for_qat_lsq(
         model = model_
     activations = get_activations(model, data_batch)
     modules_to_replace = gather_submodules(
-        model, should_do=default_should_do, prefix=""
+        model,
+        should_do=default_should_do,
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -271,7 +286,8 @@ def merge_qat_lsq_into_offline_quantized_model(model: nn.Module, inplace=True):
     if not inplace:
         model = copy.deepcopy(model)
     modules_to_replace = gather_submodules(
-        model, should_do=default_should_do, prefix=""
+        model,
+        should_do=default_should_do,
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -300,7 +316,8 @@ def merge_qat_model(model: nn.Module, inplace=True):
     if not inplace:
         model = copy.deepcopy(model)
     modules_to_replace = gather_submodules(
-        model, should_do=default_should_do, prefix=""
+        model,
+        should_do=cls_passlist_should_do((QATLinear, QATConv2d)),
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -321,7 +338,7 @@ def merge_qat_model(model: nn.Module, inplace=True):
     return model
 
 
-def fake_quantize_floor(x, info: IntQuantizationInfo):
+def fake_quantize_floor(x, info: IntAffineQuantizationInfo):
     assert info.zero_point is None
     return ste_floor(x / info.scale).clamp(info.qmin, info.qmax) * info.scale
 
@@ -427,8 +444,8 @@ def adaround_for_layer(model, layer, input_specs, weight_specs, data_loader):
 
 def to_quantized_adaround(
     model: nn.Module,
-    input_specs: IntQuantizationSpec,
-    weight_specs: IntQuantizationSpec,
+    input_specs: IntAffineQuantizationSpec,
+    weight_specs: IntAffineQuantizationSpec,
     data_loader,
     inplace=True,
     should_do=default_should_do,
@@ -436,7 +453,10 @@ def to_quantized_adaround(
 ):
     if not inplace:
         model = copy.deepcopy(model)
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
         *parent_path, attr_name = name.split(".")
@@ -463,15 +483,18 @@ def to_quantized_adaround(
 
 def to_quantized_kmeans(
     model: nn.Module,
-    input_specs: IntQuantizationSpec,
-    weight_specs: IntQuantizationSpec,
+    input_specs: IntAffineQuantizationSpec,
+    weight_specs: IntAffineQuantizationSpec,
     inplace=True,
     should_do=default_should_do,
     **kwargs,
 ):
     if not inplace:
         model = copy.deepcopy(model)
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
         *parent_path, attr_name = name.split(".")

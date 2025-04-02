@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.quantization import (
-    IntQuantizationSpec,
+    IntAffineQuantizationSpec,
     to_quantized_online,
     to_quantized_offline,
     get_activations,
@@ -101,26 +101,26 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
     bit_widths, bit_widths, bit_widths, bit_widths
 ):
     wspecs = {
-        "linear": IntQuantizationSpec(w_linear_bits, signed_options[0]),
-        "conv2d": IntQuantizationSpec(w_conv_bits, signed_options[0]),
+        "linear": IntAffineQuantizationSpec(w_linear_bits, signed_options[0]),
+        "conv2d": IntAffineQuantizationSpec(w_conv_bits, signed_options[0]),
     }
 
     if args.leave_edge_layers_8_bits:
         # last layer key is "fc" for resnet18
-        wspecs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
+        wspecs["fc"] = IntAffineQuantizationSpec(nbits=8, signed=True)
         # first layer key is "conv1" for resnet18
-        wspecs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
+        wspecs["conv1"] = IntAffineQuantizationSpec(nbits=8, signed=True)
 
     inpspecs = {
-        "linear": IntQuantizationSpec(i_linear_bits, signed_options[0]),
-        "conv2d": IntQuantizationSpec(i_conv_bits, signed_options[0]),
+        "linear": IntAffineQuantizationSpec(i_linear_bits, signed_options[0]),
+        "conv2d": IntAffineQuantizationSpec(i_conv_bits, signed_options[0]),
     }
 
     if args.leave_edge_layers_8_bits:
         # last layer key is "fc" for resnet18
-        inpspecs["fc"] = IntQuantizationSpec(nbits=8, signed=True)
+        inpspecs["fc"] = IntAffineQuantizationSpec(nbits=8, signed=True)
         # first layer key is "conv1" for resnet18
-        inpspecs["conv1"] = IntQuantizationSpec(nbits=8, signed=True)
+        inpspecs["conv1"] = IntAffineQuantizationSpec(nbits=8, signed=True)
 
     if args.adaround:
         quanted = to_quantized_adaround(
