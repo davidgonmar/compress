@@ -18,6 +18,69 @@ import torchvision
 import argparse
 
 
+def get_specs():
+    specs = {
+        "linear": IntAffineQuantizationSpec(
+            nbits=args.nbits_a,
+            signed=False,
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=args.clip_percentile,
+        ),
+        "conv2d": IntAffineQuantizationSpec(
+            nbits=args.nbits_a,
+            signed=False,
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=args.clip_percentile,
+        ),
+    }
+    weight_specs = {
+        "linear": IntAffineQuantizationSpec(
+            nbits=args.nbits_w,
+            signed=True,
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=args.clip_percentile,
+        ),
+        "conv2d": IntAffineQuantizationSpec(
+            nbits=args.nbits_w,
+            signed=True,
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=args.clip_percentile,
+        ),
+    }
+
+    if args.leave_edge_layers_8_bits:
+        nbits = 8
+    else:
+        nbits = args.nbits_a
+
+    specs["fc"] = IntAffineQuantizationSpec(
+        nbits=nbits,
+        signed=False,
+        quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+        percentile=args.clip_percentile,
+    )
+    specs["conv1"] = IntAffineQuantizationSpec(
+        nbits=nbits,
+        signed=True,
+        quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+        percentile=args.clip_percentile,
+    )  # signed=True since the input is signed
+    weight_specs["fc"] = IntAffineQuantizationSpec(
+        nbits=nbits,
+        signed=True,
+        quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+        percentile=args.clip_percentile,
+    )
+    weight_specs["conv1"] = IntAffineQuantizationSpec(
+        nbits=nbits,
+        signed=True,
+        quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+        percentile=args.clip_percentile,
+    )
+
+    return specs, weight_specs
+
+
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
 parser.add_argument(
     "--leave_edge_layers_8_bits",
@@ -40,6 +103,13 @@ parser.add_argument(
     type=str,
     default="10",
     help="comma separated list of epochs",
+)
+
+parser.add_argument(
+    "--clip_percentile",
+    type=float,
+    default=0.995,  # cuts low 0.5% and high 0.5% of the values
+    help="percentile for clipping",
 )
 
 args = parser.parse_args()
@@ -90,36 +160,7 @@ if args.load_from:
 args.nbits_w = sched[0][0]
 args.nbits_a = sched[0][1]
 
-specs = {
-    "linear": IntAffineQuantizationSpec(
-        nbits=args.nbits_a, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    ),
-    "conv2d": IntAffineQuantizationSpec(
-        nbits=args.nbits_a, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    ),
-}
-weight_specs = {
-    "linear": IntAffineQuantizationSpec(
-        nbits=args.nbits_w, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    ),
-    "conv2d": IntAffineQuantizationSpec(
-        nbits=args.nbits_w, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    ),
-}
-
-if args.leave_edge_layers_8_bits:
-    specs["fc"] = IntAffineQuantizationSpec(
-        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    )
-    specs["conv1"] = IntAffineQuantizationSpec(
-        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    )
-    weight_specs["fc"] = IntAffineQuantizationSpec(
-        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    )
-    weight_specs["conv1"] = IntAffineQuantizationSpec(
-        nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-    )
+specs, weight_specs = get_specs()
 
 model = prepare_for_qat(
     model, input_specs=specs, use_PACT=True, weight_specs=weight_specs
@@ -153,44 +194,7 @@ for epoch in range(1000):
         args.nbits_a = sched[0][1]
         del sched[0]
 
-        specs = {
-            "linear": IntAffineQuantizationSpec(
-                nbits=args.nbits_a,
-                signed=True,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            ),
-            "conv2d": IntAffineQuantizationSpec(
-                nbits=args.nbits_a,
-                signed=True,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            ),
-        }
-        weight_specs = {
-            "linear": IntAffineQuantizationSpec(
-                nbits=args.nbits_w,
-                signed=True,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            ),
-            "conv2d": IntAffineQuantizationSpec(
-                nbits=args.nbits_w,
-                signed=True,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            ),
-        }
-
-        if args.leave_edge_layers_8_bits:
-            specs["fc"] = IntAffineQuantizationSpec(
-                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-            )
-            specs["conv1"] = IntAffineQuantizationSpec(
-                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-            )
-            weight_specs["fc"] = IntAffineQuantizationSpec(
-                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-            )
-            weight_specs["conv1"] = IntAffineQuantizationSpec(
-                nbits=8, signed=True, quant_mode=IntAffineQuantizationMode.SYMMETRIC
-            )
+        specs, weight_specs = get_specs()
 
         model = prepare_for_qat(model, input_specs=specs, weight_specs=weight_specs)
         reg = SnapRegularizer(
@@ -211,6 +215,13 @@ for epoch in range(1000):
     snap_loss_acts_acc = 0.0
     pact_reg_loss = 0.0
 
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear):
+            module.register_forward_hook(
+                lambda module, input, output, name=name: print(
+                    f"Layer: {name}, Input: {input[0].min().item(), input[0].max().item(), input[0].mean().item()}, Output: {output.min().item(), output.max().item(), output.mean().item()}"
+                )
+            )
     for images, labels in tqdm(
         train_loader, desc=f"Epoch {epoch + 1} - Training", leave=False
     ):

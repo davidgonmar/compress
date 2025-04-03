@@ -16,6 +16,7 @@ class IntAffineQuantizationSpec:
     nbits: int
     signed: bool
     quant_mode: IntAffineQuantizationMode
+    mode_args: dict = {}
 
     group_dims: list[int] = None
 
@@ -32,6 +33,13 @@ class IntAffineQuantizationSpec:
             assert (
                 self.signed
             ), "Statistics-aware binning only supports signed quantization"
+
+        if self.quant_mode in [
+            IntAffineQuantizationMode.SYMMETRIC,
+            IntAffineQuantizationMode.ASYMMETRIC,
+        ]:
+            if "percentile" not in self.mode_args:
+                self.mode_args["percentile"] = 1.0
 
     @property
     def qmin(self):
@@ -67,11 +75,13 @@ class IntAffineQuantizationSpec:
         signed: bool,
         quant_mode: IntAffineQuantizationMode,
         group_dims: list[int] = None,
+        **kwargs,
     ):
         self.nbits = nbits
         self.signed = signed
         self.group_dims = group_dims
         self.quant_mode = quant_mode
+        self.mode_args = kwargs
 
     def __repr__(self):
         return f"IntAffineQuantizationSpec(nbits={self.nbits}, signed={self.signed}, group_dims={self.group_dims}, quant_mode={self.quant_mode})"

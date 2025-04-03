@@ -51,18 +51,21 @@ def calibrate(
         zero_point = None
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
+    assert "percentile" in spec.mode_args, "percentile not in mode_args"
+    percentile = spec.mode_args["percentile"]
+
     if spec.quant_mode == IntAffineQuantizationMode.ASYMMETRIC:
-        # just regular min/max calibration
-        xmin = x.amin()
-        xmax = x.amax()
+        lower_percentile = (1 - percentile) / 2
+        upper_percentile = (1 + percentile) / 2
+        xmin = torch.quantile(x, lower_percentile)
+        xmax = torch.quantile(x, upper_percentile)
         scale = (xmax - xmin) / (spec.qmax - spec.qmin)
         zero_point = torch.round(spec.qmin - xmin / scale).to(x.dtype)
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point.detach())
 
     if spec.quant_mode == IntAffineQuantizationMode.SYMMETRIC:
-        # just regular amax calibration
-        assert spec.signed, "Symmetric quantization only supports signed quantization"
-        xmax = x.abs().amax()
+        # print(x.max(), x.min())
+        xmax = torch.quantile(x.abs(), percentile)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         zero_point = None
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)

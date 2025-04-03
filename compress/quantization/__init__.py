@@ -36,24 +36,30 @@ from torch import nn
 from tqdm import tqdm
 import torch
 import gc
+from typing import Dict
+
+
+def assert_all_in_classes(
+    dict: Dict[str, IntAffineQuantizationSpec],
+    classes: tuple,
+    message: str = "All keys in the dict must be in the classes",
+):
+    for key in dict:
+        assert isinstance(key, tuple(classes)), f"{key} is not in {classes}. {message}"
+    return True
 
 
 def to_quantized_online(
     model: nn.Module,
-    input_specs: IntAffineQuantizationSpec,
-    weight_specs: IntAffineQuantizationSpec,
+    input_specs: Dict[str, IntAffineQuantizationSpec],
+    weight_specs: Dict[str, IntAffineQuantizationSpec],
     inplace=True,
     should_do=default_should_do,
     **kwargs,
 ):
     if not inplace:
-        model_initializer = kwargs.pop("model_initializer", None)
-        assert (
-            model_initializer is not None
-        ), "model_initializer must be provided if inplace=False"
-        model_ = model_initializer()
-        model_.load_state_dict(model.state_dict())
-        model = model_
+        model = copy.deepcopy(model)
+
     modules_to_replace = gather_submodules(
         model,
         should_do=combine_should_do(
@@ -92,6 +98,53 @@ def to_quantized_online(
     del modules_to_replace
     gc.collect()
     torch.cuda.empty_cache()
+    return model
+
+
+def prepare_for_qat(
+    model: nn.Module,
+    input_specs: IntAffineQuantizationSpec,
+    weight_specs: IntAffineQuantizationSpec,
+    use_PACT=False,
+    inplace=True,
+    **kwargs,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=cls_passlist_should_do(
+            (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
+        ),
+    )
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        if isinstance(module, nn.Linear):
+            if name in weight_specs:
+                assert name in input_specs, f"Input spec for {name} not found"
+                mod = QATLinear(weight_specs[name], input_specs[name], module)
+            else:
+                mod = QATLinear(weight_specs["linear"], input_specs["linear"], module)
+        elif isinstance(module, nn.Conv2d):
+            if name in weight_specs:
+                assert name in input_specs, f"Input spec for {name} not found"
+                mod = QATConv2d(weight_specs[name], input_specs[name], module)
+            else:
+                mod = QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module)
+        elif isinstance(module, nn.ReLU) and use_PACT:
+            mod = PACTReLU()
+        else:
+            continue
+        setattr(
+            parent_module,
+            attr_name,
+            (mod),
+        )
+
     return model
 
 
@@ -180,53 +233,6 @@ def to_quantized_offline(
                     weight_specs["conv2d"], input_infos[module], module
                 )
             ),
-        )
-
-    return model
-
-
-def prepare_for_qat(
-    model: nn.Module,
-    input_specs: IntAffineQuantizationSpec,
-    weight_specs: IntAffineQuantizationSpec,
-    use_PACT=False,
-    inplace=True,
-    **kwargs,
-):
-    if not inplace:
-        model = copy.deepcopy(model)
-    modules_to_replace = gather_submodules(
-        model,
-        should_do=cls_passlist_should_do(
-            (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
-        ),
-    )
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
-        parent_module = model
-        *parent_path, attr_name = name.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
-        if isinstance(module, nn.Linear):
-            if name in weight_specs:
-                assert name in input_specs, f"Input spec for {name} not found"
-                mod = QATLinear(weight_specs[name], input_specs[name], module)
-            else:
-                mod = QATLinear(weight_specs["linear"], input_specs["linear"], module)
-        elif isinstance(module, nn.Conv2d):
-            if name in weight_specs:
-                assert name in input_specs, f"Input spec for {name} not found"
-                mod = QATConv2d(weight_specs[name], input_specs[name], module)
-            else:
-                mod = QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module)
-        elif isinstance(module, nn.ReLU) and use_PACT:
-            mod = PACTReLU()
-        else:
-            continue
-        setattr(
-            parent_module,
-            attr_name,
-            (mod),
         )
 
     return model
