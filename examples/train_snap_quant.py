@@ -13,12 +13,15 @@ from compress.quantization import (
     get_regularizer_for_pact,
     SnapRegularizer,
     IntAffineQuantizationMode,
+    get_quant_dict,
+    merge_dicts,
 )
 import torchvision
 import argparse
 
 
 def get_specs():
+    global model
     specs = {
         "linear": IntAffineQuantizationSpec(
             nbits=args.nbits_a,
@@ -48,37 +51,53 @@ def get_specs():
         ),
     }
 
+    quant_dict_lin = get_quant_dict(
+        model,
+        "linear",
+        input_spec=specs["linear"],
+        weight_spec=weight_specs["linear"],
+    )
+
+    quant_dict_conv = get_quant_dict(
+        model,
+        "conv2d",
+        input_spec=specs["conv2d"],
+        weight_spec=weight_specs["conv2d"],
+    )
+
+    quant_dict = merge_dicts(quant_dict_lin, quant_dict_conv)
+
     if args.leave_edge_layers_8_bits:
         nbits = 8
     else:
         nbits = args.nbits_a
 
-    specs["fc"] = IntAffineQuantizationSpec(
+    quant_dict["fc"]["input"] = IntAffineQuantizationSpec(
         nbits=nbits,
         signed=False,
         quant_mode=IntAffineQuantizationMode.SYMMETRIC,
         percentile=args.clip_percentile,
     )
-    specs["conv1"] = IntAffineQuantizationSpec(
+    quant_dict["conv1"]["input"] = IntAffineQuantizationSpec(
         nbits=nbits,
         signed=True,
         quant_mode=IntAffineQuantizationMode.SYMMETRIC,
         percentile=args.clip_percentile,
     )  # signed=True since the input is signed
-    weight_specs["fc"] = IntAffineQuantizationSpec(
+    quant_dict["fc"]["weight"] = IntAffineQuantizationSpec(
         nbits=nbits,
         signed=True,
         quant_mode=IntAffineQuantizationMode.SYMMETRIC,
         percentile=args.clip_percentile,
     )
-    weight_specs["conv1"] = IntAffineQuantizationSpec(
+    quant_dict["conv1"]["weight"] = IntAffineQuantizationSpec(
         nbits=nbits,
         signed=True,
         quant_mode=IntAffineQuantizationMode.SYMMETRIC,
         percentile=args.clip_percentile,
     )
 
-    return specs, weight_specs
+    return quant_dict
 
 
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
@@ -160,12 +179,11 @@ if args.load_from:
 args.nbits_w = sched[0][0]
 args.nbits_a = sched[0][1]
 
-specs, weight_specs = get_specs()
+specs = get_specs()
 
-model = prepare_for_qat(
-    model, input_specs=specs, use_PACT=True, weight_specs=weight_specs
-)
+model = prepare_for_qat(model, specs=specs, use_PACT=True)
 model.to(device)
+
 
 pact_reg = get_regularizer_for_pact(model)
 reg = SnapRegularizer(
@@ -184,7 +202,6 @@ del sched[0]
 
 print(model)
 
-print(merge_qat_model(model, inplace=False))
 for epoch in range(1000):
     if sched and epoch == sched[0][2]:
         print(f"Changing nbits: weights={sched[0][0]}, activations={sched[0][1]}")
@@ -194,9 +211,9 @@ for epoch in range(1000):
         args.nbits_a = sched[0][1]
         del sched[0]
 
-        specs, weight_specs = get_specs()
+        specs = get_specs()
 
-        model = prepare_for_qat(model, input_specs=specs, weight_specs=weight_specs)
+        model = prepare_for_qat(model, specs=specs)
         reg = SnapRegularizer(
             model,
             do_activations=args.snap_loss_activations,
@@ -215,13 +232,6 @@ for epoch in range(1000):
     snap_loss_acts_acc = 0.0
     pact_reg_loss = 0.0
 
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear):
-            module.register_forward_hook(
-                lambda module, input, output, name=name: print(
-                    f"Layer: {name}, Input: {input[0].min().item(), input[0].max().item(), input[0].mean().item()}, Output: {output.min().item(), output.max().item(), output.mean().item()}"
-                )
-            )
     for images, labels in tqdm(
         train_loader, desc=f"Epoch {epoch + 1} - Training", leave=False
     ):
@@ -238,9 +248,9 @@ for epoch in range(1000):
         pact_reg_loss = pact_reg()
         (
             train_loss
-            + 0.05 * snap_loss_params
-            + 0.05 * snap_loss_acts
-            + 1 * pact_reg_loss
+            + 0.5 * snap_loss_params
+            + 0.5 * snap_loss_acts
+            + 1.0 * pact_reg_loss
         ).backward()
 
         optimizer.step()
@@ -273,8 +283,7 @@ for epoch in range(1000):
 
     model_requantized = to_quantized_online(
         merge_qat_model(model, inplace=False),
-        input_specs=specs,
-        weight_specs=weight_specs,
+        specs=specs,
     )
     model_requantized.eval()
     correct = 0

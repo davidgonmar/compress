@@ -4,10 +4,10 @@ from torchvision import transforms, datasets
 from compress.quantization import (
     IntAffineQuantizationSpec,
     to_quantized_online,
-    to_quantized_offline,
     get_activations,
-    to_quantized_adaround,
-    to_quantized_kmeans,
+    IntAffineQuantizationMode,
+    get_quant_dict,
+    merge_dicts,
 )
 import argparse
 import copy
@@ -100,61 +100,79 @@ activations = get_activations(model, dataloader)
 for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
     bit_widths, bit_widths, bit_widths, bit_widths
 ):
-    wspecs = {
-        "linear": IntAffineQuantizationSpec(w_linear_bits, signed_options[0]),
-        "conv2d": IntAffineQuantizationSpec(w_conv_bits, signed_options[0]),
-    }
+
+    specs_linear = get_quant_dict(
+        model,
+        "linear",
+        IntAffineQuantizationSpec(
+            w_linear_bits,
+            signed_options[0],
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=0.995,
+        ),
+        IntAffineQuantizationSpec(
+            i_linear_bits,
+            signed_options[0],
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=0.995,
+        ),
+    )
+    specs_conv2d = get_quant_dict(
+        model,
+        "conv2d",
+        IntAffineQuantizationSpec(
+            w_conv_bits,
+            signed_options[0],
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=0.995,
+        ),
+        IntAffineQuantizationSpec(
+            i_conv_bits,
+            signed_options[0],
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=0.995,
+        ),
+    )
+    specs = merge_dicts(specs_linear, specs_conv2d)
 
     if args.leave_edge_layers_8_bits:
         # last layer key is "fc" for resnet18
-        wspecs["fc"] = IntAffineQuantizationSpec(nbits=8, signed=True)
+        specs["fc"]["input"] = IntAffineQuantizationSpec(
+            nbits=8,
+            signed=True,
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=0.995,
+        )
         # first layer key is "conv1" for resnet18
-        wspecs["conv1"] = IntAffineQuantizationSpec(nbits=8, signed=True)
+        specs["conv1"]["input"] = IntAffineQuantizationSpec(
+            nbits=8,
+            signed=True,
+            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+            percentile=0.995,
+        )
 
-    inpspecs = {
-        "linear": IntAffineQuantizationSpec(i_linear_bits, signed_options[0]),
-        "conv2d": IntAffineQuantizationSpec(i_conv_bits, signed_options[0]),
-    }
+        if args.leave_edge_layers_8_bits:
+            # last layer key is "fc" for resnet18
+            specs["fc"]["weight"] = IntAffineQuantizationSpec(
+                nbits=8,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+                percentile=0.995,
+            )
+            # first layer key is "conv1" for resnet18
+            specs["conv1"]["weight"] = IntAffineQuantizationSpec(
+                nbits=8,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+                percentile=0.995,
+            )
 
-    if args.leave_edge_layers_8_bits:
-        # last layer key is "fc" for resnet18
-        inpspecs["fc"] = IntAffineQuantizationSpec(nbits=8, signed=True)
-        # first layer key is "conv1" for resnet18
-        inpspecs["conv1"] = IntAffineQuantizationSpec(nbits=8, signed=True)
-
-    if args.adaround:
-        quanted = to_quantized_adaround(
-            model,
-            inpspecs,
-            wspecs,
-            data_loader=dataloader,
-            inplace=False,
-        )
-    elif args.offline:
-        quanted = to_quantized_offline(
-            model,
-            inpspecs,
-            wspecs,
-            inplace=False,
-            model_initializer=lambda: copy.deepcopy(model),
-            activations=activations,
-        )
-    elif args.kmeans:
-        quanted = to_quantized_kmeans(
-            model,
-            inpspecs,
-            wspecs,
-            inplace=False,
-            model_initializer=lambda: copy.deepcopy(model),
-        )
-    else:
-        quanted = to_quantized_online(
-            model,
-            inpspecs,
-            wspecs,
-            inplace=False,
-            model_initializer=lambda: copy.deepcopy(model),
-        )
+    quanted = to_quantized_online(
+        model,
+        specs,
+        inplace=False,
+        model_initializer=lambda: copy.deepcopy(model),
+    )
     loss, accuracy = evaluate(quanted, test_loader, criterion, device)
     print(
         f"Weight Linear Bits: {w_linear_bits}, Weight Conv2D Bits: {w_conv_bits}, "

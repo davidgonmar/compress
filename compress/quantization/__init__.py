@@ -31,12 +31,13 @@ from compress.common import (
     default_should_do,
     cls_passlist_should_do,
     combine_should_do,
+    keys_passlist_should_do,
 )
 from torch import nn
 from tqdm import tqdm
 import torch
 import gc
-from typing import Dict
+from typing import Dict, Literal
 
 
 def assert_all_in_classes(
@@ -49,12 +50,58 @@ def assert_all_in_classes(
     return True
 
 
+def merge_dicts(dict1: Dict, dict2: Dict) -> Dict:
+    """
+    Merges two dictionaries. If a key is present in both dictionaries, the value from dict2 is used.
+    """
+    merged_dict = dict1.copy()
+    merged_dict.update(dict2)
+    return merged_dict
+
+
+def get_quant_dict(
+    model,
+    layer_type: str,
+    input_spec: IntAffineQuantizationSpec,
+    weight_spec: IntAffineQuantizationSpec,
+):
+    assert isinstance(layer_type, str), "layer_type must be a string"
+    assert isinstance(
+        input_spec, IntAffineQuantizationSpec
+    ), "input_specs must be a IntAffineQuantizationSpec"
+    assert isinstance(
+        weight_spec, IntAffineQuantizationSpec
+    ), "weight_specs must be a IntAffineQuantizationSpec"
+
+    # gather all layers of that type
+    cl = (
+        [nn.Linear, nn.LazyLinear]
+        if layer_type == "linear"
+        else [nn.Conv2d, nn.LazyConv2d] if layer_type == "conv2d" else None
+    )
+    assert cl is not None, f"layer_type {layer_type} not supported"
+
+    # create a dict with the layer type as key and the input and weight specs as values
+    mods = gather_submodules(
+        model,
+        should_do=cls_passlist_should_do(cl),
+    )
+
+    # print([name for name, module in mods])
+
+    return {
+        name: {
+            "input": input_spec,
+            "weight": weight_spec,
+        }
+        for name, module in mods
+    }
+
+
 def to_quantized_online(
     model: nn.Module,
-    input_specs: Dict[str, IntAffineQuantizationSpec],
-    weight_specs: Dict[str, IntAffineQuantizationSpec],
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     inplace=True,
-    should_do=default_should_do,
     **kwargs,
 ):
     if not inplace:
@@ -62,11 +109,8 @@ def to_quantized_online(
 
     modules_to_replace = gather_submodules(
         model,
-        should_do=combine_should_do(
-            should_do,
-            cls_passlist_should_do(
-                (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
-            ),
+        should_do=keys_passlist_should_do(
+            specs.keys(),
         ),
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
@@ -79,13 +123,11 @@ def to_quantized_online(
             parent_module,
             attr_name,
             (
-                QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
-                if isinstance(module, nn.Linear)
+                QuantizedLinear(specs[name]["weight"], specs[name]["input"], module)
+                if isinstance(module, (nn.Linear, nn.LazyLinear))
                 else (
-                    QuantizedConv2d(
-                        weight_specs["conv2d"], input_specs["conv2d"], module
-                    )
-                    if isinstance(module, nn.Conv2d)
+                    QuantizedConv2d(specs[name]["weight"], specs[name]["input"], module)
+                    if isinstance(module, (nn.Conv2d, nn.LazyConv2d))
                     else module
                 )
             ),
@@ -103,18 +145,18 @@ def to_quantized_online(
 
 def prepare_for_qat(
     model: nn.Module,
-    input_specs: IntAffineQuantizationSpec,
-    weight_specs: IntAffineQuantizationSpec,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     use_PACT=False,
     inplace=True,
     **kwargs,
 ):
+
     if not inplace:
         model = copy.deepcopy(model)
     modules_to_replace = gather_submodules(
         model,
-        should_do=cls_passlist_should_do(
-            (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
+        should_do=keys_passlist_should_do(
+            specs.keys(),
         ),
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
@@ -123,18 +165,10 @@ def prepare_for_qat(
         for part in parent_path:
             parent_module = getattr(parent_module, part)
 
-        if isinstance(module, nn.Linear):
-            if name in weight_specs:
-                assert name in input_specs, f"Input spec for {name} not found"
-                mod = QATLinear(weight_specs[name], input_specs[name], module)
-            else:
-                mod = QATLinear(weight_specs["linear"], input_specs["linear"], module)
-        elif isinstance(module, nn.Conv2d):
-            if name in weight_specs:
-                assert name in input_specs, f"Input spec for {name} not found"
-                mod = QATConv2d(weight_specs[name], input_specs[name], module)
-            else:
-                mod = QATConv2d(weight_specs["conv2d"], input_specs["conv2d"], module)
+        if isinstance(module, (nn.Linear, nn.LazyLinear)):
+            mod = QATLinear(specs[name]["weight"], specs[name]["input"], module)
+        elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
+            mod = QATConv2d(specs[name]["weight"], specs[name]["input"], module)
         elif isinstance(module, nn.ReLU) and use_PACT:
             mod = PACTReLU()
         else:
@@ -178,8 +212,7 @@ def get_activations(model, data_loader):
 
 def to_quantized_offline(
     model: nn.Module,
-    input_specs: IntAffineQuantizationSpec,
-    weight_specs: IntAffineQuantizationSpec,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     inplace=True,
     should_do=default_should_do,
     data_loader=None,
@@ -202,7 +235,7 @@ def to_quantized_offline(
     for module, input_act in layer_and_input_acts.items():
         input_infos[module] = calibrate(
             input_act,
-            input_specs["linear" if isinstance(module, nn.Linear) else "conv2d"],
+            specs[next(iter(specs))]["input"],
         )
 
     if not inplace:
@@ -227,11 +260,9 @@ def to_quantized_offline(
             parent_module,
             attr_name,
             (
-                QuantizedLinear(weight_specs["linear"], input_infos[module], module)
+                QuantizedLinear(specs[name]["weight"], input_infos[module], module)
                 if isinstance(module, nn.Linear)
-                else QuantizedConv2d(
-                    weight_specs["conv2d"], input_infos[module], module
-                )
+                else QuantizedConv2d(specs[name]["weight"], input_infos[module], module)
             ),
         )
 
@@ -240,8 +271,7 @@ def to_quantized_offline(
 
 def prepare_for_qat_lsq(
     model: nn.Module,
-    input_specs: IntAffineQuantizationSpec,
-    weight_specs: IntAffineQuantizationSpec,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     data_batch: torch.Tensor,
     inplace=True,
     **kwargs,
@@ -270,15 +300,15 @@ def prepare_for_qat_lsq(
             attr_name,
             (
                 LSQLinear(
-                    weight_specs["linear"],
-                    input_specs["linear"],
+                    specs[name]["weight"],
+                    specs[name]["input"],
                     module,
                     activations[module],
                 )
                 if isinstance(module, nn.Linear)
                 else LSQConv2d(
-                    weight_specs["conv2d"],
-                    input_specs["conv2d"],
+                    specs[name]["weight"],
+                    specs[name]["input"],
                     module,
                     activations[module],
                 )
