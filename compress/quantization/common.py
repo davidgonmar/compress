@@ -10,6 +10,7 @@ class IntAffineQuantizationMode(Enum):
     STATISTICS_AWARE_BINNING_ASYMMETRIC = (
         "STATISTICS_AWARE_BINNING_ASYMMETRIC"  # extension from the above
     )
+    ENTROPY_SYMMETRIC = "ENTROPY_SYMMETRIC"
 
 
 class IntAffineQuantizationSpec:

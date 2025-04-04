@@ -127,7 +127,7 @@ parser.add_argument(
 parser.add_argument(
     "--clip_percentile",
     type=float,
-    default=0.995,  # cuts low 0.5% and high 0.5% of the values
+    default=0.99,  # cuts low 0.5% and high 0.5% of the values
     help="percentile for clipping",
 )
 
@@ -248,8 +248,8 @@ for epoch in range(1000):
         pact_reg_loss = pact_reg()
         (
             train_loss
-            + 0.5 * snap_loss_params
-            + 0.5 * snap_loss_acts
+            + 10.0 * snap_loss_params
+            + 10.0 * snap_loss_acts
             + 1.0 * pact_reg_loss
         ).backward()
 

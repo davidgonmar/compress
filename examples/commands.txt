@@ -69,3 +69,5 @@ python -m examples.train_snap_quant --leave_edge_layers_8_bits  --snap_loss_para
 python -m examples.quantize --save_path=qat_snap_resnet18.pth --leave_edge_layers_8_bits
 
 python -m examples.quantize --save_path=resnet18.pth
+
+python -m examples.quantize_entropy --save_path=resnet18.pth
