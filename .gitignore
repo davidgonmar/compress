@@ -147,3 +147,7 @@ lightning_logs/
 .pkl_memoize_py3
 
 bert_imdb
+
+examples/tfg/*
+
+*.pgf
