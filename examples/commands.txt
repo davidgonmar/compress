@@ -66,6 +66,7 @@ python -m examples.quantize --save_path=qat_snap_resnet18.pth --leave_edge_layer
 
 
 python -m examples.train_snap_quant --leave_edge_layers_8_bits  --snap_loss_params --snap_loss_activations --load_from=resnet18.pth --bits_schedule=8*8 --epochs_schedule=0
+python -m examples.train_info_quant --load_from=resnet18.pth --bits_schedule=8,4,2*8,4,2 --epochs_schedule=0,3,6
 python -m examples.quantize --save_path=qat_snap_resnet18.pth --leave_edge_layers_8_bits
 
 python -m examples.quantize --save_path=resnet18.pth

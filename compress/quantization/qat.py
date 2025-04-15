@@ -180,9 +180,13 @@ def snap_loss_model_activations(
     return loss / len(activations)
 
 
+import torch.nn as nn
+
+
 class ActivationCatcher:
-    def __init__(self, layer_types=(nn.ReLU, nn.Linear)):
+    def __init__(self, layer_types=(nn.ReLU, nn.Linear), include_inputs=False):
         self.layer_types = layer_types
+        self.include_inputs = include_inputs
         self._activations = defaultdict(dict)
         self._hooks = defaultdict(list)
 
@@ -191,7 +195,10 @@ class ActivationCatcher:
 
         def get_hook(name):
             def hook(module, input, output):
-                self._activations[model_id][name] = output.detach()
+                entry = {"output": output}
+                if self.include_inputs:
+                    entry["input"] = tuple(i for i in input)
+                self._activations[model_id][name] = entry
 
             return hook
 
@@ -200,9 +207,12 @@ class ActivationCatcher:
                 h = module.register_forward_hook(get_hook(name))
                 self._hooks[model_id].append(h)
 
-    def get_last_activations(self, model, model_id=None):
+    def get_last_activations(self, model, model_id=None, clear=True):
         model_id = model_id or id(model)
-        return self._activations.get(model_id, {})
+        ret = self._activations.get(model_id, {})
+        if clear:
+            self.clear(model_id)
+        return ret
 
     def clear(self, model=None):
         if model:
@@ -248,6 +258,70 @@ class SnapRegularizer:
         return res
 
 
+# ===========================================================================
+# ============= MUTUAL INFORMATION REGULARIZATION ==========================
+# ===========================================================================
+
+
+def mutual_info_gaussian(Y, Y_tilde, eps=1e-4):
+    Y = Y - Y.mean(dim=0, keepdim=True)
+    Y_tilde = Y_tilde - Y_tilde.mean(dim=0, keepdim=True)
+
+    cov = (Y * Y_tilde).mean(dim=0)
+    var_Y = (Y**2).mean(dim=0)
+    var_Y_tilde = (Y_tilde**2).mean(dim=0)
+
+    var_Y = torch.clamp(var_Y, min=eps)
+    var_Y_tilde = torch.clamp(var_Y_tilde, min=eps)
+
+    rho_squared = cov**2 / (var_Y * var_Y_tilde + eps)
+    rho_squared = torch.clamp(rho_squared, max=1 - eps)
+
+    mi = -0.5 * torch.log(1 - rho_squared + eps)
+
+    return mi.sum()
+
+
+def mutual_info_loss(model, acts):
+    loss = 0
+    for name, layer in model.named_modules():
+        if name in acts:
+            act = acts[name]
+            layer = (
+                layer.to_linear()
+                if hasattr(layer, "to_linear")
+                else layer.to_conv2d() if hasattr(layer, "to_conv2d") else None
+            )
+            if layer is None:
+                continue
+            inp = act["input"]
+            if isinstance(inp, (tuple, list)):
+                inp = inp[0]
+            out_unquant = layer(inp)
+            out_unquant = out_unquant.reshape(out_unquant.shape[0], -1)
+            out_quant = act["output"].reshape(act["output"].shape[0], -1)
+            loss += mutual_info_gaussian(out_unquant, out_quant)
+    return loss / len(acts)
+
+
+class MutualInfoRegularizer:
+    def __init__(self, model):
+        self.model = model
+        self.activations = ActivationCatcher(
+            layer_types=(QATLinear, QATConv2d, LSQConv2d, LSQLinear),
+            include_inputs=True,
+        )
+        self.activations.initialize(model)
+
+    def mutual_info_quant_loss(self):
+        res = {}
+        acts = self.activations.get_last_activations(self.model)
+        assert len(acts) > 0, "No activations found. Make sure to run the model first."
+        if acts:
+            res["mutual_info_loss"] = -mutual_info_loss(self.model, acts)
+        return res
+
+
 # ============================================================
 # ============= LEARNED STEP QUANTIZATION (LSQ) ==============
 # ============================================================
@@ -266,8 +340,9 @@ class LSQQuantize(torch.autograd.Function):
     def backward(ctx, grad_output):
         x, scale = ctx.saved_tensors
         qmin, qmax = ctx.qmin, ctx.qmax
-        x_grad = torch.clamp(grad_output, qmin, qmax)
         v_s = x / scale
+        mask = (v_s >= qmin) & (v_s <= qmax)
+        x_grad = grad_output * mask.float()
         s_grad = (
             (
                 torch.where(
@@ -292,7 +367,8 @@ class LSQLinear(nn.Linear):
         weight_spec: IntAffineQuantizationSpec,
         input_spec: IntAffineQuantizationSpec,
         linear: nn.Linear,
-        data_batch: torch.Tensor,
+        data_batch: torch.Tensor = None,
+        online: bool = True,
     ):
         in_features, out_features, bias = (
             linear.in_features,
@@ -302,9 +378,7 @@ class LSQLinear(nn.Linear):
         assert isinstance(linear, nn.Linear), "Only nn.Linear is supported"
         super().__init__(in_features, out_features, bias)
         self.weight_info = calibrate(linear.weight, weight_spec)
-        self.input_info = calibrate(data_batch, input_spec)
         self.weight_info.scale.requires_grad_(True)
-        self.input_info.scale.requires_grad_(True)
         self.weight = nn.Parameter(linear.weight, requires_grad=False).requires_grad_(
             True
         )
@@ -313,12 +387,19 @@ class LSQLinear(nn.Linear):
             if bias
             else None
         )
+        self.online = online
+        if not online:
+            assert data_batch is not None, "data_batch is required for offline LSQ"
+            self.input_info = calibrate(data_batch, input_spec)
+            self.input_info.scale.requires_grad_(True)
+        else:
+            self.input_spec = input_spec
 
     def forward(self, x: torch.Tensor):
-        x = LSQQuantize.apply(x, self.input_info.scale, self.input_info)
+        input_info = calibrate(x, self.input_spec) if self.online else self.input_info
+        x = LSQQuantize.apply(x, input_info.scale, input_info)
         w = LSQQuantize.apply(self.weight, self.weight_info.scale, self.weight_info)
-        ret = nn.functional.linear(x, w, self.bias)
-        return ret
+        return nn.functional.linear(x, w, self.bias)
 
     def __repr__(self):
         return (
@@ -332,7 +413,12 @@ class LSQLinear(nn.Linear):
         return ret
 
     def to_quant_linear(self):
-        ret = QuantizedLinear(self.weight_info.spec, self.input_info, self.to_linear())
+        input_info = (
+            self.input_info
+            if not self.online
+            else calibrate(torch.empty(1), self.input_spec)
+        )
+        ret = QuantizedLinear(self.weight_info.spec, input_info, self.to_linear())
         ret.weight_info = self.weight_info
         ret.weight = torch.nn.Parameter(
             quantize(self.weight, self.weight_info), requires_grad=False
@@ -346,7 +432,8 @@ class LSQConv2d(nn.Conv2d):
         weight_spec: IntAffineQuantizationSpec,
         input_spec: IntAffineQuantizationSpec,
         conv2d: nn.Conv2d,
-        data_batch: torch.Tensor,
+        data_batch: torch.Tensor = None,
+        online: bool = True,
     ):
         (
             in_channels,
@@ -377,11 +464,8 @@ class LSQConv2d(nn.Conv2d):
             groups,
             bias,
         )
-        assert isinstance(conv2d, nn.Conv2d), "Only nn.Conv2d is supported"
         self.weight_info = calibrate(conv2d.weight, weight_spec)
-        self.input_info = calibrate(data_batch, input_spec)
         self.weight_info.scale.requires_grad_(True)
-        self.input_info.scale.requires_grad_(True)
         self.weight = nn.Parameter(conv2d.weight, requires_grad=False).requires_grad_(
             True
         )
@@ -390,14 +474,21 @@ class LSQConv2d(nn.Conv2d):
             if bias
             else None
         )
+        self.online = online
+        if not online:
+            assert data_batch is not None, "data_batch is required for offline LSQ"
+            self.input_info = calibrate(data_batch, input_spec)
+            self.input_info.scale.requires_grad_(True)
+        else:
+            self.input_spec = input_spec
 
     def forward(self, x: torch.Tensor):
-        x = LSQQuantize.apply(x, self.input_info.scale, self.input_info)
+        input_info = calibrate(x, self.input_spec) if self.online else self.input_info
+        x = LSQQuantize.apply(x, input_info.scale, input_info)
         w = LSQQuantize.apply(self.weight, self.weight_info.scale, self.weight_info)
-        ret = nn.functional.conv2d(
+        return nn.functional.conv2d(
             x, w, self.bias, self.stride, self.padding, self.dilation, self.groups
         )
-        return ret
 
     def __repr__(self):
         return f"LSQQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
@@ -418,7 +509,12 @@ class LSQConv2d(nn.Conv2d):
         return ret
 
     def to_quant_conv2d(self):
-        ret = QuantizedConv2d(self.weight_info.spec, self.input_info, self.to_conv2d())
+        input_info = (
+            self.input_info
+            if not self.online
+            else calibrate(torch.empty(1), self.input_spec)
+        )
+        ret = QuantizedConv2d(self.weight_info.spec, input_info, self.to_conv2d())
         ret.weight_info = self.weight_info
         ret.weight = torch.nn.Parameter(
             quantize(self.weight, self.weight_info), requires_grad=False

@@ -16,6 +16,7 @@ from compress.quantization.qat import (
     SnapRegularizer,
     PACTReLU,
     get_regularizer_for_pact,
+    MutualInfoRegularizer,
 )
 
 import torch.nn.functional as F
@@ -148,11 +149,17 @@ def prepare_for_qat(
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     use_PACT=False,
     inplace=True,
+    use_lsq=False,
     **kwargs,
 ):
 
     if not inplace:
         model = copy.deepcopy(model)
+    if use_lsq:
+        assert "data_batch" in kwargs, "data_batch must be provided if use_lsq=True"
+        activations = get_activations(model, kwargs["data_batch"])
+    else:
+        activations = None
     modules_to_replace = gather_submodules(
         model,
         should_do=keys_passlist_should_do(
@@ -164,15 +171,29 @@ def prepare_for_qat(
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-
-        if isinstance(module, (nn.Linear, nn.LazyLinear)):
-            mod = QATLinear(specs[name]["weight"], specs[name]["input"], module)
-        elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
-            mod = QATConv2d(specs[name]["weight"], specs[name]["input"], module)
-        elif isinstance(module, nn.ReLU) and use_PACT:
+        mod = module
+        if not use_lsq:
+            if isinstance(module, (nn.Linear, nn.LazyLinear)):
+                mod = QATLinear(specs[name]["weight"], specs[name]["input"], module)
+            elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
+                mod = QATConv2d(specs[name]["weight"], specs[name]["input"], module)
+        elif use_lsq:
+            if isinstance(module, (nn.Linear, nn.LazyLinear)):
+                mod = LSQLinear(
+                    specs[name]["weight"],
+                    specs[name]["input"],
+                    module,
+                    activations[module],
+                )
+            elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
+                mod = LSQConv2d(
+                    specs[name]["weight"],
+                    specs[name]["input"],
+                    module,
+                    activations[module],
+                )
+        if use_PACT and isinstance(module, nn.ReLU):
             mod = PACTReLU()
-        else:
-            continue
         setattr(
             parent_module,
             attr_name,
@@ -199,6 +220,7 @@ def get_activations(model, data_loader):
         hooks.append(module.register_forward_hook(hook_fn(activations[module])))
 
     for element in data_loader:
+        element = element.to(next(model.parameters()).device)
         model(element)
 
     for hook in hooks:
@@ -353,7 +375,7 @@ def merge_qat_model(model: nn.Module, inplace=True):
         model = copy.deepcopy(model)
     modules_to_replace = gather_submodules(
         model,
-        should_do=cls_passlist_should_do((QATLinear, QATConv2d)),
+        should_do=cls_passlist_should_do((QATLinear, QATConv2d, LSQConv2d, LSQLinear)),
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
