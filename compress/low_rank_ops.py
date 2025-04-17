@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from torch.nn.modules.utils import _pair
+from torch.nn import functional as F
 
 
 def _get_rank_ratio_to_keep(S: torch.Tensor, ratio_to_keep: float):
@@ -329,3 +331,140 @@ class LowRankConv2d(nn.Module):
         if self.bias is not None:
             res.bias = self.bias
         return res
+
+
+class SpatialLowRankConv2d(nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int, int],
+        rank: int,
+        stride: int | tuple[int, int] = 1,
+        padding: str | int | tuple[int, int] = "same",
+        dilation: int | tuple[int, int] = 1,
+        bias: bool = True,
+    ):
+        super().__init__()
+
+        k_h, k_w = _pair(kernel_size)
+        self.rank = rank
+        self.stride_h, self.stride_w = _pair(stride)
+        self.dil_h, self.dil_w = _pair(dilation)
+
+        if padding == "same":
+            self.pad_h = ((k_h - 1) * self.dil_h) // 2
+            self.pad_w = ((k_w - 1) * self.dil_w) // 2
+        else:
+            self.pad_h, self.pad_w = _pair(padding)
+
+        self.h_weight = nn.Parameter(
+            torch.empty(out_channels * in_channels * rank, 1, k_h, 1)
+        )  # shape = (out_channels * in_channels * rank, 1, k_h, 1)
+        self.v_weight = nn.Parameter(
+            torch.empty(out_channels * in_channels * rank, 1, 1, k_w)
+        )
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = (k_h, k_w)
+        self.stride = (self.stride_h, self.stride_w)
+        self.padding = (self.pad_h, self.pad_w)
+        self.dilation = (self.dil_h, self.dil_w)
+        self.groups = 1
+
+        self.bias = nn.Parameter(torch.zeros(out_channels)) if bias else None
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.uniform_(self.v_weight)
+        nn.init.uniform_(self.h_weight)
+
+        if self.bias is not None:
+            nn.init.zeros_(self.bias)
+
+    @staticmethod
+    def from_conv2d(
+        conv: nn.Conv2d,
+        ratio_to_keep: float | None = None,
+        energy_to_keep: float | None = None,
+    ) -> "SpatialLowRankConv2d":
+        assert conv.groups == 1, "Grouped / depth‑wise conv not supported yet"
+        W, b = conv.weight.detach(), conv.bias.detach()
+        C_out, C_in, k_h, k_w = W.shape
+        U, S, Vt = torch.linalg.svd(W)  # decomposes spatially each filter, so
+        ranks = []
+        for i in range(C_out):
+            for j in range(C_in):
+                rank = _get_rank(
+                    S[i, j], ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep
+                )
+                ranks.append(rank)
+        rank = max(ranks)  # maybe i can explore other modalities in the future
+        # perm
+        U_r = (
+            U[:, :, :, :rank]
+            .permute(1, 0, 3, 2)
+            .reshape(C_in * C_out * rank, 1, k_h, 1)
+        )  # shape = (C_out * rank, C_in, k_h, 1)
+        S_r = S[:, :, :rank]  # shape = (C_out, C_in, rank)
+        Vt_r = Vt[:, :, :rank, :]  # shape = (C_out, C_in, rank, k_w)
+        Vt_r = (
+            (S_r.reshape(*S_r.shape, 1) * Vt_r)
+            .permute(1, 0, 2, 3)
+            .reshape(C_in * C_out * rank, 1, 1, k_w)
+        )
+        low_rank = SpatialLowRankConv2d(
+            C_in,
+            C_out,
+            (k_h, k_w),
+            rank,
+            stride=conv.stride,
+            padding=conv.padding,
+            dilation=conv.dilation,
+            bias=b is not None,
+        )
+        low_rank.h_weight.data.copy_(U_r)
+        low_rank.v_weight.data.copy_(Vt_r)
+        if b is not None:
+            low_rank.bias.data.copy_(b)
+        return low_rank
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x.shape = (batch, C_in, H, W)
+        cin = x.shape[1]
+        x = F.conv2d(
+            x,
+            self.v_weight,
+            bias=None,
+            stride=(1, self.stride_w),
+            padding=(0, self.pad_w),
+            dilation=(1, self.dil_w),
+            groups=cin,
+        )
+        # x.shape = (batch, C_in * C_out * rank, Hf, 1)
+        x = F.conv2d(
+            x,
+            self.h_weight,
+            bias=None,
+            stride=(self.stride_h, 1),
+            padding=(self.pad_h, 0),
+            dilation=(self.dil_h, 1),
+            groups=x.shape[1],
+        )
+        # x.shape = (batch, C_in * C_out * rank, Hf, Wf)
+        x = x.reshape(
+            x.shape[0],
+            self.in_channels,
+            self.out_channels,
+            self.rank,
+            x.shape[2],
+            x.shape[3],
+        ).sum(dim=(1, 3))
+        if self.bias is not None:
+            x = x + self.bias.view(1, self.out_channels, 1, 1)
+        return x
+
+    def to_conv2d(self) -> nn.Conv2d:
+        raise NotImplementedError("to_conv2d not implemented for SpatialLowRankConv2d")
