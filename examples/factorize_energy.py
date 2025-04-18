@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.factorize import to_low_rank_global, to_low_rank, to_low_rank_global2
-import copy
+from compress.flops import count_model_flops
 import argparse
 
 
@@ -72,8 +72,11 @@ model.to(device)
 criterion = torch.nn.CrossEntropyLoss()
 loss0, loss1, elapsed = evaluate(model, test_loader, criterion, device)
 n_params = sum(p.numel() for p in model.parameters())
+flops = count_model_flops(
+    model, (1, 1, 28, 28) if args.dataset == "mnist" else (1, 3, 32, 32)
+)
 print(
-    f"Test Loss: {loss0}, Test Accuracy: {loss1}, Number of Parameters: {n_params}, Elapsed Time: {elapsed}"
+    f"Test Loss: {loss0}, Test Accuracy: {loss1}, Number of Parameters: {n_params}, Elapsed Time: {elapsed}, Flops: {flops} "
 )
 
 energies_to_remove = [0, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
@@ -115,12 +118,14 @@ for ratio in energies:
         model,
         energy_to_keep=ratio,
         inplace=False,
-        model_initializer=lambda: copy.deepcopy(model),
         should_do=should_do,
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     test_loss, test_acc, elapsed = evaluate(model_lr, test_loader, criterion, device)
+    fl = count_model_flops(
+        model_lr, (1, 1, 28, 28) if args.dataset == "mnist" else (1, 3, 32, 32)
+    )
     print(
-        f"Ratio: {ratio:.8f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Global: {args.do_global}"
+        f"Ratio: {ratio:.8f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Flops: {fl} "
     )
     maybe_print_model(model_lr)

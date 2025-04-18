@@ -7,6 +7,7 @@ from compress.factorize import (
     to_low_rank_global2,
     factorize_with_activation_aware_svd,
 )
+from compress.flops import count_model_flops
 import argparse
 
 
@@ -78,8 +79,17 @@ model.to(device)
 criterion = torch.nn.CrossEntropyLoss()
 loss0, loss1, elapsed = evaluate(model, test_loader, criterion, device)
 n_params = sum(p.numel() for p in model.parameters())
+orig_flops = count_model_flops(
+    model, (1, 3, 32, 32) if args.dataset == "cifar10" else (1, 1, 28, 28)
+)
 print(
-    f"Test Loss: {loss0}, Test Accuracy: {loss1}, Number of Parameters: {n_params}, Elapsed Time: {elapsed}"
+    "Test Loss: {:.4f}, Test Accuracy: {:.4f}, Number of Parameters: {}, Elapsed Time: {:.4f}, Flops: {}".format(
+        loss0,
+        loss1,
+        n_params,
+        elapsed,
+        orig_flops,
+    )
 )
 
 energies_to_remove = [0, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
@@ -136,7 +146,17 @@ for ratio in ratios:
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     test_loss, test_acc, elapsed = evaluate(model_lr, test_loader, criterion, device)
+    flops = count_model_flops(
+        model_lr, (1, 3, 32, 32) if args.dataset == "cifar10" else (1, 1, 28, 28)
+    )
     print(
-        f"Ratio: {ratio:.8f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Elapsed Time: {elapsed:.4f}, Global: {args.do_global}"
+        "Ratio: {:.8f}, Test Loss: {:.4f}, Test Accuracy: {:.4f}, Ratio of parameters: {:.4f}, Elapsed Time: {:.4f}, Flops: {}".format(
+            ratio,
+            test_loss,
+            test_acc,
+            n_params / sum(p.numel() for p in model.parameters()),
+            elapsed,
+            flops,
+        )
     )
     maybe_print_model(model_lr)

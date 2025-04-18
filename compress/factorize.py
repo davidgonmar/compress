@@ -65,7 +65,10 @@ def extract_weights_and_reshapers(
 def to_low_rank(
     model: nn.Module, should_do: Callable = default_should_do, inplace=True, **kwargs
 ):
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -180,7 +183,10 @@ def maximize_energy_pulp(cum_energy_vectors, j):
 def to_low_rank_global(
     model: nn.Module, should_do: Callable = default_should_do, inplace=True, **kwargs
 ):
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -296,7 +302,10 @@ def to_low_rank_global2(
 
     if not inplace:
         model = copy.deepcopy(model)
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
     grads = get_grads(model, dataloader)
 
     cum_energies = []
@@ -370,7 +379,10 @@ def merge_back(model: nn.Module, inplace=True):
     def _sd(mod, name):
         return isinstance(mod, LowRankLinear) or isinstance(mod, LowRankConv2d)
 
-    modules_to_replace = gather_submodules(model, should_do=_sd, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=_sd,
+    )
     # print("mods to replace", list(modules_to_replace))
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -409,7 +421,10 @@ def factorize_with_activation_aware_svd(
     acts = {}
     hooks = []
 
-    modules_to_replace = gather_submodules(model, should_do=should_do, prefix="")
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
 
     def hook_fn(module, input, output):
         input = input[0] if isinstance(input, tuple) else input
