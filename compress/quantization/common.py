@@ -127,7 +127,12 @@ class IntAffineQuantizationInfo(nn.Module):
         self.scale = nn.Parameter(scale, requires_grad=False)
         # where scale is 0, make it one
         self.scale.data[self.scale == 0] = 1.0
-
+        # clamp zero_point to be in the range of qmin and qmax
+        zero_point = (
+            torch.clamp(zero_point, spec.qmin, spec.qmax)
+            if zero_point is not None
+            else None
+        )
         self.zero_point = (
             nn.Parameter(zero_point, requires_grad=False)
             if zero_point is not None
@@ -181,7 +186,7 @@ def quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
 def dequantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
     if info.zero_point is None:
         return info.scale * x
-    return info.scale * (x - info.zero_point)
+    return info.scale * (x.to(torch.float32) - info.zero_point)
 
 
 def fake_quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
