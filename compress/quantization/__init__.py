@@ -17,6 +17,8 @@ from compress.quantization.qat import (
     PACTReLU,
     get_regularizer_for_pact,
     MutualInfoRegularizer,
+    AutoBitAllocationConv2d,
+    AutoBitAllocationLinear,
 )
 
 import torch.nn.functional as F

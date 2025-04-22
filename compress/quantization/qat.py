@@ -4,6 +4,7 @@ from compress.quantization.common import (
     fake_quantize,
     quantize,
     dequantize,
+    ste_round,
 )
 import torch
 from compress.quantization.calibrate import calibrate
@@ -12,6 +13,7 @@ from compress.quantization.ptq import (
     QuantizedLinear,
 )
 
+import copy
 from collections import defaultdict
 import math
 
@@ -557,3 +559,148 @@ def get_regularizer_for_pact(model):
         return sum((layer.alpha**2).sum() for layer in pact_layers)
 
     return pact_regularizer
+
+
+# ============================================================
+# ============= AUTOMATIC BIT ALLOCATION ==========================
+# ============================================================
+
+# Using gradient-informed optimizer, it optimizes the number of bits needed
+
+
+def override_property(obj, name, value):
+    obj.__class__ = type(
+        f"Patched{obj.__class__.__name__}",
+        (obj.__class__,),
+        {name: property(lambda self: value)},
+    )
+
+
+class AutoBitAllocationLinear(nn.Module):
+    def __init__(
+        self,
+        initial_weight_spec: IntAffineQuantizationSpec,
+        initial_input_spec: IntAffineQuantizationSpec,
+        linear: nn.Linear,
+    ):
+        super().__init__()
+        self.b_w = torch.nn.Parameter(
+            torch.tensor(initial_weight_spec.nbits).float(), requires_grad=True
+        )
+        self.b_a = torch.nn.Parameter(
+            torch.tensor(initial_input_spec.nbits).float(), requires_grad=True
+        )
+        self.initial_weight_spec = initial_weight_spec
+        self.initial_input_spec = initial_input_spec
+        self.weight = nn.Parameter(linear.weight, requires_grad=False).requires_grad_(
+            True
+        )
+        self.bias = (
+            nn.Parameter(linear.bias, requires_grad=False).requires_grad_(True)
+            if linear.bias is not None
+            else None
+        )
+
+    def forward(self, x: torch.Tensor):
+        def _quantize_diff_b(x, b, spec):
+            qmin = -(2 ** (b - 1))
+            qmax = 2 ** (b - 1) - 1
+            spec = copy.deepcopy(spec)
+            spec.nbits = int(b.item())
+            override_property(spec, "qmin", qmin)
+            override_property(spec, "qmax", qmax)
+            calib = calibrate(x, spec)
+            scale = calib.scale
+            # assert spec.zero_point is None, "Zero point is not supported"
+            # manual quantization
+
+            q = torch.clamp(ste_round(x / scale), min=qmin, max=qmax)
+            # dequantization
+            x_ = q * scale
+            return x_
+
+        x = _quantize_diff_b(x, self.b_a, self.initial_input_spec)
+        w = _quantize_diff_b(self.weight, self.b_w, self.initial_weight_spec)
+        return nn.functional.linear(x, w, self.bias)
+
+    def __repr__(self):
+        return f"AutoBitAllocationLinear({self.initial_weight_spec}, {self.initial_input_spec})"
+
+    def to_linear(self):
+        ret = nn.Linear(
+            self.initial_weight_spec.nbits,
+            self.initial_input_spec.nbits,
+            self.bias is not None,
+        )
+        ret.weight = self.weight
+        ret.bias = self.bias
+        return ret
+
+
+class AutoBitAllocationConv2d(nn.Module):
+    def __init__(
+        self,
+        initial_weight_spec: IntAffineQuantizationSpec,
+        initial_input_spec: IntAffineQuantizationSpec,
+        conv2d: nn.Conv2d,
+    ):
+        super().__init__()
+        self.b_w = torch.nn.Parameter(
+            torch.tensor(initial_weight_spec.nbits).float(), requires_grad=True
+        )
+        self.b_a = torch.nn.Parameter(
+            torch.tensor(initial_input_spec.nbits).float(), requires_grad=True
+        )
+        self.initial_weight_spec = initial_weight_spec
+        self.initial_input_spec = initial_input_spec
+        self.weight = nn.Parameter(conv2d.weight, requires_grad=False).requires_grad_(
+            True
+        )
+        self.bias = (
+            nn.Parameter(conv2d.bias, requires_grad=False).requires_grad_(True)
+            if conv2d.bias is not None
+            else None
+        )
+
+    def forward(self, x: torch.Tensor):
+        def _quantize_diff_b(x, b, spec):
+            spec = copy.deepcopy(spec)
+            spec.nbits = int(b.item())
+            calib = calibrate(x, spec)
+            scale = calib.scale
+            assert spec.zero_point is None, "Zero point is not supported"
+            # manual quantization
+            qmin = -(2 ** (b - 1))
+            qmax = 2 ** (b - 1) - 1
+            q = torch.clamp(torch.round(x / scale), min=qmin, max=qmax)
+
+            # dequantization
+            x_ = q * scale
+            return x_
+
+        x = _quantize_diff_b(x, self.b_a, self.initial_input_spec)
+        w = _quantize_diff_b(self.weight, self.b_w, self.initial_weight_spec)
+        return nn.functional.conv2d(
+            x, w, self.bias, self.stride, self.padding, self.dilation, self.groups
+        )
+
+    def __repr__(self):
+        return f"AutoBitAllocationConv2d({self.initial_weight_spec}, {self.initial_input_spec})"
+
+    def to_conv2d(self):
+        ret = nn.Conv2d(
+            self.initial_weight_spec.nbits,
+            self.initial_input_spec.nbits,
+            self.kernel_size,
+            self.stride,
+            self.padding,
+            self.dilation,
+            self.groups,
+            self.bias is not None,
+        )
+        ret.weight = self.weight
+        ret.bias = self.bias
+        return ret
+
+
+# ============================================================
