@@ -1,6 +1,63 @@
 import torch
 from torch import nn
 from enum import Enum
+from abc import ABC, abstractmethod
+
+
+class AbstractGrouper(ABC):
+    @staticmethod
+    @abstractmethod
+    def group(x: torch.Tensor) -> torch.Tensor:
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def ungroup(x: torch.Tensor, orig: torch.Tensor) -> torch.Tensor:
+        pass
+
+
+# One tensor -> one param
+class PerTensor(AbstractGrouper):
+    @staticmethod
+    def group(x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(-1, 1)
+
+    @staticmethod
+    def ungroup(x: torch.Tensor, orig: torch.Tensor) -> torch.Tensor:
+        return x.reshape(orig.shape)
+
+
+# One row -> one param
+class LinearPerRow(AbstractGrouper):
+    @staticmethod
+    def group(x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(x.shape[0], -1).T
+
+    @staticmethod
+    def ungroup(x: torch.Tensor, orig: torch.Tensor) -> torch.Tensor:
+        return x.T.reshape(orig.shape)
+
+
+# One column -> one param
+class LinearPerColumn(AbstractGrouper):
+    @staticmethod
+    def group(x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(-1, x.shape[1])
+
+    @staticmethod
+    def ungroup(x: torch.Tensor, orig: torch.Tensor) -> torch.Tensor:
+        return x.reshape(orig.shape)
+
+
+# One channel -> one param
+class ConvWeightsPerOutChannel(AbstractGrouper):
+    @staticmethod
+    def group(x: torch.Tensor) -> torch.Tensor:
+        return x.view(x.shape[0], -1).T
+
+    @staticmethod
+    def ungroup(x: torch.Tensor, orig: torch.Tensor) -> torch.Tensor:
+        return x.T.view(orig.shape)
 
 
 class IntAffineQuantizationMode(Enum):
@@ -19,10 +76,9 @@ class IntAffineQuantizationSpec:
     quant_mode: IntAffineQuantizationMode
     mode_args: dict = {}
 
-    group_dims: list[int] = None
-
-    # Example
-    # We have a (O, I, H, W) tensor and we want to quantize the (output) channels, we can set group_dims=[1, 2, 3]
+    grouper: AbstractGrouper
+    # grouper takes a tensor of any shape and returns a tensor of shape [group_d, n_groups]
+    # each group has its own parameters
 
     def __post_init__(self):
         if self.group_dims == []:
@@ -75,14 +131,14 @@ class IntAffineQuantizationSpec:
         nbits: int,
         signed: bool,
         quant_mode: IntAffineQuantizationMode,
-        group_dims: list[int] = None,
+        grouper: AbstractGrouper = PerTensor,
         **kwargs,
     ):
         self.nbits = nbits
         self.signed = signed
-        self.group_dims = group_dims
         self.quant_mode = quant_mode
         self.mode_args = kwargs
+        self.grouper = grouper
 
     def __repr__(self):
         return f"IntAffineQuantizationSpec(nbits={self.nbits}, signed={self.signed}, group_dims={self.group_dims}, quant_mode={self.quant_mode})"
@@ -172,21 +228,22 @@ def ste_floor(x):
 
 
 def quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
-    if info.zero_point is None:
-        return torch.clamp(ste_round(x / info.scale), info.qmin, info.qmax).to(
-            info.get_dtype()
-        )
-    return torch.clamp(
-        ste_round(x / info.scale + info.zero_point),
-        info.qmin,
-        info.qmax,
-    ).to(info.get_dtype())
+    return info.spec.grouper.ungroup(
+        torch.clamp(
+            ste_round(info.spec.grouper.group(x) / info.scale + (info.zero_point or 0)),
+            info.qmin,
+            info.qmax,
+        ).to(info.get_dtype()),
+        x,
+    )
 
 
 def dequantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
-    if info.zero_point is None:
-        return info.scale * x
-    return info.scale * (x.to(torch.float32) - info.zero_point)
+    return info.spec.grouper.ungroup(
+        info.scale
+        * (info.spec.grouper.group(x.to(torch.float32)) - (info.zero_point or 0)),
+        x,
+    )
 
 
 def fake_quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):

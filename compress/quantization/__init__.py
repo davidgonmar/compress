@@ -28,6 +28,10 @@ from compress.quantization.common import (
     IntAffineQuantizationInfo,
     IntAffineQuantizationMode,
     ste_floor,
+    PerTensor,
+    ConvWeightsPerOutChannel,
+    LinearPerColumn,
+    LinearPerRow,
 )
 from compress.common import (
     gather_submodules,

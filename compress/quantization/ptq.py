@@ -4,6 +4,7 @@ from compress.quantization.common import (
     IntAffineQuantizationInfo,
     IntAffineQuantizationSpec,
     quantize,
+    dequantize,
 )
 from compress.quantization.calibrate import calibrate
 from .kernels import (
@@ -13,64 +14,9 @@ from .kernels import (
 )
 
 
-def torch_simulated_int8_matmul(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    scale_a: float,
-    scale_b: float,
-    zero_point_a: int,
-    zero_point_b: int,
-):
-    if zero_point_a is None:
-        zero_point_a = torch.tensor(0).to(a.device)
-    if zero_point_b is None:
-        zero_point_b = torch.tensor(0).to(b.device)
-    a, b, zero_point_a, zero_point_b = (
-        a.to(torch.float32),
-        b.to(torch.float32),
-        zero_point_a.to(torch.float32),
-        zero_point_b.to(torch.float32),
-    )
-    ret = (a - zero_point_a) @ (b - zero_point_b).T
-    return ret * scale_a * scale_b
-
-
-def torch_simulated_int8_conv2d(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    scale_a: float,
-    scale_b: float,
-    zero_point_a: int,
-    zero_point_b: int,
-    stride,
-    padding,
-    dilation,
-    groups,
-):
-    if zero_point_a is None:
-        zero_point_a = torch.tensor(0).to(input.device)
-    if zero_point_b is None:
-        zero_point_b = torch.tensor(0).to(input.device)
-    input, weight, zero_point_a, zero_point_b = (
-        input.to(torch.float32),
-        weight.to(torch.float32),
-        zero_point_a.to(torch.float32),
-        zero_point_b.to(torch.float32),
-    )
-    ret = nn.functional.conv2d(
-        (input - zero_point_a),
-        (weight - zero_point_b),
-        None,
-        stride,
-        padding,
-        dilation,
-        groups,
-    )
-    return ret.to(torch.float32) * scale_a * scale_b
-
-
 def is_supported_linear(
-    spec_a: IntAffineQuantizationSpec, spec_b: IntAffineQuantizationSpec
+    spec_a: IntAffineQuantizationSpec,
+    spec_b: IntAffineQuantizationSpec | IntAffineQuantizationInfo,
 ):
     if not TRITON_AVAILABLE:
         return False
@@ -154,13 +100,10 @@ class QuantizedLinear(nn.Linear):
                 zero_point_b=self.weight_info.zero_point,
             )
         else:
-            x = torch_simulated_int8_matmul(
+            x, w = dequantize(x, input_info), dequantize(self.weight, self.weight_info)
+            x = torch.nn.functional.linear(
                 x,
-                self.weight,
-                scale_a=input_info.scale,
-                scale_b=self.weight_info.scale,
-                zero_point_a=input_info.zero_point,
-                zero_point_b=self.weight_info.zero_point,
+                w,
             )
         if self.bias is not None:
             x += self.bias
@@ -235,18 +178,18 @@ class QuantizedConv2d(nn.Conv2d):
     def forward(self, x: torch.Tensor):
         x, input_info = self.quantize_input(x)
         if self.simulated:
-            conv2dres = torch_simulated_int8_conv2d(
+            x = dequantize(x, input_info)
+            w = dequantize(self.weight, self.weight_info)
+            conv2dres = torch.nn.functional.conv2d(
                 x,
-                self.weight,
-                scale_a=input_info.scale,
-                scale_b=self.weight_info.scale,
-                zero_point_a=input_info.zero_point,
-                zero_point_b=self.weight_info.zero_point,
-                stride=self.stride,
-                padding=self.padding,
-                dilation=self.dilation,
-                groups=self.groups,
+                w,
+                self.bias,
+                self.stride,
+                self.padding,
+                self.dilation,
+                self.groups,
             )
+
             if self.bias is not None:
                 conv2dres += self.bias.reshape(1, -1, 1, 1)
         else:
