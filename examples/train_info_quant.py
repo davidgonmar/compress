@@ -17,6 +17,8 @@ from compress.quantization import (
 )
 import torchvision
 import argparse
+import copy
+from compress.knowledge_distillation import knowledge_distillation_loss
 
 
 def get_specs():
@@ -173,23 +175,25 @@ if args.load_from:
     else:
         model = loaded
 
+assert args.load_from is not None, "Please provide a path to the model to load from."
+
 args.nbits_w = sched[0][0]
 args.nbits_a = sched[0][1]
 
 specs = get_specs()
 
-
+USE_LSQ = True
 one_data_batch = [el[0] for el in train_loader][:4]
+teacher = copy.deepcopy(model)
+teacher.eval()
 model = prepare_for_qat(
-    model, specs=specs, use_PACT=True, use_lsq=True, data_batch=one_data_batch
+    model, specs=specs, use_PACT=True, use_lsq=USE_LSQ, data_batch=one_data_batch
 )
 model.to(device)
 
 
 pact_reg = get_regularizer_for_pact(model)
-reg = MutualInfoRegularizer(
-    model,
-)
+reg = MutualInfoRegularizer(model, teacher)
 
 criterion = nn.CrossEntropyLoss()
 
@@ -214,11 +218,13 @@ for epoch in range(1000):
         specs = get_specs()
 
         model = prepare_for_qat(
-            model, specs=specs, use_PACT=True, use_lsq=True, data_batch=one_data_batch
-        )
-        reg = MutualInfoRegularizer(
             model,
+            specs=specs,
+            use_PACT=True,
+            use_lsq=USE_LSQ,
+            data_batch=one_data_batch,
         )
+        reg = MutualInfoRegularizer(model, teacher)
 
         model.to(device)
         pact_reg = get_regularizer_for_pact(model)
@@ -238,10 +244,12 @@ for epoch in range(1000):
         images, labels = images.to(device), labels.to(device)
 
         outputs = model(images)
+        teacher_out = teacher(images)  # needed for mutual info loss
         train_loss = criterion(outputs, labels)
         regloss = reg.mutual_info_quant_loss()["mutual_info_loss"]
         pact_reg_loss = pact_reg()
-        (train_loss + 0.0001 * regloss + 1.0 * pact_reg_loss).backward()
+        kloutloss = knowledge_distillation_loss(outputs, teacher_out)
+        (0.6 * train_loss + 0.3 * regloss + 0.1 * kloutloss).backward()
 
         optimizer.step()
 

@@ -266,61 +266,69 @@ class SnapRegularizer:
 
 
 def mutual_info_gaussian(Y, Y_tilde, eps=1e-4):
-    Y = Y - Y.mean(dim=0, keepdim=True)
-    Y_tilde = Y_tilde - Y_tilde.mean(dim=0, keepdim=True)
+    # Y and Y_tilde have shape [batch_size, d]
+    Y = Y - Y.mean(dim=1, keepdim=True)
+    Y_tilde = Y_tilde - Y_tilde.mean(dim=1, keepdim=True)
 
-    cov = (Y * Y_tilde).mean(dim=0)
-    var_Y = (Y**2).mean(dim=0)
-    var_Y_tilde = (Y_tilde**2).mean(dim=0)
+    cov = (Y * Y_tilde).mean(dim=1)  # [batch]
+    var_Y = (Y**2).mean(dim=1).clamp(min=eps)  # [batch]
+    var_Y_tilde = (Y_tilde**2).mean(dim=1).clamp(min=eps)  # [batch]
 
-    var_Y = torch.clamp(var_Y, min=eps)
-    var_Y_tilde = torch.clamp(var_Y_tilde, min=eps)
+    rho_squared = (cov**2) / (var_Y * var_Y_tilde + eps)
+    rho_squared = rho_squared.clamp(max=1 - eps)
 
-    rho_squared = cov**2 / (var_Y * var_Y_tilde + eps)
-    rho_squared = torch.clamp(rho_squared, max=1 - eps)
+    mi = -0.5 * torch.log1p(-rho_squared + eps)  # log(1 - rho^2)
 
-    mi = -0.5 * torch.log(1 - rho_squared + eps)
-
-    return mi.sum()
+    return mi
 
 
-def mutual_info_loss(model, acts):
-    loss = 0
-    for name, layer in model.named_modules():
-        if name in acts:
-            act = acts[name]
-            layer = (
-                layer.to_linear()
-                if hasattr(layer, "to_linear")
-                else layer.to_conv2d() if hasattr(layer, "to_conv2d") else None
-            )
-            if layer is None:
-                continue
-            inp = act["input"]
-            if isinstance(inp, (tuple, list)):
-                inp = inp[0]
-            out_unquant = layer(inp)
-            out_unquant = out_unquant.reshape(out_unquant.shape[0], -1)
-            out_quant = act["output"].reshape(act["output"].shape[0], -1)
-            loss += mutual_info_gaussian(out_unquant, out_quant)
-    return loss / len(acts)
+def mutual_info_loss(student_acts, teacher_acts):
+    losses = []
+
+    for name, actstu in student_acts.items():
+        assert (
+            name in teacher_acts
+        ), f"Activation {name} not found in teacher: {teacher_acts.keys()}"
+        if name in teacher_acts:
+            teacher_act = teacher_acts[name]
+            teacher_act = teacher_act["output"]
+            actstu = actstu["output"]
+            out_unquant = teacher_act.reshape(teacher_act.shape[0], -1)
+            out_quant = actstu.reshape(actstu.shape[0], -1)
+
+            mi_per_sample = mutual_info_gaussian(out_quant, out_unquant)  # [batch_size]
+            losses.append(mi_per_sample)
+
+    all_mi = torch.stack(losses, dim=0)
+    return all_mi.mean()
 
 
 class MutualInfoRegularizer:
-    def __init__(self, model):
-        self.model = model
+    def __init__(self, student, teacher):
+        self.teacher = teacher
+        self.student = student
         self.activations = ActivationCatcher(
-            layer_types=(QATLinear, QATConv2d, LSQConv2d, LSQLinear),
+            layer_types=(
+                QATLinear,
+                QATConv2d,
+                LSQConv2d,
+                LSQLinear,
+                nn.Linear,
+                nn.Conv2d,
+            ),
             include_inputs=True,
         )
-        self.activations.initialize(model)
+        self.activations.initialize(self.student)
+        self.activations.initialize(self.teacher)
 
     def mutual_info_quant_loss(self):
         res = {}
-        acts = self.activations.get_last_activations(self.model)
-        assert len(acts) > 0, "No activations found. Make sure to run the model first."
-        if acts:
-            res["mutual_info_loss"] = -mutual_info_loss(self.model, acts)
+        actsstu = self.activations.get_last_activations(self.student)
+        actstea = self.activations.get_last_activations(self.teacher)
+        assert (
+            len(actsstu) > 0
+        ), "No activations found. Make sure to run the model first."
+        res["mutual_info_loss"] = -mutual_info_loss(actsstu, actstea)
         return res
 
 

@@ -81,7 +81,7 @@ model.to(device)
 svd = {}
 
 for name, param in model.named_parameters():
-    if param.dim() == 4 or 'weight' in name:
+    if param.dim() == 4 or "weight" in name:
         if param.dim() == 4:
             param_rs = param.reshape(param.shape[0], -1)
         elif param.dim() == 2:
@@ -107,17 +107,16 @@ for epoch in range(args.epochs):
         total_loss.backward()
 
         old_params = copy.deepcopy(model.state_dict())
-        hoyer_svd_sparsity_grad_adder_given_svds(model.named_parameters(), svd, weight_sched(epoch))
-        
-
-        
+        hoyer_svd_sparsity_grad_adder_given_svds(
+            model.named_parameters(), svd, weight_sched(epoch)
+        )
 
         optimizer.step()
 
         if idxx % 5 == 0:
-                    # recompute svd
+            # recompute svd
             for name, param in model.named_parameters():
-                if param.dim() == 4 or 'weight' in name:
+                if param.dim() == 4 or "weight" in name:
                     if param.dim() == 4:
                         param_rs = param.reshape(param.shape[0], -1)
                     elif param.dim() == 2:
@@ -131,21 +130,23 @@ for epoch in range(args.epochs):
                 for name, param in model.named_parameters():
                     if name in svd and param.grad is not None:
                         if param.dim() == 4:
-                            grad_rs = old_params[name].reshape(param.shape[0], -1) - param.reshape(param.shape[0], -1)
+                            grad_rs = old_params[name].reshape(
+                                param.shape[0], -1
+                            ) - param.reshape(param.shape[0], -1)
                         elif param.dim() == 2:
                             grad_rs = old_params[name] - param
                         else:
                             continue
                         U, S, Vt = svd[name]
-                        #clamp
-                        
+                        # clamp
+
                         deltaW_V = torch.matmul(grad_rs, Vt.T)
                         U_delta = torch.matmul(U.T, deltaW_V)
 
                         eps = 1e-3
                         s_diff = S.view(-1, 1) - S.view(1, -1)
                         print(s_diff)
-                        
+
                         mask = ~torch.eye(len(S), dtype=bool, device=S.device)
                         UV_delta = U_delta / s_diff
                         UV_delta[~mask] = 0.0
@@ -159,8 +160,10 @@ for epoch in range(args.epochs):
                         delta_V = torch.matmul(Vt.T, V_delta)
                         V_approx = Vt.T - delta_V
 
-                        #s_approx = S - torch.einsum("i,ij,j->i", U, grad_rs, Vt)
-                        s_approx = S - torch.einsum('ij,ij->j', U, torch.matmul(grad_rs, Vt.transpose(0, 1)))
+                        # s_approx = S - torch.einsum("i,ij,j->i", U, grad_rs, Vt)
+                        s_approx = S - torch.einsum(
+                            "ij,ij->j", U, torch.matmul(grad_rs, Vt.transpose(0, 1))
+                        )
                         print("sapprox", s_approx)
                         svd[name] = (U_approx, s_approx, V_approx.T)
 
