@@ -540,3 +540,29 @@ def hoyer_svd_sparsity_grad_adder(params: torch.Tensor, weight):
                 param.shape[0], param.shape[1], param.shape[2], param.shape[3]
             )
         param.grad = (param.grad if param.grad is not None else 0) + (weight * update)
+
+
+def hoyer_svd_sparsity_grad_adder_given_svds(params, svds, weight):
+    for name, param in params:
+        if param.dim() not in [2, 4]:
+            continue
+        if param.dim() == 4:
+            # reshape to (O, I * H * W) from (O, I, H, W)
+            param_rs = param.reshape(param.shape[0], -1)
+        else:
+            param_rs = param
+        U, S, Vt = svds[name]
+        fro = S.pow(2).sum().sqrt()
+        nuc = S.sum()
+        # crop either U or Vt
+        if U.shape[0] > Vt.shape[1]:
+            U = U[:, : Vt.shape[1]]
+        else:
+            Vt = Vt[: U.shape[0], :]
+        update = (1 / fro) * ((U @ Vt) - (nuc / (fro**2)) * param_rs)
+        if len(param.shape) == 4:
+            # reshape back to (O, I, H, W)
+            update = update.reshape(
+                param.shape[0], param.shape[1], param.shape[2], param.shape[3]
+            )
+        param.grad = (param.grad if param.grad is not None else 0) + (weight * update)
