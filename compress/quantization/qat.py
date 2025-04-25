@@ -265,42 +265,77 @@ class SnapRegularizer:
 # ===========================================================================
 
 
+import torch
+
+
+def safe_logdet(cov):
+    sign, logabsdet = torch.linalg.slogdet(cov)
+    if (sign <= 0).any():
+        # If the matrix is not positive-definite, logdet doesn't make sense
+        return torch.tensor(float("nan"), device=cov.device)
+    return logabsdet
+
+
 def mutual_info_gaussian(Y, Y_tilde, eps=1e-4):
-    # Y and Y_tilde have shape [batch_size, d]
-    Y = Y - Y.mean(dim=1, keepdim=True)
-    Y_tilde = Y_tilde - Y_tilde.mean(dim=1, keepdim=True)
+    B, D = Y.shape
+    Y = Y - Y.mean(dim=0, keepdim=True)
+    Y_tilde = Y_tilde - Y_tilde.mean(dim=0, keepdim=True)
 
-    cov = (Y * Y_tilde).mean(dim=1)  # [batch]
-    var_Y = (Y**2).mean(dim=1).clamp(min=eps)  # [batch]
-    var_Y_tilde = (Y_tilde**2).mean(dim=1).clamp(min=eps)  # [batch]
+    joint = torch.cat([Y, Y_tilde], dim=1)  # [B, 2D]
+    cov = (joint.T @ joint) / (B - 1)
+    cov += eps * torch.eye(2 * D, device=Y.device)
 
-    rho_squared = (cov**2) / (var_Y * var_Y_tilde + eps)
-    rho_squared = rho_squared.clamp(max=1 - eps)
+    cov_Y = cov[:D, :D]
+    cov_Y_tilde = cov[D:, D:]
 
-    mi = -0.5 * torch.log1p(-rho_squared + eps)  # log(1 - rho^2)
+    logdet_Y = safe_logdet(cov_Y)
+    logdet_Y_tilde = safe_logdet(cov_Y_tilde)
+    logdet_joint = safe_logdet(cov)
 
+    if (
+        torch.isnan(logdet_Y)
+        or torch.isnan(logdet_Y_tilde)
+        or torch.isnan(logdet_joint)
+    ):
+        return torch.tensor(0.0, device=Y.device)
+
+    mi = 0.5 * (logdet_Y + logdet_Y_tilde - logdet_joint)
     return mi
 
 
-def mutual_info_loss(student_acts, teacher_acts):
+def project_features(feat, d_out=256):
+    B, D = feat.shape
+    proj = torch.randn(D, d_out, device=feat.device) / D**0.5
+    return feat @ proj
+
+
+def mutual_info_loss(student_acts, teacher_acts, proj_dim=256):
     losses = []
 
     for name, actstu in student_acts.items():
-        assert (
-            name in teacher_acts
-        ), f"Activation {name} not found in teacher: {teacher_acts.keys()}"
-        if name in teacher_acts:
-            teacher_act = teacher_acts[name]
-            teacher_act = teacher_act["output"]
-            actstu = actstu["output"]
-            out_unquant = teacher_act.reshape(teacher_act.shape[0], -1)
-            out_quant = actstu.reshape(actstu.shape[0], -1)
+        if name not in teacher_acts:
+            continue
 
-            mi_per_sample = mutual_info_gaussian(out_quant, out_unquant)  # [batch_size]
-            losses.append(mi_per_sample)
+        stu = actstu["output"]
+        tea = teacher_acts[name]["output"]
 
-    all_mi = torch.stack(losses, dim=0)
-    return all_mi.mean()
+        if stu.dim() == 4:
+            stu = stu.reshape(stu.shape[0], -1)
+            tea = tea.reshape(tea.shape[0], -1)
+
+        if stu.shape[0] < 2:
+            continue  # can't estimate covariance from 1 sample
+
+        stu_proj = project_features(stu, proj_dim)
+        tea_proj = project_features(tea, proj_dim)
+
+        mi = mutual_info_gaussian(stu_proj, tea_proj)
+        losses.append(mi)
+
+    if not losses:
+        return torch.tensor(0.0, device=stu.device)
+
+    return -torch.stack(losses).mean()
 
 
 class MutualInfoRegularizer:
