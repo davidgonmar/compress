@@ -15,6 +15,10 @@ parser.add_argument("--do_global", action="store_true")
 parser.add_argument("--do_global2", action="store_true")
 args = parser.parse_args()
 
+model = torch.hub.load(
+    "chenyaofo/pytorch-cifar-models", "cifar10_resnet20", pretrained=True
+)
+
 
 def maybe_print_model(model):
     if args.print_model:

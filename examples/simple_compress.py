@@ -10,7 +10,6 @@ from compress.factorize import (
 from compress.flops import count_model_flops
 import argparse
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")
 parser.add_argument("--print_model", action="store_true")
