@@ -1,6 +1,5 @@
 import argparse
 import copy
-from typing import Dict, List
 
 import torch
 import torch.nn as nn
@@ -17,51 +16,8 @@ from compress.quantization import (
     IntAffineQuantizationMode,
     get_quant_dict,
     merge_dicts,
-    LSQConv2d,
-    LSQLinear,
 )
-from compress.quantization.qat import ActivationCatcher
 from compress.knowledge_distillation import knowledge_distillation_loss
-
-
-def flat_feat(t: torch.Tensor) -> torch.Tensor:
-    return t.view(t.size(0), -1)
-
-
-class MineCritic(nn.Module):
-    def __init__(self, in_dim: int, hidden: int = 512):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, 1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.net(x)
-        return x.view(x.size(0), -1)
-
-
-def dv_loss(
-    t_joint: torch.Tensor, t_marg: torch.Tensor, ma_et: torch.Tensor, ema: float = 0.01
-):
-    et = torch.exp(t_marg)
-    ma_et = ma_et + ema * (et.mean() - ma_et).detach()
-    loss = -(t_joint.mean() - (et.mean().log() * (et.mean().detach() / ma_et)))
-    return loss, ma_et.detach()
-
-
-parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with MINE")
-parser.add_argument("--leave_edge_layers_8_bits", action="store_true")
-parser.add_argument("--load_from", type=str, required=True)
-parser.add_argument("--bits_schedule", type=str, default="8*8")
-parser.add_argument("--epochs_schedule", type=str, default="10")
-parser.add_argument("--clip_percentile", type=float, default=0.99)
-parser.add_argument("--lambda_mi", type=float, default=0.05, help="weight of MI term")
-parser.add_argument("--lambda_kd", type=float, default=0.1, help="weight of KD term")
-args = parser.parse_args()
 
 
 def quantile(tensor, q, dim=None, keepdim=False):
@@ -97,6 +53,15 @@ def quantile(tensor, q, dim=None, keepdim=False):
 
 
 torch.quantile = quantile
+parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with KD only")
+parser.add_argument("--load_from", type=str, required=False)
+parser.add_argument("--bits_schedule", type=str, default="8*8")
+parser.add_argument("--epochs_schedule", type=str, default="10")
+parser.add_argument("--clip_percentile", type=float, default=0.99)
+args = parser.parse_args()
+
+args.leave_edge_layers_8_bits = True
+
 weight_sched_str, act_sched_str = args.bits_schedule.split("*")
 sched1_w = list(map(int, weight_sched_str.split(",")))
 sched1_a = list(map(int, act_sched_str.split(",")))
@@ -111,7 +76,7 @@ data_transform = transforms.Compose(
 )
 train_loader = torch.utils.data.DataLoader(
     datasets.CIFAR10("./data", train=True, download=True, transform=data_transform),
-    batch_size=16,
+    batch_size=256,
     shuffle=True,
 )
 val_loader = torch.utils.data.DataLoader(
@@ -136,6 +101,7 @@ del state["conv1.weight"]
 # load state dict
 model_fp.load_state_dict(state, strict=False)
 
+
 if args.load_from:
     checkpoint = torch.load(args.load_from, map_location="cpu", weights_only=False)
     if isinstance(checkpoint, dict) and "model" in checkpoint:
@@ -143,6 +109,7 @@ if args.load_from:
     elif isinstance(checkpoint, dict):
         model_fp.load_state_dict(checkpoint, strict=False)
     elif isinstance(checkpoint, nn.Module):
+        print(checkpoint.state_dict()["conv1.weight"].shape)
         model_fp.load_state_dict(checkpoint.state_dict(), strict=True)
 teacher = copy.deepcopy(model_fp).eval().to(device)
 
@@ -216,50 +183,16 @@ student = prepare_for_qat(
 )
 student.to(device)
 
-mine_layers: List[str] = [
-    "conv1",
-    # "layer1.0.conv1",
-    # "layer1.0.conv2",
-    "layer1.1.conv1",
-    # "layer1.1.conv2",
-    # "layer2.0.conv1",
-    "layer2.0.conv2",
-    "layer2.0.downsample.0",
-    # "layer2.1.conv1",
-    # "layer2.1.conv2",
-    "layer3.0.conv1",
-    "layer3.0.conv2",
-    "layer3.0.downsample.0",
-    # "layer3.1.conv1",
-    # "layer3.1.conv2",
-    "layer4.0.conv1",
-    "layer4.0.conv2",
-    # "layer4.0.downsample.0",
-    # "layer4.1.conv1",
-    "layer4.1.conv2",
-]
-
-catcher_T = ActivationCatcher(layer_types=(nn.Conv2d, nn.Conv2d), include_inputs=False)
-catcher_S = ActivationCatcher(layer_types=(LSQConv2d, LSQLinear), include_inputs=False)
-catcher_T.initialize(teacher)
-catcher_S.initialize(student)
-
-critics: Dict[str, MineCritic] = {}
-ma_et: Dict[str, torch.Tensor] = {}
-
-critic_params: List[nn.Parameter] = []
-
 criterion = nn.CrossEntropyLoss()
 optimizer_S = optim.AdamW(student.parameters(), lr=1e-4)
-optimizer_critic = None
 scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
 epochs = 1000
-print("Starting training with MINE regulariser …")
+print("Starting training with KD only …")
 
 for epoch in range(epochs):
     if sched and epoch == sched[0][2]:
-        print(f"[epoch {epoch}] changing bit‑width to w={sched[0][0]}, a={sched[0][1]}")
+        print(f"[epoch {epoch}] changing bit-width to w={sched[0][0]}, a={sched[0][1]}")
         student = merge_qat_model(student, inplace=False)
         args.nbits_w, args.nbits_a = sched[0][:2]
         sched.pop(0)
@@ -270,85 +203,36 @@ for epoch in range(epochs):
             use_lsq=USE_LSQ,
             data_batch=one_batch,
         ).to(device)
-        catcher_S.remove_hooks(id(student))
-        catcher_S.initialize(student)
         optimizer_S = optim.AdamW(student.parameters(), lr=1e-4)
         scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
     student.train()
     teacher.eval()
 
-    running_cls, running_mi, running_kd = 0.0, 0.0, 0.0
+    running_cls, running_kd = 0.0, 0.0
 
     for imgs, lbls in tqdm(train_loader, desc=f"Epoch {epoch:03d}"):
         imgs, lbls = imgs.to(device), lbls.to(device)
 
-        with torch.no_grad():
-            logits_S = student(imgs)
-        logits_T = teacher(imgs)
-
-        act_S = catcher_S.get_last_activations(student, clear=True)
-        act_T = catcher_T.get_last_activations(teacher, clear=True)
-
-        if not critics:
-            for name in mine_layers:
-                d = flat_feat(act_T[name]["output"]).size(1)
-                crit = MineCritic(d * 2).to(device)
-                critics[name] = crit
-                ma_et[name] = torch.tensor(1.0, device=device)
-                critic_params += list(crit.parameters())
-            optimizer_critic = optim.Adam(critic_params, lr=5e-4)
-
-        loss_critic_total = torch.tensor(0.0, device=device)
-        for name in mine_layers:
-            t_feat = flat_feat(act_T[name]["output"])
-            s_feat = flat_feat(act_S[name]["output"])
-            joint = critics[name](torch.cat([t_feat, s_feat], dim=1))
-            s_perm = s_feat.roll(1, 0)
-            marg = critics[name](torch.cat([t_feat, s_perm], dim=1))
-            l, ma_et[name] = dv_loss(joint, marg, ma_et[name])
-            loss_critic_total = loss_critic_total + l
-
-        optimizer_critic.zero_grad()
-        loss_critic_total.backward()
-        optimizer_critic.step()
-
         logits_S = student(imgs)
-        logits_T = teacher(imgs)
-        act_S = catcher_S.get_last_activations(student, clear=True)
-        act_T = catcher_T.get_last_activations(teacher, clear=True)
-
-        mi_reg_sum = torch.tensor(0.0, device=device)
-        for name in mine_layers:
-            with torch.no_grad():
-                t_feat = flat_feat(act_T[name]["output"])
-            s_feat = flat_feat(act_S[name]["output"])
-            joint = critics[name](torch.cat([t_feat, s_feat], dim=1))
-            s_perm = s_feat.roll(1, 0)
-            marg = critics[name](torch.cat([t_feat, s_perm], dim=1))
-            I_hat = joint.mean() - marg.exp().mean().log()
-            mi_reg_sum = mi_reg_sum - I_hat
+        with torch.no_grad():
+            logits_T = teacher(imgs)
 
         cls_loss = criterion(logits_S, lbls)
         kd_loss = knowledge_distillation_loss(logits_S, logits_T)
 
-        total_loss = (
-            0.6 * cls_loss + args.lambda_kd * kd_loss + args.lambda_mi * mi_reg_sum
-        )
+        total_loss = 0.5 * cls_loss + 0.5 * kd_loss
 
         optimizer_S.zero_grad()
         total_loss.backward()
         optimizer_S.step()
 
         running_cls += cls_loss.item() * imgs.size(0)
-        running_mi += mi_reg_sum.item() * imgs.size(0)
         running_kd += kd_loss.item() * imgs.size(0)
 
     scheduler_S.step()
     n = len(train_loader.dataset)
-    print(
-        f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}  KD {running_kd/n:.4f}  MI {running_mi/n:.4f}"
-    )
+    print(f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}  KD {running_kd/n:.4f}")
 
     student.eval()
     correct = total = 0
@@ -360,9 +244,9 @@ for epoch in range(epochs):
             total += lbls.size(0)
             correct += (pred == lbls).sum().item()
     acc = 100.0 * correct / total
-    print(f"          → val‑acc {acc:.2f}%")
+    print(f"          → val-acc {acc:.2f}%")
 
     if epoch % 20 == 0:
-        torch.save({"model": student.state_dict()}, f"qat_mine_resnet18_e{epoch}.pth")
+        torch.save({"model": student.state_dict()}, f"qat_kd_resnet18_e{epoch}.pth")
 
 print("Training complete.")

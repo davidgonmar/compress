@@ -75,3 +75,11 @@ python -m examples.quantize --save_path=resnet18.pth
 python -m examples.quantize_entropy --save_path=resnet18.pth
 
 python -m examples.train_info_quant --load_from=resnet18.pth --bits_schedule=8,4,2*8,4,2 --epochs_schedule=0,1,3 --leave_edge_layers_8_bits
+
+python -m examples.train_mine_info --load_from=resnet18.pth --bits_schedule=8,4,2*8,4,2 --epochs_schedule=0,1,3
+
+python -m examples.train_mine_info --load_from=resnet18.pth --bits_schedule=2*2 --epochs_schedule=0
+
+
+python -m examples.train_mine_info --load_from=resnet18.pth --bits_schedule=8,4,2*8,4,2 --epochs_schedule=0,1,2 
+python -m examples.kd_quant --bits_schedule=8,4,2*8,4,2 --epochs_schedule=0,1,2
