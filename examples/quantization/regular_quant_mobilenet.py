@@ -1,43 +1,27 @@
 import argparse
-import copy
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
-from torchvision.models import resnet18
+from torchvision.models import mobilenet_v2
 from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 
 from compress.quantization import (
-    IntAffineQuantizationSpec,
     prepare_for_qat,
     merge_qat_model,
-    IntAffineQuantizationMode,
-    get_quant_dict,
-    merge_dicts,
 )
-from compress.knowledge_distillation import knowledge_distillation_loss
+
+from compress.quantization.recipes import mobilenetv2_recipe_symmetric_quant
 
 
+# Patch in a quantile function for PyTorch < 1.7
 def quantile(tensor, q, dim=None, keepdim=False):
-    """
-    Computes the quantile of the input tensor along the specified dimension.
-
-    Parameters:
-    tensor (torch.Tensor): The input tensor.
-    q (float): The quantile to compute, should be a float between 0 and 1.
-    dim (int): The dimension to reduce. If None, the tensor is flattened.
-    keepdim (bool): Whether to keep the reduced dimension in the output.
-    Returns:
-    torch.Tensor: The quantile value(s) along the specified dimension.
-    """
     assert 0 <= q <= 1, "\n\nquantile value should be a float between 0 and 1.\n\n"
-
     if dim is None:
         tensor = tensor.flatten()
         dim = 0
-
     sorted_tensor, _ = torch.sort(tensor, dim=dim)
     num_elements = sorted_tensor.size(dim)
     index = q * (num_elements - 1)
@@ -45,22 +29,38 @@ def quantile(tensor, q, dim=None, keepdim=False):
     upper_index = min(lower_index + 1, num_elements - 1)
     lower_value = sorted_tensor.select(dim, lower_index)
     upper_value = sorted_tensor.select(dim, upper_index)
-    # linear interpolation
     weight = index - lower_index
     quantile_value = (1 - weight) * lower_value + weight * upper_value
-
     return quantile_value.unsqueeze(dim) if keepdim else quantile_value
 
 
 torch.quantile = quantile
-parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with KD only")
+
+parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with MobileNetV2")
 parser.add_argument("--load_from", type=str, required=False)
 parser.add_argument("--bits_schedule", type=str, default="8*8")
 parser.add_argument("--epochs_schedule", type=str, default="10")
 parser.add_argument("--clip_percentile", type=float, default=0.99)
+parser.add_argument(
+    "--leave_edge_layers_8_bits",
+    action="store_true",
+    help="keep the first and last layers at 8 bits",
+)
 args = parser.parse_args()
 
-args.leave_edge_layers_8_bits = True
+# args.leave_edge_layers_8_bits = True
+
+
+def get_specs(model):
+    # Get the quantization specs for the model
+    weight_specs = mobilenetv2_recipe_symmetric_quant(
+        bits_activation=args.nbits_a,
+        bits_weight=args.nbits_w,
+        clip_percentile=args.clip_percentile,
+        leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
+    )
+    return weight_specs
+
 
 weight_sched_str, act_sched_str = args.bits_schedule.split("*")
 sched1_w = list(map(int, weight_sched_str.split(",")))
@@ -85,22 +85,14 @@ val_loader = torch.utils.data.DataLoader(
     shuffle=False,
 )
 
-model_fp = resnet18(num_classes=10)
-state = torch.hub.load_state_dict_from_url(
-    "https://download.pytorch.org/models/resnet18-f37072fd.pth", progress=True
-)
-# change maxpool and first layer
-model_fp.maxpool = nn.Identity()
-model_fp.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+# Load pretrained MobileNetV2
+model_fp = mobilenet_v2(pretrained=True)
 
-# delete fc layer from state dict
-del state["fc.weight"]
-del state["fc.bias"]
-del state["conv1.weight"]
+# Modify for CIFAR-10
+model_fp.classifier[1] = nn.Linear(model_fp.last_channel, 10)
 
-# load state dict
-model_fp.load_state_dict(state, strict=False)
-
+# Optional: reduce first conv stride for small images
+model_fp.features[0][0].stride = (1, 1)
 
 if args.load_from:
     checkpoint = torch.load(args.load_from, map_location="cpu", weights_only=False)
@@ -109,65 +101,9 @@ if args.load_from:
     elif isinstance(checkpoint, dict):
         model_fp.load_state_dict(checkpoint, strict=False)
     elif isinstance(checkpoint, nn.Module):
-        print(checkpoint.state_dict()["conv1.weight"].shape)
         model_fp.load_state_dict(checkpoint.state_dict(), strict=True)
-teacher = copy.deepcopy(model_fp).eval().to(device)
 
 args.nbits_w, args.nbits_a = sched[0][:2]
-
-
-def get_specs(model):
-    specs = {
-        "linear": IntAffineQuantizationSpec(
-            nbits=args.nbits_a,
-            signed=False,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-        "conv2d": IntAffineQuantizationSpec(
-            nbits=args.nbits_a,
-            signed=False,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-    }
-    weight_specs = {
-        "linear": IntAffineQuantizationSpec(
-            nbits=args.nbits_w,
-            signed=True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-        "conv2d": IntAffineQuantizationSpec(
-            nbits=args.nbits_w,
-            signed=True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-    }
-    qlin = get_quant_dict(model, "linear", specs["linear"], weight_specs["linear"])
-    qconv = get_quant_dict(model, "conv2d", specs["conv2d"], weight_specs["conv2d"])
-    quant_dict = merge_dicts(qlin, qconv)
-
-    if args.leave_edge_layers_8_bits:
-        final_bits = 8
-    else:
-        final_bits = args.nbits_a
-
-    for k in ("fc", "conv1"):
-        quant_dict[k]["input"] = IntAffineQuantizationSpec(
-            nbits=final_bits,
-            signed=False if k == "fc" else True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        )
-        quant_dict[k]["weight"] = IntAffineQuantizationSpec(
-            nbits=final_bits,
-            signed=True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        )
-    return quant_dict
 
 
 student = model_fp.to(device)
@@ -188,7 +124,7 @@ optimizer_S = optim.AdamW(student.parameters(), lr=1e-4)
 scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
 epochs = 1000
-print("Starting training with KD only …")
+print("Starting training with CE only …")
 
 for epoch in range(epochs):
     if sched and epoch == sched[0][2]:
@@ -207,32 +143,24 @@ for epoch in range(epochs):
         scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
     student.train()
-    teacher.eval()
-
-    running_cls, running_kd = 0.0, 0.0
+    running_cls = 0.0
 
     for imgs, lbls in tqdm(train_loader, desc=f"Epoch {epoch:03d}"):
         imgs, lbls = imgs.to(device), lbls.to(device)
 
-        logits_S = student(imgs)
-        with torch.no_grad():
-            logits_T = teacher(imgs)
-
-        cls_loss = criterion(logits_S, lbls)
-        kd_loss = knowledge_distillation_loss(logits_S, logits_T)
-
-        total_loss = 0.5 * cls_loss + 0.5 * kd_loss
+        logits = student(imgs)
+        cls_loss = criterion(logits, lbls)
+        total_loss = cls_loss
 
         optimizer_S.zero_grad()
         total_loss.backward()
         optimizer_S.step()
 
         running_cls += cls_loss.item() * imgs.size(0)
-        running_kd += kd_loss.item() * imgs.size(0)
 
     scheduler_S.step()
     n = len(train_loader.dataset)
-    print(f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}  KD {running_kd/n:.4f}")
+    print(f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}")
 
     student.eval()
     correct = total = 0
@@ -247,6 +175,6 @@ for epoch in range(epochs):
     print(f"          → val-acc {acc:.2f}%")
 
     if epoch % 20 == 0:
-        torch.save({"model": student.state_dict()}, f"qat_kd_resnet18_e{epoch}.pth")
+        torch.save({"model": student.state_dict()}, f"qat_ce_mobilenetv2_e{epoch}.pth")
 
 print("Training complete.")

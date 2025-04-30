@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
-from torchvision.models import mobilenet_v2
+from torchvision.models import resnet18
 from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 
@@ -21,10 +21,23 @@ from compress.knowledge_distillation import knowledge_distillation_loss
 
 
 def quantile(tensor, q, dim=None, keepdim=False):
+    """
+    Computes the quantile of the input tensor along the specified dimension.
+
+    Parameters:
+    tensor (torch.Tensor): The input tensor.
+    q (float): The quantile to compute, should be a float between 0 and 1.
+    dim (int): The dimension to reduce. If None, the tensor is flattened.
+    keepdim (bool): Whether to keep the reduced dimension in the output.
+    Returns:
+    torch.Tensor: The quantile value(s) along the specified dimension.
+    """
     assert 0 <= q <= 1, "\n\nquantile value should be a float between 0 and 1.\n\n"
+
     if dim is None:
         tensor = tensor.flatten()
         dim = 0
+
     sorted_tensor, _ = torch.sort(tensor, dim=dim)
     num_elements = sorted_tensor.size(dim)
     index = q * (num_elements - 1)
@@ -32,25 +45,22 @@ def quantile(tensor, q, dim=None, keepdim=False):
     upper_index = min(lower_index + 1, num_elements - 1)
     lower_value = sorted_tensor.select(dim, lower_index)
     upper_value = sorted_tensor.select(dim, upper_index)
+    # linear interpolation
     weight = index - lower_index
     quantile_value = (1 - weight) * lower_value + weight * upper_value
+
     return quantile_value.unsqueeze(dim) if keepdim else quantile_value
 
 
 torch.quantile = quantile
-
-parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with KD using MobileNetV2")
+parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with KD only")
 parser.add_argument("--load_from", type=str, required=False)
 parser.add_argument("--bits_schedule", type=str, default="8*8")
 parser.add_argument("--epochs_schedule", type=str, default="10")
 parser.add_argument("--clip_percentile", type=float, default=0.99)
-parser.add_argument(
-    "--leave_edge_layers_8_bits",
-    action="store_true",
-    help="keep the first and last layers at 8 bits",
-)
 args = parser.parse_args()
 
+args.leave_edge_layers_8_bits = True
 
 weight_sched_str, act_sched_str = args.bits_schedule.split("*")
 sched1_w = list(map(int, weight_sched_str.split(",")))
@@ -75,30 +85,31 @@ val_loader = torch.utils.data.DataLoader(
     shuffle=False,
 )
 
-# Load and adapt MobileNetV2
-model_fp = mobilenet_v2(num_classes=10)
-model_fp.features[0][0] = nn.Conv2d(
-    3, 32, kernel_size=3, stride=1, padding=1, bias=False
-)
-model_fp.classifier[1] = nn.Linear(model_fp.last_channel, 10)
-
-# Load pretrained weights
+model_fp = resnet18(num_classes=10)
 state = torch.hub.load_state_dict_from_url(
-    "https://download.pytorch.org/models/mobilenet_v2-b0353104.pth", progress=True
+    "https://download.pytorch.org/models/resnet18-f37072fd.pth", progress=True
 )
-del state["classifier.1.weight"]
-del state["classifier.1.bias"]
+# change maxpool and first layer
+model_fp.maxpool = nn.Identity()
+model_fp.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+
+# delete fc layer from state dict
+del state["fc.weight"]
+del state["fc.bias"]
+del state["conv1.weight"]
+
+# load state dict
 model_fp.load_state_dict(state, strict=False)
+
 
 if args.load_from:
     checkpoint = torch.load(args.load_from, map_location="cpu", weights_only=False)
     if isinstance(checkpoint, dict) and "model" in checkpoint:
-        model_fp.load_state_dict(checkpoint["model"], strict=False)
+        model_fp.load_state_dict(checkpoint["model"], strict=True)
     elif isinstance(checkpoint, dict):
-        model_fp.load_state_dict(checkpoint, strict=False)
+        model_fp.load_state_dict(checkpoint, strict=True)
     elif isinstance(checkpoint, nn.Module):
         model_fp.load_state_dict(checkpoint.state_dict(), strict=True)
-
 teacher = copy.deepcopy(model_fp).eval().to(device)
 
 args.nbits_w, args.nbits_a = sched[0][:2]
@@ -142,10 +153,10 @@ def get_specs(model):
     else:
         final_bits = args.nbits_a
 
-    for k in ("classifier.1", "features.0.0"):
+    for k in ("fc", "conv1"):
         quant_dict[k]["input"] = IntAffineQuantizationSpec(
             nbits=final_bits,
-            signed=True,
+            signed=False if k == "fc" else True,
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
             percentile=args.clip_percentile,
         )
@@ -208,6 +219,7 @@ for epoch in range(epochs):
 
         cls_loss = criterion(logits_S, lbls)
         kd_loss = knowledge_distillation_loss(logits_S, logits_T)
+
         total_loss = 0.5 * cls_loss + 0.5 * kd_loss
 
         optimizer_S.zero_grad()
@@ -234,6 +246,6 @@ for epoch in range(epochs):
     print(f"          → val-acc {acc:.2f}%")
 
     if epoch % 20 == 0:
-        torch.save({"model": student.state_dict()}, f"qat_kd_mobilenetv2_e{epoch}.pth")
+        torch.save({"model": student.state_dict()}, f"qat_kd_resnet18_e{epoch}.pth")
 
 print("Training complete.")

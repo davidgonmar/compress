@@ -202,7 +202,7 @@ def prepare_for_qat(
                     activations[module],
                     online=online,
                 )
-        if use_PACT and isinstance(module, nn.ReLU):
+        if use_PACT and isinstance(module, (nn.ReLU, nn.ReLU6)):
             mod = PACTReLU()
         setattr(
             parent_module,

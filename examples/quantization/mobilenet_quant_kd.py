@@ -1,4 +1,5 @@
 import argparse
+import copy
 
 import torch
 import torch.nn as nn
@@ -9,16 +10,13 @@ from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 
 from compress.quantization import (
-    IntAffineQuantizationSpec,
     prepare_for_qat,
     merge_qat_model,
-    IntAffineQuantizationMode,
-    get_quant_dict,
-    merge_dicts,
 )
+from compress.knowledge_distillation import knowledge_distillation_loss
+from compress.quantization.recipes import mobilenetv2_recipe_symmetric_quant
 
 
-# Patch in a quantile function for PyTorch < 1.7
 def quantile(tensor, q, dim=None, keepdim=False):
     assert 0 <= q <= 1, "\n\nquantile value should be a float between 0 and 1.\n\n"
     if dim is None:
@@ -38,7 +36,7 @@ def quantile(tensor, q, dim=None, keepdim=False):
 
 torch.quantile = quantile
 
-parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with MobileNetV2")
+parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with KD using MobileNetV2")
 parser.add_argument("--load_from", type=str, required=False)
 parser.add_argument("--bits_schedule", type=str, default="8*8")
 parser.add_argument("--epochs_schedule", type=str, default="10")
@@ -50,7 +48,6 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# args.leave_edge_layers_8_bits = True
 
 weight_sched_str, act_sched_str = args.bits_schedule.split("*")
 sched1_w = list(map(int, weight_sched_str.split(",")))
@@ -75,100 +72,42 @@ val_loader = torch.utils.data.DataLoader(
     shuffle=False,
 )
 
-# Load pretrained MobileNetV2
-model_fp = mobilenet_v2(pretrained=True)
-
-# Modify for CIFAR-10
+# Load and adapt MobileNetV2
+model_fp = mobilenet_v2(num_classes=10)
+model_fp.features[0][0] = nn.Conv2d(
+    3, 32, kernel_size=3, stride=1, padding=1, bias=False
+)
 model_fp.classifier[1] = nn.Linear(model_fp.last_channel, 10)
 
-# Optional: reduce first conv stride for small images
-model_fp.features[0][0].stride = (1, 1)
+# Load pretrained weights
+state = torch.hub.load_state_dict_from_url(
+    "https://download.pytorch.org/models/mobilenet_v2-b0353104.pth", progress=True
+)
+del state["classifier.1.weight"]
+del state["classifier.1.bias"]
+model_fp.load_state_dict(state, strict=False)
 
 if args.load_from:
     checkpoint = torch.load(args.load_from, map_location="cpu", weights_only=False)
     if isinstance(checkpoint, dict) and "model" in checkpoint:
-        model_fp.load_state_dict(checkpoint["model"], strict=False)
+        model_fp.load_state_dict(checkpoint["model"], strict=True)
     elif isinstance(checkpoint, dict):
-        model_fp.load_state_dict(checkpoint, strict=False)
+        model_fp.load_state_dict(checkpoint, strict=True)
     elif isinstance(checkpoint, nn.Module):
         model_fp.load_state_dict(checkpoint.state_dict(), strict=True)
+
+teacher = copy.deepcopy(model_fp).eval().to(device)
 
 args.nbits_w, args.nbits_a = sched[0][:2]
 
 
 def get_specs(model):
-    specs = {
-        "linear": IntAffineQuantizationSpec(
-            nbits=args.nbits_a,
-            signed=False,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-        "conv2d": IntAffineQuantizationSpec(
-            nbits=args.nbits_a,
-            signed=False,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-    }
-    weight_specs = {
-        "linear": IntAffineQuantizationSpec(
-            nbits=args.nbits_w,
-            signed=True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-        "conv2d": IntAffineQuantizationSpec(
-            nbits=args.nbits_w,
-            signed=True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        ),
-    }
-
-    qlin = get_quant_dict(model, "linear", specs["linear"], weight_specs["linear"])
-    qconv = get_quant_dict(model, "conv2d", specs["conv2d"], weight_specs["conv2d"])
-    quant_dict = merge_dicts(qlin, qconv)
-
-    if args.leave_edge_layers_8_bits:
-        final_bits = 8
-    else:
-        final_bits = args.nbits_a
-
-    # Adjust the first and last layers
-    if hasattr(model, "features") and hasattr(model, "classifier"):
-        first_layer = "features.0.0"
-        last_layer = "classifier.1"
-        quant_dict[first_layer] = {
-            "input": IntAffineQuantizationSpec(
-                nbits=final_bits,
-                signed=True,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-                percentile=args.clip_percentile,
-            ),
-            "weight": IntAffineQuantizationSpec(
-                nbits=final_bits,
-                signed=True,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-                percentile=args.clip_percentile,
-            ),
-        }
-        quant_dict[last_layer] = {
-            "input": IntAffineQuantizationSpec(
-                nbits=final_bits,
-                signed=False,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-                percentile=args.clip_percentile,
-            ),
-            "weight": IntAffineQuantizationSpec(
-                nbits=final_bits,
-                signed=True,
-                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-                percentile=args.clip_percentile,
-            ),
-        }
-
-    return quant_dict
+    return mobilenetv2_recipe_symmetric_quant(
+        bits_activation=args.nbits_a,
+        bits_weight=args.nbits_w,
+        clip_percentile=args.clip_percentile,
+        leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
+    )
 
 
 student = model_fp.to(device)
@@ -182,6 +121,8 @@ student = prepare_for_qat(
     use_lsq=USE_LSQ,
     data_batch=one_batch,
 )
+
+print(student)
 student.to(device)
 
 criterion = nn.CrossEntropyLoss()
@@ -189,7 +130,7 @@ optimizer_S = optim.AdamW(student.parameters(), lr=1e-4)
 scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
 epochs = 1000
-print("Starting training with CE only …")
+print("Starting training with KD only …")
 
 for epoch in range(epochs):
     if sched and epoch == sched[0][2]:
@@ -208,24 +149,31 @@ for epoch in range(epochs):
         scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
     student.train()
-    running_cls = 0.0
+    teacher.eval()
+
+    running_cls, running_kd = 0.0, 0.0
 
     for imgs, lbls in tqdm(train_loader, desc=f"Epoch {epoch:03d}"):
         imgs, lbls = imgs.to(device), lbls.to(device)
 
-        logits = student(imgs)
-        cls_loss = criterion(logits, lbls)
-        total_loss = cls_loss
+        logits_S = student(imgs)
+        with torch.no_grad():
+            logits_T = teacher(imgs)
+
+        cls_loss = criterion(logits_S, lbls)
+        kd_loss = knowledge_distillation_loss(logits_S, logits_T)
+        total_loss = 0.5 * cls_loss + 0.5 * kd_loss
 
         optimizer_S.zero_grad()
         total_loss.backward()
         optimizer_S.step()
 
         running_cls += cls_loss.item() * imgs.size(0)
+        running_kd += kd_loss.item() * imgs.size(0)
 
     scheduler_S.step()
     n = len(train_loader.dataset)
-    print(f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}")
+    print(f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}  KD {running_kd/n:.4f}")
 
     student.eval()
     correct = total = 0
@@ -240,6 +188,6 @@ for epoch in range(epochs):
     print(f"          → val-acc {acc:.2f}%")
 
     if epoch % 20 == 0:
-        torch.save({"model": student.state_dict()}, f"qat_ce_mobilenetv2_e{epoch}.pth")
+        torch.save({"model": student.state_dict()}, f"qat_kd_mobilenetv2_e{epoch}.pth")
 
 print("Training complete.")

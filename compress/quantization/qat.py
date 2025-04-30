@@ -437,6 +437,7 @@ class LSQLinear(nn.Linear):
             assert data_batch is not None, "data_batch is required for offline LSQ"
             self.input_info = calibrate(data_batch, input_spec)
             self.input_info.scale.requires_grad_(True)
+            self.input_spec = input_spec
         else:
             self.input_spec = input_spec
 
@@ -448,7 +449,8 @@ class LSQLinear(nn.Linear):
 
     def __repr__(self):
         return (
-            f"LSQQuantizedLinear({self.in_features}, {self.out_features}, {self.bias})"
+            f"LSQQuantizedLinear({self.in_features}, {self.out_features}, {self.bias}), "
+            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
         )
 
     def to_linear(self):
@@ -524,6 +526,7 @@ class LSQConv2d(nn.Conv2d):
             assert data_batch is not None, "data_batch is required for offline LSQ"
             self.input_info = calibrate(data_batch, input_spec)
             self.input_info.scale.requires_grad_(True)
+            self.input_spec = input_spec
         else:
             self.input_spec = input_spec
 
@@ -536,7 +539,10 @@ class LSQConv2d(nn.Conv2d):
         )
 
     def __repr__(self):
-        return f"LSQQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
+        return (
+            f"LSQQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias}), "
+            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
+        )
 
     def to_conv2d(self):
         ret = nn.Conv2d(
