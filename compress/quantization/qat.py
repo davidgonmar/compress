@@ -744,6 +744,3 @@ class AutoBitAllocationConv2d(nn.Module):
         ret.weight = self.weight
         ret.bias = self.bias
         return ret
-
-
-# ============================================================

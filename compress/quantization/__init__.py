@@ -156,6 +156,7 @@ def prepare_for_qat(
     use_PACT=False,
     inplace=True,
     use_lsq=False,
+    method_args={},
     **kwargs,
 ):
 
@@ -184,12 +185,14 @@ def prepare_for_qat(
             elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
                 mod = QATConv2d(specs[name]["weight"], specs[name]["input"], module)
         elif use_lsq:
+            online = method_args.get("online", False)
             if isinstance(module, (nn.Linear, nn.LazyLinear)):
                 mod = LSQLinear(
                     specs[name]["weight"],
                     specs[name]["input"],
                     module,
                     activations[module],
+                    online=online,
                 )
             elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
                 mod = LSQConv2d(
@@ -197,6 +200,7 @@ def prepare_for_qat(
                     specs[name]["input"],
                     module,
                     activations[module],
+                    online=online,
                 )
         if use_PACT and isinstance(module, nn.ReLU):
             mod = PACTReLU()

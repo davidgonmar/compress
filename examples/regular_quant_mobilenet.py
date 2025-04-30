@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
-from torchvision.models import resnet18
+from torchvision.models import mobilenet_v2
 from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 
@@ -18,6 +18,7 @@ from compress.quantization import (
 )
 
 
+# Patch in a quantile function for PyTorch < 1.7
 def quantile(tensor, q, dim=None, keepdim=False):
     assert 0 <= q <= 1, "\n\nquantile value should be a float between 0 and 1.\n\n"
     if dim is None:
@@ -36,7 +37,8 @@ def quantile(tensor, q, dim=None, keepdim=False):
 
 
 torch.quantile = quantile
-parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT without KD")
+
+parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with MobileNetV2")
 parser.add_argument("--load_from", type=str, required=False)
 parser.add_argument("--bits_schedule", type=str, default="8*8")
 parser.add_argument("--epochs_schedule", type=str, default="10")
@@ -48,6 +50,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+# args.leave_edge_layers_8_bits = True
 
 weight_sched_str, act_sched_str = args.bits_schedule.split("*")
 sched1_w = list(map(int, weight_sched_str.split(",")))
@@ -72,16 +75,14 @@ val_loader = torch.utils.data.DataLoader(
     shuffle=False,
 )
 
-model_fp = resnet18(num_classes=10)
-state = torch.hub.load_state_dict_from_url(
-    "https://download.pytorch.org/models/resnet18-f37072fd.pth", progress=True
-)
-model_fp.maxpool = nn.Identity()
-model_fp.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-del state["fc.weight"]
-del state["fc.bias"]
-del state["conv1.weight"]
-model_fp.load_state_dict(state, strict=False)
+# Load pretrained MobileNetV2
+model_fp = mobilenet_v2(pretrained=True)
+
+# Modify for CIFAR-10
+model_fp.classifier[1] = nn.Linear(model_fp.last_channel, 10)
+
+# Optional: reduce first conv stride for small images
+model_fp.features[0][0].stride = (1, 1)
 
 if args.load_from:
     checkpoint = torch.load(args.load_from, map_location="cpu", weights_only=False)
@@ -124,6 +125,7 @@ def get_specs(model):
             percentile=args.clip_percentile,
         ),
     }
+
     qlin = get_quant_dict(model, "linear", specs["linear"], weight_specs["linear"])
     qconv = get_quant_dict(model, "conv2d", specs["conv2d"], weight_specs["conv2d"])
     quant_dict = merge_dicts(qlin, qconv)
@@ -133,19 +135,39 @@ def get_specs(model):
     else:
         final_bits = args.nbits_a
 
-    for k in ("fc", "conv1"):
-        quant_dict[k]["input"] = IntAffineQuantizationSpec(
-            nbits=final_bits,
-            signed=False if k == "fc" else True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        )
-        quant_dict[k]["weight"] = IntAffineQuantizationSpec(
-            nbits=final_bits,
-            signed=True,
-            quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=args.clip_percentile,
-        )
+    # Adjust the first and last layers
+    if hasattr(model, "features") and hasattr(model, "classifier"):
+        first_layer = "features.0.0"
+        last_layer = "classifier.1"
+        quant_dict[first_layer] = {
+            "input": IntAffineQuantizationSpec(
+                nbits=final_bits,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+                percentile=args.clip_percentile,
+            ),
+            "weight": IntAffineQuantizationSpec(
+                nbits=final_bits,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+                percentile=args.clip_percentile,
+            ),
+        }
+        quant_dict[last_layer] = {
+            "input": IntAffineQuantizationSpec(
+                nbits=final_bits,
+                signed=False,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+                percentile=args.clip_percentile,
+            ),
+            "weight": IntAffineQuantizationSpec(
+                nbits=final_bits,
+                signed=True,
+                quant_mode=IntAffineQuantizationMode.SYMMETRIC,
+                percentile=args.clip_percentile,
+            ),
+        }
+
     return quant_dict
 
 
@@ -218,6 +240,6 @@ for epoch in range(epochs):
     print(f"          → val-acc {acc:.2f}%")
 
     if epoch % 20 == 0:
-        torch.save({"model": student.state_dict()}, f"qat_ce_resnet18_e{epoch}.pth")
+        torch.save({"model": student.state_dict()}, f"qat_ce_mobilenetv2_e{epoch}.pth")
 
 print("Training complete.")

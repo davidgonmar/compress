@@ -1,10 +1,11 @@
 import argparse
+import copy
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
-from torchvision.models import resnet18
+from torchvision.models import mobilenet_v2
 from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 
@@ -16,6 +17,7 @@ from compress.quantization import (
     get_quant_dict,
     merge_dicts,
 )
+from compress.knowledge_distillation import knowledge_distillation_loss
 
 
 def quantile(tensor, q, dim=None, keepdim=False):
@@ -36,7 +38,8 @@ def quantile(tensor, q, dim=None, keepdim=False):
 
 
 torch.quantile = quantile
-parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT without KD")
+
+parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with KD using MobileNetV2")
 parser.add_argument("--load_from", type=str, required=False)
 parser.add_argument("--bits_schedule", type=str, default="8*8")
 parser.add_argument("--epochs_schedule", type=str, default="10")
@@ -72,15 +75,19 @@ val_loader = torch.utils.data.DataLoader(
     shuffle=False,
 )
 
-model_fp = resnet18(num_classes=10)
-state = torch.hub.load_state_dict_from_url(
-    "https://download.pytorch.org/models/resnet18-f37072fd.pth", progress=True
+# Load and adapt MobileNetV2
+model_fp = mobilenet_v2(num_classes=10)
+model_fp.features[0][0] = nn.Conv2d(
+    3, 32, kernel_size=3, stride=1, padding=1, bias=False
 )
-model_fp.maxpool = nn.Identity()
-model_fp.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-del state["fc.weight"]
-del state["fc.bias"]
-del state["conv1.weight"]
+model_fp.classifier[1] = nn.Linear(model_fp.last_channel, 10)
+
+# Load pretrained weights
+state = torch.hub.load_state_dict_from_url(
+    "https://download.pytorch.org/models/mobilenet_v2-b0353104.pth", progress=True
+)
+del state["classifier.1.weight"]
+del state["classifier.1.bias"]
 model_fp.load_state_dict(state, strict=False)
 
 if args.load_from:
@@ -91,6 +98,8 @@ if args.load_from:
         model_fp.load_state_dict(checkpoint, strict=False)
     elif isinstance(checkpoint, nn.Module):
         model_fp.load_state_dict(checkpoint.state_dict(), strict=True)
+
+teacher = copy.deepcopy(model_fp).eval().to(device)
 
 args.nbits_w, args.nbits_a = sched[0][:2]
 
@@ -133,10 +142,10 @@ def get_specs(model):
     else:
         final_bits = args.nbits_a
 
-    for k in ("fc", "conv1"):
+    for k in ("classifier.1", "features.0.0"):
         quant_dict[k]["input"] = IntAffineQuantizationSpec(
             nbits=final_bits,
-            signed=False if k == "fc" else True,
+            signed=True,
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
             percentile=args.clip_percentile,
         )
@@ -167,7 +176,7 @@ optimizer_S = optim.AdamW(student.parameters(), lr=1e-4)
 scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
 epochs = 1000
-print("Starting training with CE only …")
+print("Starting training with KD only …")
 
 for epoch in range(epochs):
     if sched and epoch == sched[0][2]:
@@ -186,24 +195,31 @@ for epoch in range(epochs):
         scheduler_S = StepLR(optimizer_S, step_size=8, gamma=0.1)
 
     student.train()
-    running_cls = 0.0
+    teacher.eval()
+
+    running_cls, running_kd = 0.0, 0.0
 
     for imgs, lbls in tqdm(train_loader, desc=f"Epoch {epoch:03d}"):
         imgs, lbls = imgs.to(device), lbls.to(device)
 
-        logits = student(imgs)
-        cls_loss = criterion(logits, lbls)
-        total_loss = cls_loss
+        logits_S = student(imgs)
+        with torch.no_grad():
+            logits_T = teacher(imgs)
+
+        cls_loss = criterion(logits_S, lbls)
+        kd_loss = knowledge_distillation_loss(logits_S, logits_T)
+        total_loss = 0.5 * cls_loss + 0.5 * kd_loss
 
         optimizer_S.zero_grad()
         total_loss.backward()
         optimizer_S.step()
 
         running_cls += cls_loss.item() * imgs.size(0)
+        running_kd += kd_loss.item() * imgs.size(0)
 
     scheduler_S.step()
     n = len(train_loader.dataset)
-    print(f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}")
+    print(f"Epoch {epoch:03d}  |  CE {running_cls/n:.4f}  KD {running_kd/n:.4f}")
 
     student.eval()
     correct = total = 0
@@ -218,6 +234,6 @@ for epoch in range(epochs):
     print(f"          → val-acc {acc:.2f}%")
 
     if epoch % 20 == 0:
-        torch.save({"model": student.state_dict()}, f"qat_ce_resnet18_e{epoch}.pth")
+        torch.save({"model": student.state_dict()}, f"qat_kd_mobilenetv2_e{epoch}.pth")
 
 print("Training complete.")
