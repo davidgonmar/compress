@@ -85,6 +85,24 @@ def entropy_calibration(hist_fp32, target_nlevels):
     return best_i, min_kl_value
 
 
+# approximate quantile (faster and does not throw error if tensor is big)
+def quantile(tensor, q, dim=None, keepdim=False):
+    assert 0 <= q <= 1, "\n\nquantile value should be a float between 0 and 1.\n\n"
+    if dim is None:
+        tensor = tensor.flatten()
+        dim = 0
+    sorted_tensor, _ = torch.sort(tensor, dim=dim)
+    num_elements = sorted_tensor.size(dim)
+    index = q * (num_elements - 1)
+    lower_index = int(index)
+    upper_index = min(lower_index + 1, num_elements - 1)
+    lower_value = sorted_tensor.select(dim, lower_index)
+    upper_value = sorted_tensor.select(dim, upper_index)
+    weight = index - lower_index
+    quantile_value = (1 - weight) * lower_value + weight * upper_value
+    return quantile_value.unsqueeze(dim) if keepdim else quantile_value
+
+
 def calibrate(
     x: torch.Tensor,
     spec: IntAffineQuantizationSpec,
@@ -151,8 +169,8 @@ def calibrate(
         xm = spec.grouper.group(x)
         lower_percentile = (1 - percentile) / 2
         upper_percentile = (1 + percentile) / 2
-        xmin = torch.quantile(xm, lower_percentile, dim=0)  # shape (n_groups)
-        xmax = torch.quantile(xm, upper_percentile, dim=0)
+        xmin = quantile(xm, lower_percentile, dim=0)  # shape (n_groups)
+        xmax = quantile(xm, upper_percentile, dim=0)
         scale = (xmax - xmin) / (spec.qmax - spec.qmin)
         zero_point = torch.round(spec.qmin - xmin / scale).to(x.dtype)
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point.detach())
@@ -160,7 +178,7 @@ def calibrate(
     if spec.quant_mode == IntAffineQuantizationMode.SYMMETRIC:
         xm = spec.grouper.group(x)
         # print(x.max(), x.min())
-        xmax = torch.quantile(xm.abs(), percentile, dim=0)
+        xmax = quantile(xm.abs(), percentile, dim=0)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         zero_point = None
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)

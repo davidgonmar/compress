@@ -18,24 +18,6 @@ from compress.quantization import (
 )
 
 
-def quantile(tensor, q, dim=None, keepdim=False):
-    assert 0 <= q <= 1, "\n\nquantile value should be a float between 0 and 1.\n\n"
-    if dim is None:
-        tensor = tensor.flatten()
-        dim = 0
-    sorted_tensor, _ = torch.sort(tensor, dim=dim)
-    num_elements = sorted_tensor.size(dim)
-    index = q * (num_elements - 1)
-    lower_index = int(index)
-    upper_index = min(lower_index + 1, num_elements - 1)
-    lower_value = sorted_tensor.select(dim, lower_index)
-    upper_value = sorted_tensor.select(dim, upper_index)
-    weight = index - lower_index
-    quantile_value = (1 - weight) * lower_value + weight * upper_value
-    return quantile_value.unsqueeze(dim) if keepdim else quantile_value
-
-
-torch.quantile = quantile
 parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT without KD")
 parser.add_argument("--load_from", type=str, required=False)
 parser.add_argument("--bits_schedule", type=str, default="8*8")

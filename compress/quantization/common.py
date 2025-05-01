@@ -141,7 +141,7 @@ class IntAffineQuantizationSpec:
         self.grouper = grouper
 
     def __repr__(self):
-        return f"IntAffineQuantizationSpec(nbits={self.nbits}, signed={self.signed}, group_dims={self.group_dims}, quant_mode={self.quant_mode})"
+        return f"IntAffineQuantizationSpec(nbits={self.nbits}, signed={self.signed}, quant_mode={self.quant_mode}, mode_args={self.mode_args}, grouper={self.grouper})"
 
 
 class IntAffineQuantizationInfo(nn.Module):
