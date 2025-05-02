@@ -1,11 +1,17 @@
 import torch.nn as nn
 from typing import Callable
 from tqdm import tqdm
-from compress.low_rank_ops import LowRankLinear, LowRankConv2d
-from compress.common import gather_submodules, default_should_do
+from compress.factorization.low_rank_ops import LowRankLinear, LowRankConv2d
+from compress.common import (
+    gather_submodules,
+    default_should_do,
+    keys_passlist_should_do,
+    cls_passlist_should_do,
+)
 from compress.utils import extract_weights
 import copy
 import torch
+from typing import Dict
 
 
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
@@ -62,15 +68,56 @@ def extract_weights_and_reshapers(
     ]
 
 
-def to_low_rank(
-    model: nn.Module, should_do: Callable = default_should_do, inplace=True, **kwargs
+def all_same_ratio(
+    model,
+    ratio,
+    should_do=cls_passlist_should_do(
+        (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
+    ),
 ):
     modules_to_replace = gather_submodules(
         model,
         should_do=should_do,
     )
+    di = {}
+    for name, module in modules_to_replace:
+        di[name] = {
+            "ratio_to_keep": ratio,
+            "energy_to_keep": None,
+        }
+    return di
+
+
+def all_same_energy(
+    model,
+    energy,
+    should_do=cls_passlist_should_do(
+        (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
+    ),
+):
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
+    di = {}
+    for name, module in modules_to_replace:
+        di[name] = {
+            "ratio_to_keep": None,
+            "energy_to_keep": energy,
+        }
+    return di
+
+
+def to_low_rank_manual(
+    model: nn.Module, inplace=True, cfg_dict: Dict[str, Dict[str, float]] = None
+):
     if not inplace:
         model = copy.deepcopy(model)
+
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(cfg_dict.keys()),
+    )
 
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -82,12 +129,24 @@ def to_low_rank(
             parent_module,
             attr_name,
             (
-                LowRankLinear.from_linear(module, **kwargs)
+                LowRankLinear.from_linear(
+                    module,
+                    ratio_to_keep=cfg_dict[name]["ratio_to_keep"],
+                    energy_to_keep=cfg_dict[name]["energy_to_keep"],
+                )
                 if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-                else LowRankConv2d.from_conv2d(module, **kwargs)
+                else (
+                    LowRankConv2d.from_conv2d(
+                        module,
+                        ratio_to_keep=cfg_dict[name]["ratio_to_keep"],
+                        energy_to_keep=cfg_dict[name]["energy_to_keep"],
+                    )
+                    if isinstance(module, nn.Conv2d)
+                    or isinstance(module, nn.LazyConv2d)
+                    else module
+                )
             ),
         )
-
     return model
 
 

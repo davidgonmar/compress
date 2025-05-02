@@ -1,10 +1,14 @@
 import torch
-from compress.common.functional import hoyer_sparsity, squared_hoyer_sparsity, DEFAULT_NORMALIZE, scad
+from compress.common.functional import (
+    hoyer_sparsity,
+    squared_hoyer_sparsity,
+    DEFAULT_NORMALIZE,
+    scad,
+)
 from typing import List, Callable
 from compress.factorization.low_rank_ops import LowRankLinear, LowRankConv2d
 from compress.utils import extract_weights
 import torch.nn as nn
-
 
 
 Reshaper = Callable[[torch.Tensor], torch.Tensor]
@@ -40,6 +44,7 @@ def singular_values_entropy(input: torch.Tensor) -> torch.Tensor:
     smx = torch.nn.functional.softmax(singular_values, dim=-1)
     return -torch.sum(smx * torch.log(smx.clamp_min(1e-12)))
 
+
 def orthogonal_regularizer(
     matrix: torch.Tensor, normalize_by_rank_squared=True
 ) -> torch.Tensor:
@@ -52,8 +57,6 @@ def orthogonal_regularizer(
         ** 2
     )
     return ret / mat_rank if normalize_by_rank_squared else ret
-
-
 
 
 # Pairs (fn, sgn) where sgn is -1 if the metric should be minimized, 1 if maximized
@@ -123,9 +126,6 @@ class SingularValuesRegularizer:
         )
 
 
-
-
-
 class OrthogonalRegularizer:
     def __init__(
         self,
@@ -175,7 +175,6 @@ class OrthogonalRegularizer:
             weight * orthogonal_regularizer(param, self.normalize_by_rank_squared)
             for param, weight in zip(params, self.weights)
         )
-
 
 
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:

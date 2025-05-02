@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorization.factorize import to_low_rank
+from compress.factorization.factorize import to_low_rank_manual, all_same_energy
 from compress.flops import count_model_flops
 from compress.experiments import (
     load_vision_model,
@@ -14,6 +14,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--load_from", type=str, default="mnist_model.pth")
 parser.add_argument("--keep_edge_layer", action="store_true")
+parser.add_argument("--metric", type=str, default="energy")
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -58,13 +59,6 @@ print(
     f"Test Loss: {eval_results['loss']}, Test Accuracy: {eval_results['accuracy']}, Number of parameters: {n_params}, Flops: {flops}"
 )
 
-
-def should_do(module, name):
-    cond1 = isinstance(module, (torch.nn.Conv2d, torch.nn.Linear))
-    cond2 = True if not args.keep_edge_layer else (name not in ["conv1", "fc"])
-    return cond1 and cond2
-
-
 energies = [
     0.9,
     0.95,
@@ -79,18 +73,38 @@ energies = [
     0.99997,
     0.99999,
 ]
-for ratio in energies:
-    model_lr = to_low_rank(
+
+ratios = [
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+]
+
+for x in energies if args.metric == "energy" else ratios:
+    cfg = all_same_energy(
         model,
-        energy_to_keep=ratio,
+        energy=x,
+    )
+    if args.keep_edge_layer:
+        del cfg["conv1"]
+        del cfg["fc"]
+    model_lr = to_low_rank_manual(
+        model,
+        cfg_dict=cfg,
         inplace=False,
-        should_do=should_do,
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     model_lr.to(device)
     eval_results = evaluate_vision_model(model_lr, test_loader)
 
     fl = count_model_flops(model_lr, (1, 3, 32, 32))
+    s = "Energy ratio" if args.metric == "energy" else "Rank ratio"
     print(
-        f"Ratio: {ratio:.8f}, Test Loss: {eval_results['loss']:.4f}, Test Accuracy: {eval_results['accuracy']:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}"
+        f"{s}: {x:.8f}, Test Loss: {eval_results['loss']:.4f}, Test Accuracy: {eval_results['accuracy']:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Flops: {fl}"
     )
