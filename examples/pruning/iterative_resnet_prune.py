@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import StepLR
 import torch.optim as optim
 import torchvision
 from tqdm import tqdm
-from compress.factorize import to_low_rank, merge_back
+from compress.factorization.factorize import to_low_rank, merge_back
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path", type=str, default="mnist_model.pth")

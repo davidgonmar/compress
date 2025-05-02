@@ -3,10 +3,9 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-from compress.regularizers import (
+from compress.factorization.regularizers import (
     SingularValuesRegularizer,
     extract_weights_and_reshapers,
-    update_weights,
 )
 from compress.experiments import load_vision_model, get_cifar10_modifier
 
@@ -73,6 +72,10 @@ num_epochs = 350
 def weight_schedule(epochnum):
     # penalty decreases exponentially from 3.0 to 0.1
     return 0.1 + 0.9 * (0.1 ** (epochnum / num_epochs)) * 0.5
+
+
+def update_weights(regularizer, weight):
+    regularizer.weights = [weight] * len(regularizer.weights)
 
 
 for epoch in range(num_epochs):

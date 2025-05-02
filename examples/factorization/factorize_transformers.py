@@ -6,7 +6,7 @@ from evaluate import load as load_metric
 from tqdm import tqdm
 import copy
 import argparse
-from compress.factorize import to_low_rank_global, to_low_rank
+from compress.factorization.factorize import to_low_rank_global, to_low_rank
 
 parser = argparse.ArgumentParser()
 parser.add_argument(

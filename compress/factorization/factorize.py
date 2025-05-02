@@ -68,7 +68,7 @@ def extract_weights_and_reshapers(
     ]
 
 
-def all_same_ratio(
+def all_same_rank_ratio(
     model,
     ratio,
     should_do=cls_passlist_should_do(
@@ -82,13 +82,13 @@ def all_same_ratio(
     di = {}
     for name, module in modules_to_replace:
         di[name] = {
-            "ratio_to_keep": ratio,
-            "energy_to_keep": None,
+            "name": "rank_ratio_to_keep",
+            "value": ratio,
         }
     return di
 
 
-def all_same_energy(
+def all_same_svals_energy_ratio(
     model,
     energy,
     should_do=cls_passlist_should_do(
@@ -102,8 +102,28 @@ def all_same_energy(
     di = {}
     for name, module in modules_to_replace:
         di[name] = {
-            "ratio_to_keep": None,
-            "energy_to_keep": energy,
+            "name": "svals_energy_ratio_to_keep",
+            "value": energy,
+        }
+    return di
+
+
+def all_same_params_ratio(
+    model,
+    ratio,
+    should_do=cls_passlist_should_do(
+        (nn.Linear, nn.Conv2d, nn.LazyLinear, nn.LazyConv2d)
+    ),
+):
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=should_do,
+    )
+    di = {}
+    for name, module in modules_to_replace:
+        di[name] = {
+            "name": "params_ratio_to_keep",
+            "value": ratio,
         }
     return di
 
@@ -131,15 +151,13 @@ def to_low_rank_manual(
             (
                 LowRankLinear.from_linear(
                     module,
-                    ratio_to_keep=cfg_dict[name]["ratio_to_keep"],
-                    energy_to_keep=cfg_dict[name]["energy_to_keep"],
+                    cfg_dict[name],
                 )
                 if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
                 else (
                     LowRankConv2d.from_conv2d(
                         module,
-                        ratio_to_keep=cfg_dict[name]["ratio_to_keep"],
-                        energy_to_keep=cfg_dict[name]["energy_to_keep"],
+                        cfg_dict[name],
                     )
                     if isinstance(module, nn.Conv2d)
                     or isinstance(module, nn.LazyConv2d)

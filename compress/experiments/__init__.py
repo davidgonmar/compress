@@ -100,7 +100,7 @@ def load_vision_model(
 
     model = _maybe_identity(model, modifier_before_load)
     if pretrained_path:
-        loaded = torch.load(pretrained_path, map_location="cpu")
+        loaded = torch.load(pretrained_path, map_location="cpu", weights_only=False)
         if isinstance(loaded, dict) and "model" in loaded:
             model.load_state_dict(loaded["model"], strict=strict)
         if isinstance(loaded, dict) and "_orig_mod" in next(

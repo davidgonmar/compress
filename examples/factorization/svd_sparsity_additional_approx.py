@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import StepLR
 import torch.optim as optim
 import torchvision
 from tqdm import tqdm
-from compress.factorize import hoyer_svd_sparsity_grad_adder_given_svds
+from compress.factorization.factorize import hoyer_svd_sparsity_grad_adder_given_svds
 from compress.regularizers import singular_values_hoyer_sparsity
 import copy
 

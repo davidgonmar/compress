@@ -1,7 +1,12 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorization.factorize import to_low_rank_manual, all_same_energy
+from compress.factorization.factorize import (
+    to_low_rank_manual,
+    all_same_svals_energy_ratio,
+    all_same_params_ratio,
+    all_same_rank_ratio,
+)
 from compress.flops import count_model_flops
 from compress.experiments import (
     load_vision_model,
@@ -86,10 +91,39 @@ ratios = [
     0.9,
 ]
 
-for x in energies if args.metric == "energy" else ratios:
-    cfg = all_same_energy(
-        model,
-        energy=x,
+params_ratio = [
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+]
+for x in (
+    energies
+    if args.metric == "energy"
+    else ratios if args.metric == "rank" else params_ratio
+):
+    cfg = (
+        all_same_svals_energy_ratio(
+            model,
+            energy=x,
+        )
+        if args.metric == "energy"
+        else (
+            all_same_rank_ratio(
+                model,
+                rank=x,
+            )
+            if args.metric == "rank"
+            else all_same_params_ratio(
+                model,
+                ratio=x,
+            )
+        )
     )
     if args.keep_edge_layer:
         del cfg["conv1"]

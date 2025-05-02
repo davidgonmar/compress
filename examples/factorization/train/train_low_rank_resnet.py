@@ -6,7 +6,7 @@ from torchvision import datasets, transforms
 from torchvision.transforms import RandomHorizontalFlip, RandomCrop
 from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
-from compress.factorize import to_low_rank
+from compress.factorization.factorize import to_low_rank
 from compress.regularizers import OrthogonalRegularizer
 from tqdm import tqdm
 

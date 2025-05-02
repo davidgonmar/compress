@@ -1,4 +1,4 @@
-from compress.factorize import plot_singular_values
+from compress.factorization.factorize import plot_singular_values
 import argparse
 from transformers import AutoModelForSequenceClassification
 

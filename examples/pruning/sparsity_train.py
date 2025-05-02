@@ -10,7 +10,7 @@ import argparse
 from torchvision.models import resnet18
 from torch.optim.lr_scheduler import StepLR
 import torch.optim as optim
-from compress.pruning_strats import (
+from compress.sparsity.pruning_strats import (
     linear_granularity_from_str,
     conv2d_granularity_from_str,
 )

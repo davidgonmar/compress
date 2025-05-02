@@ -2,7 +2,7 @@ from typing import Callable
 from torch import nn
 from compress.sparsity.pruned_ops import PrunedLinear, PrunedConv2d
 from tqdm import tqdm
-from compress.pruning_strats import (
+from compress.sparsity.pruning_strats import (
     UnstructuredGranularityLinear,
     UnstructuredGranularityConv2d,
 )

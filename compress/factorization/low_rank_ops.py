@@ -4,37 +4,46 @@ from torch.nn.modules.utils import _pair
 from torch.nn import functional as F
 
 
-def _get_rank_ratio_to_keep(S: torch.Tensor, ratio_to_keep: float):
-    return max(int(S.shape[0] * ratio_to_keep), 1)
+def _get_rank_ratio_to_keep(S: torch.Tensor, rank_ratio_to_keep: float):
+    assert 0.0 <= rank_ratio_to_keep <= 1.0, "rank_ratio_to_keep must be in [0, 1]"
+    return max(int(S.shape[0] * rank_ratio_to_keep), 1)
 
 
-def _get_rank_energy_to_keep(S: torch.Tensor, energy_to_keep: float):
-    # chooses rank such that
-    # sum(S[:rank] ** 2) <= energy_to_keep * sum(S ** 2)
-    assert 0.0 <= energy_to_keep <= 1.0, "energy_to_keep must be in [0, 1]"
-    total_energy = torch.sum(S**2)
-    energy = 0.0
-    rank = 0
-    for s in S:
-        energy += s**2
-        rank += 1
-        if energy / total_energy >= energy_to_keep:
-            break
-    return rank
+def _get_svals_energy_ratio_to_keep(
+    S: torch.Tensor, svals_energy_ratio_to_keep: float
+) -> int:
+    assert 0.0 <= svals_energy_ratio_to_keep <= 1.0
+    sq = S.pow(2)
+    cum_energy = sq.cumsum(dim=0)
+    total_energy = cum_energy[-1]
+    threshold = svals_energy_ratio_to_keep * total_energy
+    idx = torch.searchsorted(cum_energy, threshold)
+    return idx.item() + 1
 
 
-def _get_rank(
+def _get_params_number_ratio_to_keep(
+    X: torch.Tensor,
     S: torch.Tensor,
-    ratio_to_keep: float | None = None,
-    energy_to_keep: float | None = None,
+    params_ratio_to_keep: float,
 ):
+    assert X.ndim == 2, "X must be 2-dimensional"
     assert S.ndim == 1, "Singular values must be 1-dimensional"
-    if ratio_to_keep is not None:
-        return _get_rank_ratio_to_keep(S, ratio_to_keep)
-    elif energy_to_keep is not None:
-        return _get_rank_energy_to_keep(S, energy_to_keep)
-    else:
-        raise ValueError("Either ratio_to_keep or energy_to_keep must be provided")
+
+    m, n = X.shape
+
+    # A in R^{m x r}
+    # B in R^{r x n}
+
+    # So keeping a rank involves a total of m + n parameters
+
+    params_per_rank_kept = torch.arange(0, S.shape[0] + 1).float() * (m + n)
+
+    rel_params_per_rank_kept = params_per_rank_kept / params_per_rank_kept[-1]
+    rank_to_keep = torch.searchsorted(
+        rel_params_per_rank_kept, params_ratio_to_keep
+    )  # rank_to_keep is the number of ranks to keep
+
+    return rank_to_keep.item() + 1
 
 
 class LowRankLinear(nn.Module):
@@ -49,15 +58,24 @@ class LowRankLinear(nn.Module):
     @staticmethod
     def from_linear(
         linear: nn.Linear,
-        ratio_to_keep: float | None = None,
-        energy_to_keep: float | None = None,
+        keep_metric: dict[str, float],
         keep_singular_values_separated: bool = False,
     ):
         # Original linear -> O = X @ W.T + b
         # Low rank linear -> W = U @ S @ V_T -> O = X @ (U @ S @ V_T).T + b = (X @ W1.T) @ W0.T + b
         W, b = linear.weight, linear.bias
         U, S, V_T = torch.linalg.svd(W, full_matrices=True)  # complete SVD
-        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
+        rank = 0
+        if keep_metric["name"] == "rank_ratio_to_keep":
+            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
+            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "params_ratio_to_keep":
+            rank = _get_params_number_ratio_to_keep(W, S, keep_metric["value"])
+        else:
+            raise ValueError(
+                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
+            )
         S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
         out_f, in_f = W.shape
         assert S.shape == (rank, rank)
@@ -87,13 +105,24 @@ class LowRankLinear(nn.Module):
     def from_linear_activation(
         linear: nn.Linear,
         act_cov_mat_chol: torch.Tensor,  # shape (in_features, in_features). Result of cholesky factorization of the input activations covariance matrix (X @ X^T) = L @ L^T
-        ratio_to_keep: float | None = None,
-        energy_to_keep: float | None = None,
+        keep_metric: dict[str, float],
     ):
         # adapted from https://arxiv.org/abs/2403.07378
         W, b = linear.weight, linear.bias
         U, S, V_T = torch.linalg.svd(W @ act_cov_mat_chol, full_matrices=True)
-        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
+        rank = 0
+        if keep_metric["name"] == "rank_ratio_to_keep":
+            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
+            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "params_ratio_to_keep":
+            raise NotImplementedError(
+                "params_ratio_to_keep not implemented for linear activation"
+            )
+        else:
+            raise ValueError(
+                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
+            )
         S = torch.diag(S[:rank])
         out_f, in_f = W.shape
         assert S.shape == (rank, rank)
@@ -165,8 +194,7 @@ class LowRankConv2d(nn.Module):
     @staticmethod
     def from_conv2d(
         conv2d: nn.Conv2d,
-        ratio_to_keep: float | None = None,
-        energy_to_keep: float | None = None,
+        keep_metric: dict[str, float],
         keep_singular_values_separated: bool = False,
     ):
         # Original conv2d -> O = conv2d(W, X)
@@ -176,7 +204,19 @@ class LowRankConv2d(nn.Module):
         U, S, V_T = torch.linalg.svd(
             W.permute(1, 2, 3, 0).reshape(i * h * w, o), full_matrices=True
         )
-        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
+        rank = 0
+        if keep_metric["name"] == "rank_ratio_to_keep":
+            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
+            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "params_ratio_to_keep":
+            rank = _get_params_number_ratio_to_keep(
+                W.permute(1, 2, 3, 0).reshape(i * h * w, o), S, keep_metric["value"]
+            )
+        else:
+            raise ValueError(
+                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
+            )
         W0 = (
             (
                 (U[:, :rank] @ torch.diag(S[:rank]))
@@ -228,7 +268,17 @@ class LowRankConv2d(nn.Module):
             act_cov_mat_chol @ W.permute(1, 2, 3, 0).reshape(i * h * w, o),
             full_matrices=True,
         )
-        rank = _get_rank(S, ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep)
+        rank = 0
+        if ratio_to_keep is not None:
+            rank = _get_rank_ratio_to_keep(S, ratio_to_keep)
+        elif energy_to_keep is not None:
+            rank = _get_svals_energy_ratio_to_keep(S, energy_to_keep)
+        else:
+            raise ValueError(
+                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep']"
+            )
+        S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
+
         act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
         W0 = (
             (
@@ -387,8 +437,7 @@ class SpatialLowRankConv2d(nn.Module):
     @staticmethod
     def from_conv2d(
         conv: nn.Conv2d,
-        ratio_to_keep: float | None = None,
-        energy_to_keep: float | None = None,
+        keep_metric: dict[str, float],
     ) -> "SpatialLowRankConv2d":
         assert conv.groups == 1, "Grouped / depth‑wise conv not supported yet"
         W, b = conv.weight.detach(), conv.bias.detach()
@@ -397,9 +446,17 @@ class SpatialLowRankConv2d(nn.Module):
         ranks = []
         for i in range(C_out):
             for j in range(C_in):
-                rank = _get_rank(
-                    S[i, j], ratio_to_keep=ratio_to_keep, energy_to_keep=energy_to_keep
-                )
+                rank = 0
+                if keep_metric["name"] == "rank_ratio_to_keep":
+                    rank = _get_rank_ratio_to_keep(S[i, j], keep_metric["value"])
+                elif keep_metric["name"] == "svals_energy_ratio_to_keep":
+                    rank = _get_svals_energy_ratio_to_keep(
+                        S[i, j], keep_metric["value"]
+                    )
+                elif keep_metric["name"] == "params_ratio_to_keep":
+                    raise NotImplementedError(
+                        "params_ratio_to_keep not implemented for conv2d"
+                    )
                 ranks.append(rank)
         rank = max(ranks)  # maybe i can explore other modalities in the future
         # perm
