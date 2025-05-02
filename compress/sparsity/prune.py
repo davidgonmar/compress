@@ -1,13 +1,13 @@
 from typing import Callable
 from torch import nn
-from compress.pruned_ops import PrunedLinear, PrunedConv2d
+from compress.sparsity.pruned_ops import PrunedLinear, PrunedConv2d
 from tqdm import tqdm
 from compress.pruning_strats import (
     UnstructuredGranularityLinear,
     UnstructuredGranularityConv2d,
 )
 import torch
-from compress.pruned_ops import _get_mask_from_already_regrouped
+from compress.sparsity.pruned_ops import _get_mask_from_already_regrouped
 from compress.common import default_should_do, gather_submodules
 
 

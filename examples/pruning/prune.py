@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.prune import to_pruned, PruningPolicy
+from compress.sparsity.prune import to_pruned, PruningPolicy
 from compress.pruning_strats import (
     conv2d_granularity_from_str,
 )

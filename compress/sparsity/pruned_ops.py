@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from compress.pruning_strats import PruningGranularity
+from compress.sparsity.pruning_strats import PruningGranularity
 from torch.sparse import to_sparse_semi_structured
 
 

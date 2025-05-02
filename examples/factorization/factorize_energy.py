@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorize import to_low_rank
+from compress.factorization.factorize import to_low_rank
 from compress.flops import count_model_flops
 from compress.experiments import (
     load_vision_model,
