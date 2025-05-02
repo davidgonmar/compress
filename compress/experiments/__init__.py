@@ -5,10 +5,14 @@ import torchvision  # noqa
 
 
 def evaluate_vision_model(
-    model: torch.nn.Module, dataloader: torch.utils.data.DataLoader
+    model: torch.nn.Module, dataloader: torch.utils.data.DataLoader, eval=True
 ) -> Dict[str, float]:
     prev_state = model.training
-    model.eval()
+    if eval:
+        model.eval()
+    else:
+        model.train()
+
     device = next(model.parameters()).device
 
     correct = 0

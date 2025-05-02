@@ -8,6 +8,7 @@ from compress.regularizers import (
     extract_weights_and_reshapers,
     update_weights,
 )
+import torchvision
 
 
 transform = transforms.Compose(
@@ -40,12 +41,8 @@ val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model = torch.hub.load(
-    "chenyaofo/pytorch-cifar-models", "cifar10_resnet20", pretrained=True
-)
-model = model.to(device)
-model.eval()
-
+model = torchvision.models.resnet18(num_classes=10)
+model.load_state_dict(torch.load("resnet18.pth"), strict=False)
 
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
