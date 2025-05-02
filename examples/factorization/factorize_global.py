@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorize import to_low_rank
+from compress.factorize import to_low_rank_global, to_low_rank, to_low_rank_global2
 from compress.flops import count_model_flops
 from compress.experiments import (
     load_vision_model,
@@ -14,6 +14,8 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--load_from", type=str, default="mnist_model.pth")
 parser.add_argument("--keep_edge_layer", action="store_true")
+parser.add_argument("--do_global", action="store_true")
+parser.add_argument("--do_global2", action="store_true")
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -65,6 +67,16 @@ def should_do(module, name):
     return cond1 and cond2
 
 
+import functools
+
+fn = None
+if args.do_global:
+    fn = to_low_rank_global
+elif args.do_global2:
+    fn = functools.partial(to_low_rank_global2, dataloader=train_loader)
+else:
+    fn = to_low_rank
+
 energies = [
     0.9,
     0.95,
@@ -80,7 +92,7 @@ energies = [
     0.99999,
 ]
 for ratio in energies:
-    model_lr = to_low_rank(
+    model_lr = fn(
         model,
         energy_to_keep=ratio,
         inplace=False,

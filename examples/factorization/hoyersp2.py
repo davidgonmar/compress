@@ -8,7 +8,7 @@ from compress.regularizers import (
     extract_weights_and_reshapers,
     update_weights,
 )
-import torchvision
+from compress.experiments import load_vision_model, get_cifar10_modifier
 
 
 transform = transforms.Compose(
@@ -41,8 +41,14 @@ val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model = torchvision.models.resnet18(num_classes=10)
-model.load_state_dict(torch.load("resnet18.pth"), strict=False)
+model = load_vision_model(
+    "resnet18",
+    pretrained_path="resnet18.pth",
+    strict=True,
+    modifier_before_load=get_cifar10_modifier("resnet18"),
+    modifier_after_load=None,
+    model_args={"num_classes": 10},
+).to(device)
 
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
@@ -66,7 +72,7 @@ num_epochs = 350
 
 def weight_schedule(epochnum):
     # penalty decreases exponentially from 3.0 to 0.1
-    return 0.1 + 0.9 * (0.1 ** (epochnum / num_epochs)) * 3.0
+    return 0.1 + 0.9 * (0.1 ** (epochnum / num_epochs)) * 0.5
 
 
 for epoch in range(num_epochs):
