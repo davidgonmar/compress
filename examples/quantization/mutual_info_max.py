@@ -145,7 +145,7 @@ optimizer = torch.optim.AdamW(
     + [p for m in estimators.values() for p in m.parameters()],
     lr=1e-4,
 )
-scheduler = StepLR(optimizer, step_size=8, gamma=0.1)
+scheduler = StepLR(optimizer, step_size=2, gamma=0.1)
 
 print("Starting training…")
 for epoch in range(1, args.epochs + 1):

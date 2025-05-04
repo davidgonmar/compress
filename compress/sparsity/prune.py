@@ -9,6 +9,7 @@ from compress.sparsity.pruning_strats import (
 import torch
 from compress.sparsity.pruned_ops import _get_mask_from_already_regrouped
 from compress.common import default_should_do, gather_submodules
+import copy
 
 
 _module_to_pruned = {
@@ -155,3 +156,51 @@ def to_pruned(
                     f"Failed to convert {attr_name} to sparse semi-structured: {e}, continuing"
                 )
     return model
+
+
+def to_pruned_mask_provided(
+    model: nn.Module,
+    mask_dict: dict,
+    policy: PruningPolicy,
+    should_do: Callable = default_should_do,
+    inplace=True,
+    to_sparse_semistructured=False,
+    **kwargs,
+):
+    device = next(model.parameters()).device
+    if not inplace:
+        model = copy.deepcopy(model)
+    modules_to_replace = gather_submodules(model, should_do=should_do)
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        if name in mask_dict:
+            setattr(
+                parent_module,
+                attr_name,
+                _module_to_pruned[type(module)](
+                    module,
+                    granularity_cls=policy.get_granularity(module),
+                    mask=mask_dict[name],
+                ),
+            )
+        if to_sparse_semistructured:  # only linear at the moment
+            try:
+                if hasattr(
+                    getattr(parent_module, attr_name), "to_sparse_semi_structured"
+                ):
+                    setattr(
+                        parent_module,
+                        attr_name,
+                        getattr(parent_module, attr_name).to_sparse_semi_structured(),
+                    )
+                    print(f"Converted {attr_name} to sparse semi-structured")
+            except Exception as e:
+                print(
+                    f"Failed to convert {attr_name} to sparse semi-structured: {e}, continuing"
+                )
+
+    return model.to(device)
