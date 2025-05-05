@@ -1,57 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from compress.sparsity.pruning_strats import PruningGranularity
 from torch.sparse import to_sparse_semi_structured
-
-
-def _get_mask_from_already_regrouped(
-    weight: torch.Tensor, ratio_to_keep: float, ratio_to_keep_in_group: float
-):
-    # same as get_mask_from_ratio, but the input is already transformed
-    assert 0.0 <= ratio_to_keep <= 1.0
-    wabs = weight.abs()
-    w_reshaped = wabs
-
-    num_to_keep = int(ratio_to_keep * w_reshaped.shape[0])
-    group_scores = w_reshaped.mean(dim=1)
-    topk_groups = torch.topk(group_scores, k=num_to_keep, largest=True).indices
-
-    num_to_keep_in_group = int(ratio_to_keep_in_group * w_reshaped.shape[1])
-    topk_elements = torch.topk(
-        w_reshaped[topk_groups], k=num_to_keep_in_group, largest=True, dim=1
-    ).indices
-
-    mask = torch.zeros_like(w_reshaped, dtype=torch.bool)
-    mask[topk_groups.unsqueeze(1), topk_elements] = 1
-
-    return mask
-
-
-def _get_mask_from_ratio(
-    weight: torch.Tensor,
-    ratio_to_keep: float,
-    ratio_to_keep_in_group: float,
-    granularity_cls: PruningGranularity,
-):
-    assert 0.0 <= ratio_to_keep <= 1.0
-    granularity = granularity_cls()
-    wabs = weight.abs()
-    w_reshaped = granularity.transform(wabs)  # shape (n_groups, m_elements_per_group)
-
-    num_to_keep = int(ratio_to_keep * w_reshaped.shape[0])
-    group_scores = w_reshaped.mean(dim=1)
-    topk_groups = torch.topk(group_scores, k=num_to_keep, largest=True).indices
-
-    num_to_keep_in_group = int(ratio_to_keep_in_group * w_reshaped.shape[1])
-    topk_elements = torch.topk(
-        w_reshaped[topk_groups], k=num_to_keep_in_group, largest=True, dim=1
-    ).indices
-
-    mask = torch.zeros_like(w_reshaped, dtype=torch.bool)
-    mask[topk_groups.unsqueeze(1), topk_elements] = 1
-
-    return granularity.untransform(mask)
 
 
 class PrunedLinear(nn.Module):
@@ -70,25 +20,15 @@ class PrunedLinear(nn.Module):
     @staticmethod
     def from_linear(
         linear,
-        granularity_cls: PruningGranularity,
-        ratio_to_keep=1.0,
-        ratio_to_keep_in_group=1.0,
-        mask=None,
+        mask,
     ):
         pruned_linear = PrunedLinear(
-            linear.in_features, linear.out_features, linear.bias is not None
+            linear.in_features,
+            linear.out_features,
+            linear.bias is not None,
         ).to(linear.weight.device)
         pruned_linear.weight.data = linear.weight.data.clone()
-        pruned_linear.mask.data = (
-            _get_mask_from_ratio(
-                pruned_linear.weight,
-                ratio_to_keep,
-                ratio_to_keep_in_group,
-                granularity_cls,
-            )
-            if mask is None
-            else mask
-        )
+        pruned_linear.mask.data = mask.to(linear.weight.dtype)
         if linear.bias is not None:
             pruned_linear.bias.data = linear.bias.data.clone()
         return pruned_linear
@@ -101,6 +41,12 @@ class PrunedLinear(nn.Module):
         linear.weight = nn.Parameter(to_sparse_semi_structured(w))
         linear.bias = self.bias
         return linear
+
+    def nonzero_params(self):
+        multed = self.weight * self.mask
+        return torch.count_nonzero(multed).item() + (
+            self.bias.numel() if self.bias is not None else 0
+        )
 
 
 class PrunedConv2d(nn.Module):
@@ -144,10 +90,7 @@ class PrunedConv2d(nn.Module):
     @staticmethod
     def from_conv2d(
         conv2d,
-        granularity_cls: PruningGranularity,
-        ratio_to_keep=1.0,
-        ratio_to_keep_in_group=1.0,
-        mask=None,
+        mask,
     ):
         pruned_conv2d = PrunedConv2d(
             conv2d.in_channels,
@@ -160,16 +103,13 @@ class PrunedConv2d(nn.Module):
             conv2d.bias is not None,
         ).to(conv2d.weight.device)
         pruned_conv2d.weight.data = conv2d.weight.data.clone()
-        pruned_conv2d.mask.data = (
-            _get_mask_from_ratio(
-                pruned_conv2d.weight,
-                ratio_to_keep,
-                ratio_to_keep_in_group,
-                granularity_cls,
-            )
-            if mask is None
-            else mask
-        )
+        pruned_conv2d.mask.data = mask.to(conv2d.weight.dtype)
         if conv2d.bias is not None:
             pruned_conv2d.bias.data = conv2d.bias.data.clone()
         return pruned_conv2d
+
+    def nonzero_params(self):
+        multed = self.weight * self.mask
+        return torch.count_nonzero(multed).item() + (
+            self.bias.numel() if self.bias is not None else 0
+        )

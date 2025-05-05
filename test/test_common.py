@@ -1,6 +1,6 @@
 import unittest
 from torch import nn
-from compress.common import default_should_do, gather_submodules, extract_from_keys
+from compress.common import default_should_do, gather_submodules
 
 
 class DummyModule(nn.Module):
@@ -35,22 +35,6 @@ class TestCompressCommon(unittest.TestCase):
         names = set(name for name, _ in result)
         expected_names = {"seq", "seq.0", "seq.1"}
         self.assertEqual(names, expected_names)
-
-    def test_extract_from_keys_valid(self):
-        keys = ["", "conv", "seq.1"]
-        result = extract_from_keys(self.model, keys)
-        names = set(name for name, _ in result)
-        expected_names = set(keys)
-        self.assertEqual(names, expected_names)
-
-    def test_extract_from_keys_empty_keys(self):
-        result = extract_from_keys(self.model, [])
-        self.assertEqual(result, [])
-
-    def test_extract_from_keys_nonexistent_keys(self):
-        keys = ["nonexistent", "invalid"]
-        result = extract_from_keys(self.model, keys)
-        self.assertEqual(result, [])
 
     def test_nested_module_structure(self):
         nested_model = NestedModule()
