@@ -5,9 +5,9 @@ from torch.optim.lr_scheduler import StepLR
 import torch.optim as optim
 from compress.experiments import load_vision_model, get_cifar10_modifier
 from compress.sparsity.regularizers import (
-    SparsityParamRegularizer,
+    SparsityActivationRegularizer,
     get_regularizer_for_all_layers,
-    L1L2InterRatioRegularizer,
+    L1L2ActivationInterRegularizer,
 )
 from compress.sparsity.pruning_strats import (
     OutChannelGroupingGrouperConv2d,
@@ -38,10 +38,11 @@ optimizer = optim.AdamW(model.parameters(), lr=0.001)
 sched = StepLR(optimizer, step_size=10, gamma=0.2)
 
 
-regularizer = SparsityParamRegularizer(
+regularizer = SparsityActivationRegularizer(
+    model,
     get_regularizer_for_all_layers(
         model,
-        regfn=L1L2InterRatioRegularizer(),
+        regfn=L1L2ActivationInterRegularizer(),
         conv_grouper=OutChannelGroupingGrouperConv2d(),
         linear_grouper=OutChannelGroupingGrouperLinear(),
     ),
@@ -121,8 +122,22 @@ for epoch in range(num_epochs):
         val_loss /= len(val_loader.dataset)
         accuracy = correct / len(val_loader.dataset)
         print(f"Validation Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
-        torch.save(model, args.save_path)
+        import copy
 
+        def remove_all_hooks(module: torch.nn.Module):
+            # these are OrderedDicts mapping hook_id → hook_fn
+            if hasattr(module, "_forward_hooks"):
+                module._forward_hooks.clear()
+            if hasattr(module, "_forward_pre_hooks"):
+                module._forward_pre_hooks.clear()
+            if hasattr(module, "_backward_hooks"):
+                module._backward_hooks.clear()
+
+        model_copy = copy.deepcopy(model)
+
+        model_copy.apply(remove_all_hooks)
+
+        torch.save(model_copy, args.save_path)
 
 print("Finished training. Saving model...")
 torch.save(model, args.save_path)

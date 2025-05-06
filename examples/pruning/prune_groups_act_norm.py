@@ -30,7 +30,7 @@ def main():
 
     model = load_vision_model(
         "resnet18",
-        pretrained_path="resnet18.pth",
+        pretrained_path="sparsity_model.pth",
         strict=True,
         modifier_before_load=get_cifar10_modifier("resnet18"),
         model_args={"num_classes": 10},
@@ -41,7 +41,7 @@ def main():
     print(f"Accuracy before pruning: {ret['accuracy']:.2f}%")
     print(f"Loss before pruning: {ret['loss']:.4f}")
 
-    sparsity = 0.7
+    sparsity = 0.6
     policies = prune_channels_resnet18_policies(sparsity)
 
     data_iter = iter(dataloader)
