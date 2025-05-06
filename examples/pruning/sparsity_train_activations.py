@@ -138,6 +138,3 @@ for epoch in range(num_epochs):
         model_copy.apply(remove_all_hooks)
 
         torch.save(model_copy, args.save_path)
-
-print("Finished training. Saving model...")
-torch.save(model, args.save_path)

@@ -86,7 +86,7 @@ for epoch in range(num_epochs):
         y_hat = model(x)
         loss = criterion(y_hat, y)
         reg = regularizer.loss()
-        total_loss = loss + 0.1 * reg
+        total_loss = loss + 0.003 * reg
 
         total_loss.backward()
         optimizer.step()

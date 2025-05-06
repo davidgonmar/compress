@@ -33,18 +33,18 @@ class PruningPolicy:
     def __init__(
         self,
         grouper: PruningGrouper,
-        inter_group_sparsity: float,
-        intra_group_sparsity: float,
+        inter_group_metric: dict,
+        intra_group_metric: dict,
     ):
         self.grouper = grouper
-        self.inter_group_sparsity = inter_group_sparsity
-        self.intra_group_sparsity = intra_group_sparsity
+        self.inter_group_metric = inter_group_metric
+        self.intra_group_metric = intra_group_metric
 
 
 PolicyDict = Dict[str, PruningPolicy]  # per layer
 
 
-def unstructured_resnet18_policies(sparsity: float = 0.5) -> PolicyDict:
+def unstructured_resnet18_policies(metric) -> PolicyDict:
     # example policy for resnet18
     conv_keys = {}
     linear_keys = {}
@@ -55,15 +55,15 @@ def unstructured_resnet18_policies(sparsity: float = 0.5) -> PolicyDict:
             if isinstance(module, nn.Conv2d):
                 conv_keys[name] = PruningPolicy(
                     grouper=UnstructuredGrouperConv2d(),
-                    inter_group_sparsity=1.0,
-                    intra_group_sparsity=sparsity,
+                    inter_group_metric=None,
+                    intra_group_metric=metric,
                 )
             elif isinstance(module, nn.Linear):
                 linear_keys[name] = module
                 linear_keys[name] = PruningPolicy(
                     grouper=UnstructuredGrouperLinear(),
-                    inter_group_sparsity=1.0,
-                    intra_group_sparsity=sparsity,
+                    inter_group_metric=None,
+                    intra_group_metric=metric,
                 )
 
     return {
@@ -72,9 +72,7 @@ def unstructured_resnet18_policies(sparsity: float = 0.5) -> PolicyDict:
     }
 
 
-def prune_channels_resnet18_policies(
-    sparsity: float = 0.5,
-) -> PolicyDict:
+def prune_channels_resnet18_policies(metric) -> PolicyDict:
     # example policy for resnet18
     conv_keys = {}
     linear_keys = {}
@@ -85,15 +83,15 @@ def prune_channels_resnet18_policies(
             if isinstance(module, nn.Conv2d):
                 conv_keys[name] = PruningPolicy(
                     grouper=OutChannelGroupingGrouperConv2d(),
-                    inter_group_sparsity=sparsity,
-                    intra_group_sparsity=1.0,
+                    inter_group_metric=metric,
+                    intra_group_metric=None,
                 )
             elif isinstance(module, nn.Linear):
                 linear_keys[name] = module
                 linear_keys[name] = PruningPolicy(
                     grouper=OutChannelGroupingGrouperLinear(),
-                    inter_group_sparsity=sparsity,
-                    intra_group_sparsity=1.0,
+                    inter_group_metric=metric,
+                    intra_group_metric=None,
                 )
 
     return {
@@ -157,9 +155,11 @@ class MagnitudePruner:
                 module.weight
             )  # n_groups, m_elements_per_group
             # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
+            assert policy.intra_group_metric["name"] == "sparsity_ratio"
+            sparsity_ratio = policy.intra_group_metric["value"]
             ranked_elements = torch.topk(
                 reshaped.abs(),
-                k=int(policy.intra_group_sparsity * reshaped.shape[1]),
+                k=int(sparsity_ratio * reshaped.shape[1]),
                 dim=1,
             ).indices  # n_groups, m_elements_per_group
             mask = torch.zeros_like(reshaped, dtype=torch.bool)
@@ -193,20 +193,34 @@ class NormGroupPruner:
             )  # n_groups, m_elements_per_group
             # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
             # this one ranks GROUPS by their L2 norm
-            ranked_elements = torch.topk(
-                reshaped.norm(dim=1),  # shape [n_groups]
-                k=int(policy.inter_group_sparsity * reshaped.shape[0]),
-                dim=0,
-            ).indices
-            mask = torch.zeros(
-                (reshaped.shape[0],), dtype=torch.bool, device=reshaped.device
-            )
-            mask.scatter_(0, ranked_elements, 1)
-            # now we need to untransform the mask
-            # expand the mask
-            mask = mask.unsqueeze(1).expand(-1, reshaped.shape[1])
-            mask = policy.grouper.untransform(mask, module.weight)
-            masks[name] = mask
+            metric = policy.inter_group_metric
+            assert metric["name"] in ["sparsity_ratio", "threshold"]
+            if metric["name"] == "sparsity_ratio":
+                sparsity_ratio = metric["value"]
+                ranked_elements = torch.topk(
+                    reshaped.norm(dim=1),  # shape [n_groups]
+                    k=int(sparsity_ratio * reshaped.shape[0]),
+                    dim=0,
+                ).indices
+                mask = torch.zeros(
+                    (reshaped.shape[0],), dtype=torch.bool, device=reshaped.device
+                )
+                mask.scatter_(0, ranked_elements, 1)
+                # now we need to untransform the mask
+                # expand the mask
+                mask = mask.unsqueeze(1).expand(-1, reshaped.shape[1])
+                mask = policy.grouper.untransform(mask, module.weight)
+                masks[name] = mask
+            elif metric["name"] == "threshold":
+                threshold = metric["value"]
+                keep = reshaped.norm(dim=1) > threshold
+                mask = keep.to(reshaped.device)
+                # now we need to untransform the mask
+                # expand the mask
+                mask = mask.unsqueeze(1).expand(-1, reshaped.shape[1])
+                mask = policy.grouper.untransform(mask, module.weight)
+                masks[name] = mask
+
             # int(mask)
         return apply_masks(self.model, masks)
 
@@ -269,36 +283,59 @@ class GroupedActivationPruner:
                     out_score = torch.norm(reshaped_acts, dim=1)  # shape [O]
                     # now we have the saliencies for this layer
                     saliencies = out_score
-                    selector = torch.topk(
-                        saliencies,
-                        k=int(policy.inter_group_sparsity * saliencies.shape[0]),
-                        dim=0,
-                    ).indices
-                    mask = torch.zeros_like(saliencies, dtype=torch.bool)
-                    mask.scatter_(0, selector, 1)
-                    # broadcast mask back to original shape
-                    o, i, hk, wk = module.weight.shape
-                    mask = mask.reshape(o, 1, 1, 1).expand(-1, i, hk, wk)
+
+                    if policy.inter_group_metric["name"] == "sparsity_ratio":
+                        sparsity_ratio = policy.inter_group_metric["value"]
+                        # shape [O]
+                        selector = torch.topk(
+                            saliencies,
+                            k=int(sparsity_ratio * saliencies.shape[0]),
+                            dim=0,
+                        ).indices
+                        mask = torch.zeros_like(saliencies, dtype=torch.bool)
+                        mask.scatter_(0, selector, 1)
+                        # broadcast mask back to original shape
+                        o, i, hk, wk = module.weight.shape
+                        mask = mask.reshape(o, 1, 1, 1).expand(-1, i, hk, wk)
+                    elif policy.inter_group_metric["name"] == "threshold":
+                        threshold = policy.inter_group_metric["value"]
+                        keep = saliencies > threshold
+                        mask = keep.to(saliencies.device)
+                        # broadcast mask back to original shape
+                        o, i, hk, wk = module.weight.shape
+                        mask = mask.reshape(o, 1, 1, 1).expand(-1, i, hk, wk)
+
                 else:
                     # linear
                     # acts of shape [..., I]
                     # weight of shape [O, I]
+
                     w = weight
                     # acts of shape [..., O]
                     # reshape acts to [combine(...), O]
                     acts = acts.reshape(-1, acts.shape[-1])
                     norm = torch.norm(acts, dim=0, keepdim=False)  # shape [0]
                     saliencies = norm
-                    selector = torch.topk(
-                        saliencies,
-                        k=int(policy.inter_group_sparsity * saliencies.shape[0]),
-                        dim=0,
-                    ).indices
-                    mask = torch.zeros_like(saliencies, dtype=torch.bool)
-                    mask.scatter_(0, selector, 1)  # shape [O]
-                    # broadcast mask back to original shape
-                    o = module.weight.shape[0]
-                    mask = mask.reshape(o, 1).expand(module.weight.shape)
+                    if policy.inter_group_metric["name"] == "sparsity_ratio":
+                        sparsity_ratio = policy.inter_group_metric["value"]
+                        # shape [O]
+                        selector = torch.topk(
+                            saliencies,
+                            k=int(sparsity_ratio * saliencies.shape[0]),
+                            dim=0,
+                        ).indices
+                        mask = torch.zeros_like(saliencies, dtype=torch.bool)
+                        mask.scatter_(0, selector, 1)
+                        # broadcast mask back to original shape
+                        o = module.weight.shape[0]
+                        mask = mask.reshape(o, 1).expand(module.weight.shape)
+                    elif policy.inter_group_metric["name"] == "threshold":
+                        threshold = policy.inter_group_metric["value"]
+                        keep = saliencies > threshold
+                        mask = keep.to(saliencies.device)
+                        # broadcast mask back to original shape
+                        o = module.weight.shape[0]
+                        mask = mask.reshape(o, 1).expand(module.weight.shape)
                 mask = policy.grouper.untransform(mask, module.weight)
                 masks[name] = mask
 
@@ -365,9 +402,11 @@ class TaylorExpansionPruner:
                 reshaped = policy.grouper.transform(module.weight)
                 saliency_reshaped = policy.grouper.transform(saliencies[name])
                 # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
+                intra = policy.intra_group_metric["value"]
+                assert policy.intra_group_metric["name"] == "sparsity_ratio"
                 ranked_elements = torch.topk(
                     saliency_reshaped.abs(),
-                    k=int(policy.intra_group_sparsity * reshaped.shape[1]),
+                    k=int(intra * reshaped.shape[1]),
                     dim=1,
                 ).indices
                 mask = torch.zeros_like(reshaped, dtype=torch.bool)
@@ -465,9 +504,11 @@ class WandaPruner:
                 policy = self.policies[name]
                 reshaped = policy.grouper.transform(module.weight)
                 # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
+                assert policy.intra_group_metric["name"] == "sparsity_ratio"
+                sparsity_ratio = policy.intra_group_metric["value"]
                 ranked_elements = torch.topk(
                     reshaped.abs(),
-                    k=int(policy.intra_group_sparsity * reshaped.shape[1]),
+                    k=int(sparsity_ratio * reshaped.shape[1]),
                     dim=1,
                 ).indices
                 mask = torch.zeros_like(reshaped, dtype=torch.bool)

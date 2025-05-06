@@ -41,8 +41,12 @@ def main():
     print(f"Accuracy before pruning: {ret['accuracy']:.2f}%")
     print(f"Loss before pruning: {ret['loss']:.4f}")
 
-    sparsity = 0.6
-    policies = prune_channels_resnet18_policies(sparsity)
+    policies = prune_channels_resnet18_policies(
+        {
+            "name": "threshold",
+            "value": 25.0,
+        }
+    )
 
     data_iter = iter(dataloader)
 

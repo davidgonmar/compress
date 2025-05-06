@@ -39,7 +39,7 @@ _vmapped_scad = torch.vmap(
 class L1L2IntraRatioRegularizer:
     def __call__(self, param, grouper):
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-        return -_vmapped_hoyer_sparsity(grouped)
+        return _vmapped_hoyer_sparsity(grouped, normalize=False)
 
 
 class SCADIntraRegularizer:
@@ -53,8 +53,8 @@ class SCADIntraRegularizer:
 class L1L2InterRatioRegularizer:
     def __call__(self, param, grouper):
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-        summed = torch.norm(grouped, p=2, dim=1)  # (n_groups,)
-        return -hoyer_sparsity(summed, True)  # (n_groups,)
+        l2 = (lambda x: torch.sqrt(torch.sum(x**2, dim=-1)))(grouped)
+        return hoyer_sparsity(l2, False)  # (n_groups,)
 
 
 def hoyer_sparsity_for_all_modules(param, grouper, **kwargs):
@@ -122,7 +122,7 @@ class SparsityParamRegularizer:
             reg_fn = spec["regularizer"]
             w = spec["weight"]
             param = spec["parameter"]
-            total_loss = total_loss + w * reg_fn(param, grp, **self.kwargs).mean()
+            total_loss = total_loss + w * reg_fn(param, grp, **self.kwargs)
         return total_loss
 
 
@@ -146,7 +146,7 @@ class L1L2ActivationInterRegularizer:
                 len(batch_axes) == 1
             ), "For Linear layers, the activation should have only one batch axis"
 
-        return -_vmapped_hoyer_sparsity(norm)  # (B, O) -> (B)
+        return _vmapped_hoyer_sparsity(norm, normalize=False)  # (B, O) -> (B)
 
 
 class SparsityActivationRegularizer:
