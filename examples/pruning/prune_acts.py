@@ -58,7 +58,7 @@ def main():
         return torch.nn.functional.cross_entropy(outputs, targets)
 
     # Use WandaPruner here
-    pruner = WandaPruner(model, policies, runner, n_iters=60)
+    pruner = WandaPruner(model, policies, runner, n_iters=100)
     model = pruner.prune()
 
     ret = evaluate_vision_model(model, dataloader)
