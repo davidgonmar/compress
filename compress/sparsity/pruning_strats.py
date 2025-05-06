@@ -37,10 +37,10 @@ class OutChannelGroupingGrouperLinear(PruningGrouper):
 
     def transform(self, tensor):
         # shape is (out_channels, in_channels), so we want each out channel to be a group
-        return tensor.permute(1, 0)
+        return tensor
 
     def untransform(self, tensor, orig_tensor):
-        return tensor.permute(1, 0)
+        return tensor
 
 
 class OutChannelGroupingGrouperConv2d(PruningGrouper):
@@ -48,12 +48,10 @@ class OutChannelGroupingGrouperConv2d(PruningGrouper):
 
     def transform(self, tensor):
         # shape is (out_channels, in_channels, kernel_size, kernel_size), so we want each out channel to be a group
-        return tensor.reshape(tensor.shape[0], -1).permute(
-            1, 0
-        )  # shape (in_channels * kernel_size * kernel_size, out_channels)
+        return tensor.reshape(tensor.shape[0], -1)
 
     def untransform(self, tensor, orig_tensor):
-        return tensor.permute(1, 0).reshape(orig_tensor.shape)
+        return tensor.reshape(orig_tensor.shape)
 
 
 class GroupsOfN(PruningGrouper):

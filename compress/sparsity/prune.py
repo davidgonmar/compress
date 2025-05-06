@@ -5,6 +5,8 @@ from compress.sparsity.pruning_strats import (
     UnstructuredGrouperLinear,
     UnstructuredGrouperConv2d,
     PruningGrouper,
+    OutChannelGroupingGrouperConv2d,
+    OutChannelGroupingGrouperLinear,
 )
 import torch
 from typing import Dict
@@ -62,6 +64,36 @@ def unstructured_resnet18_policies(sparsity: float = 0.5) -> PolicyDict:
                     grouper=UnstructuredGrouperLinear(),
                     inter_group_sparsity=1.0,
                     intra_group_sparsity=sparsity,
+                )
+
+    return {
+        **conv_keys,
+        **linear_keys,
+    }
+
+
+def prune_channels_resnet18_policies(
+    sparsity: float = 0.5,
+) -> PolicyDict:
+    # example policy for resnet18
+    conv_keys = {}
+    linear_keys = {}
+    with torch.device("meta"):
+        model = torchvision.models.resnet18(weights=None)
+        keys = model.named_modules()
+        for name, module in keys:
+            if isinstance(module, nn.Conv2d):
+                conv_keys[name] = PruningPolicy(
+                    grouper=OutChannelGroupingGrouperConv2d(),
+                    inter_group_sparsity=sparsity,
+                    intra_group_sparsity=1.0,
+                )
+            elif isinstance(module, nn.Linear):
+                linear_keys[name] = module
+                linear_keys[name] = PruningPolicy(
+                    grouper=OutChannelGroupingGrouperLinear(),
+                    inter_group_sparsity=sparsity,
+                    intra_group_sparsity=1.0,
                 )
 
     return {
@@ -135,6 +167,140 @@ class MagnitudePruner:
             # now we need to untransform the mask
             mask = policy.grouper.untransform(mask, module.weight)
             masks[name] = mask
+
+        return apply_masks(self.model, masks)
+
+
+class NormGroupPruner:
+    def __init__(
+        self, model: nn.Module, policies: PolicyDict, global_prune: bool = False
+    ):
+        self.model = model
+        self.policies = policies
+        assert global_prune is False, "Global pruning not supported yet"
+
+    def prune(self):
+        # iterate over policies and apply pruning
+        mods = dict(self.model.named_modules())
+        masks = dict()
+        for name, policy in self.policies.items():
+            module = mods[name]
+            assert isinstance(
+                module, (nn.Conv2d, nn.Linear)
+            ), f"Module {name} is not a Linear or Conv2d"
+            reshaped = policy.grouper.transform(
+                module.weight
+            )  # n_groups, m_elements_per_group
+            # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
+            # this one ranks GROUPS by their L2 norm
+            ranked_elements = torch.topk(
+                reshaped.norm(dim=1),  # shape [n_groups]
+                k=int(policy.inter_group_sparsity * reshaped.shape[0]),
+                dim=0,
+            ).indices
+            mask = torch.zeros(
+                (reshaped.shape[0],), dtype=torch.bool, device=reshaped.device
+            )
+            mask.scatter_(0, ranked_elements, 1)
+            # now we need to untransform the mask
+            # expand the mask
+            mask = mask.unsqueeze(1).expand(-1, reshaped.shape[1])
+            mask = policy.grouper.untransform(mask, module.weight)
+            masks[name] = mask
+            # int(mask)
+        return apply_masks(self.model, masks)
+
+
+class GroupedActivationPruner:
+    # this one needs to store activations
+    def __init__(self, model: nn.Module, policies: PolicyDict, runner, n_iters):
+        self.model = model
+        self.policies = policies
+        self.runner = runner
+        self.n_iters = n_iters
+        self.activations = {}
+
+        # hooks
+        def get_hook(name):
+            def hook(module, input, output):
+                if name not in self.activations:
+                    self.activations[name] = output.detach().mean(dim=0).unsqueeze(0)
+                else:
+                    self.activations[name] += output.detach().mean(dim=0).unsqueeze(0)
+
+            return hook
+
+        # hook for policied modules
+        for name, module in self.model.named_modules():
+            if name in self.policies.keys():
+                assert isinstance(
+                    module, (nn.Conv2d, nn.Linear)
+                ), f"Module {name} is not a Linear or Conv2d"
+                module.register_forward_hook(get_hook(name))
+
+    def prune(self):
+        for i in range(self.n_iters):
+            loss = self.runner()
+            self.model.zero_grad()
+            loss.backward()
+        masks = dict()
+
+        for name, module in self.model.named_modules():
+            if name in self.policies.keys():
+                assert isinstance(
+                    module, (nn.Conv2d, nn.Linear)
+                ), f"Module {name} is not a Linear or Conv2d"
+                weight = module.weight.data
+                # if conv -> shape [O, I, H_k, W_k]
+                # if linear -> shape [O, I]
+                acts = self.activations[name]
+                # stack
+                acts = acts.mean(dim=0)
+                policy = self.policies[name]
+                assert isinstance(
+                    policy.grouper,
+                    (OutChannelGroupingGrouperConv2d, OutChannelGroupingGrouperLinear),
+                ), f"Policy for {name} is not a OutChannelGroupingGrouperConv2d"
+
+                if isinstance(module, nn.Conv2d):
+                    reshaped_acts = acts.reshape(
+                        acts.shape[0], -1
+                    )  # shape [O, H_out * W_out]
+                    out_score = torch.norm(reshaped_acts, dim=1)  # shape [O]
+                    # now we have the saliencies for this layer
+                    saliencies = out_score
+                    selector = torch.topk(
+                        saliencies,
+                        k=int(policy.inter_group_sparsity * saliencies.shape[0]),
+                        dim=0,
+                    ).indices
+                    mask = torch.zeros_like(saliencies, dtype=torch.bool)
+                    mask.scatter_(0, selector, 1)
+                    # broadcast mask back to original shape
+                    o, i, hk, wk = module.weight.shape
+                    mask = mask.reshape(o, 1, 1, 1).expand(-1, i, hk, wk)
+                else:
+                    # linear
+                    # acts of shape [..., I]
+                    # weight of shape [O, I]
+                    w = weight
+                    # acts of shape [..., O]
+                    # reshape acts to [combine(...), O]
+                    acts = acts.reshape(-1, acts.shape[-1])
+                    norm = torch.norm(acts, dim=0, keepdim=False)  # shape [0]
+                    saliencies = norm
+                    selector = torch.topk(
+                        saliencies,
+                        k=int(policy.inter_group_sparsity * saliencies.shape[0]),
+                        dim=0,
+                    ).indices
+                    mask = torch.zeros_like(saliencies, dtype=torch.bool)
+                    mask.scatter_(0, selector, 1)  # shape [O]
+                    # broadcast mask back to original shape
+                    o = module.weight.shape[0]
+                    mask = mask.reshape(o, 1).expand(module.weight.shape)
+                mask = policy.grouper.untransform(mask, module.weight)
+                masks[name] = mask
 
         return apply_masks(self.model, masks)
 
