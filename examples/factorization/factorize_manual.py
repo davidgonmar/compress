@@ -17,7 +17,8 @@ import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--load_from", type=str, default="mnist_model.pth")
+parser.add_argument("--load_from", type=str, default="resnet18.pth")
+parser.add_argument("--vision-model", type=str, default="resnet18")
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
 args = parser.parse_args()
@@ -25,18 +26,18 @@ args = parser.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = load_vision_model(
-    "resnet18",
+    args.vision_model,
     pretrained_path=args.load_from,
     strict=True,
-    modifier_before_load=get_cifar10_modifier("resnet18"),
+    modifier_before_load=get_cifar10_modifier(args.vision_model),
     modifier_after_load=None,
     model_args={"num_classes": 10},
 ).to(device)
 
+mean = [0.4914, 0.4822, 0.4465]
+std = [0.2470, 0.2435, 0.2616]
 
-transform = transforms.Compose(
-    [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
-)
+transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
 
 test_dataset = datasets.CIFAR10(
     root="data", train=False, transform=transform, download=True
@@ -65,6 +66,8 @@ print(
 )
 
 energies = [
+    0.7,
+    0.8,
     0.9,
     0.95,
     0.99,

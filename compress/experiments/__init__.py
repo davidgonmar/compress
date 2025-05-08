@@ -121,3 +121,7 @@ def load_vision_model(
             raise ValueError("Loaded model is not a dict or nn.Module")
     model = _maybe_identity(model, modifier_after_load)
     return model
+
+
+cifar10_mean = [0.4914, 0.4822, 0.4465]
+cifar10_std = [0.2023, 0.1994, 0.2010]
