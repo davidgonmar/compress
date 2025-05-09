@@ -8,12 +8,15 @@ from compress.experiments import (
     load_vision_model,
     get_cifar10_modifier,
     evaluate_vision_model,
+    cifar10_mean as mean,
+    cifar10_std as std,
 )
 from compress.quantization.recipes import (
     get_recipe_quant,
 )
 import argparse
 from itertools import product
+import json
 
 # python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name mobilenet_v2 --pretrained_path mobilenetv2.pth
 # python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet18 --pretrained_path resnet18.pth
@@ -27,6 +30,9 @@ from itertools import product
 # python -m examples.quantization.quantize_online --model_name mobilenet_v2 --pretrained_path mobilenetv2.pth
 # python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet18 --pretrained_path resnet18.pth
 
+# resnet20
+# python -m examples.quantization.quantize_online --model_name resnet20 --pretrained_path resnet20.pth
+# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet20 --pretrained_path resnet20.pth
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--leave_edge_layers_8_bits", action="store_true")
@@ -50,7 +56,7 @@ model.eval()
 
 model.to(device)
 # cifar10 mean and std
-mean, std = (0.4914, 0.4822, 0.4465), (0.2470, 0.2434, 0.2615)
+
 transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
 
 test_dataset = datasets.CIFAR10(
@@ -58,10 +64,16 @@ test_dataset = datasets.CIFAR10(
 )
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
-
 eval_results = evaluate_vision_model(model, test_loader)
 
-print(f"Test Loss: {eval_results['loss']}, Test Accuracy: {eval_results['accuracy']}")
+results = []
+results.append(
+    {
+        "type": "original",
+        "loss": eval_results["loss"],
+        "accuracy": eval_results["accuracy"],
+    }
+)
 
 model.to("cpu")
 
@@ -89,7 +101,14 @@ for w_bits, act_bits in product(bit_widths, bit_widths):
     model.to("cpu")
     quanted.to(device)
     eval_results = evaluate_vision_model(quanted, test_loader)
-    print(
-        f"Quant: W{w_bits}A{act_bits}, leave_edge_layers_8_bits={args.leave_edge_layers_8_bits}, "
-        f"Loss: {eval_results['loss']}, Accuracy: {eval_results['accuracy']}"
+    results.append(
+        {
+            "type": f"W{w_bits}A{act_bits}",
+            "leave_edge_layers_8_bits": args.leave_edge_layers_8_bits,
+            "loss": eval_results["loss"],
+            "accuracy": eval_results["accuracy"],
+        }
     )
+
+with open("quantization_results.json", "w") as f:
+    json.dump(results, f, indent=4)

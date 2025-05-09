@@ -15,7 +15,7 @@ from compress.experiments import (
 torch.manual_seed(0)
 
 
-def get_data_loaders(batch_size=128):
+def get_data_loaders(batch_size=128, train_subset_percentage=1.0):
     transform = transforms.Compose(
         [
             transforms.ToTensor(),
@@ -28,8 +28,11 @@ def get_data_loaders(batch_size=128):
     testset = datasets.CIFAR10(
         root="./data", train=False, download=True, transform=transform
     )
+    train_subset_size = int(len(trainset) * train_subset_percentage)
+    train_subset_indices = torch.randperm(len(trainset))[:train_subset_size]
+    train_subset = torch.utils.data.Subset(trainset, train_subset_indices)
     trainloader = DataLoader(
-        trainset, batch_size=batch_size, shuffle=True, num_workers=4
+        train_subset, batch_size=batch_size, shuffle=True, num_workers=4
     )
     testloader = DataLoader(
         testset, batch_size=batch_size, shuffle=False, num_workers=4
@@ -37,19 +40,14 @@ def get_data_loaders(batch_size=128):
     return trainloader, testloader
 
 
-class StudentConv(nn.Module):
+class StudentMLP(nn.Module):
     def __init__(self, num_classes=10):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(3, 6, 5),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2),
             nn.Flatten(),
-            nn.Linear(6 * 14 * 14, 120),
+            nn.Linear(3 * 32 * 32, 28),  # Assuming input size is 32x32
             nn.ReLU(),
-            nn.Linear(120, 84),
-            nn.ReLU(),
-            nn.Linear(84, num_classes),
+            nn.Linear(28, num_classes),
         )
 
     def forward(self, x):
@@ -104,11 +102,31 @@ def main():
     parser.add_argument(
         "--logdir", default="runs/kd_vs_ce", help="TensorBoard log directory"
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=128,
+        help="Batch size for training and testing",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=20, help="Number of training epochs"
+    )
+    parser.add_argument(
+        "--lr", type=float, default=1e-3, help="Learning rate for optimizer"
+    )
+    parser.add_argument(
+        "--T", type=float, default=5.0, help="Temperature for knowledge distillation"
+    )
+    parser.add_argument(
+        "--alpha", type=float, default=0.5, help="Alpha for distillation loss weight"
+    )
+
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader, test_loader = get_data_loaders(batch_size=128)
+    train_loader, test_loader = get_data_loaders(batch_size=args.batch_size)
     writer = SummaryWriter(log_dir=args.logdir)
+
     teacher = load_vision_model(
         "resnet18",
         pretrained_path="resnet18.pth",
@@ -116,19 +134,29 @@ def main():
         modifier_before_load=get_cifar10_modifier("resnet18"),
         model_args={"num_classes": 10},
     ).to(device)
-    epochs = 20
 
     for use_kd in [True, False]:
         label = "KD" if use_kd else "CE"
-        student = StudentConv().to(device)
-        optimizer = optim.Adam(student.parameters(), lr=1e-3)
-        for epoch in range(1, epochs + 1):
+        student = StudentMLP(num_classes=10).to(device)
+        optimizer = optim.Adam(student.parameters(), lr=args.lr)
+
+        for epoch in range(1, args.epochs + 1):
             train_loss, train_acc = train_student(
-                student, teacher, train_loader, optimizer, device, use_kd
+                student,
+                teacher,
+                train_loader,
+                optimizer,
+                device,
+                use_kd=use_kd,
+                T=args.T,
+                alpha=args.alpha,
             )
             test_acc, test_loss = evaluate_metrics(student, test_loader, device)
+
             print(
-                f"[{label}] Epoch {epoch:02d}: train_loss={train_loss:.4f}, train_acc={train_acc:.2f}% | test_acc={test_acc:.2f}%, test_loss={test_loss:.4f}"
+                f"[{label}] Epoch {epoch:02d}: "
+                f"train_loss={train_loss:.4f}, train_acc={train_acc:.2f}% | "
+                f"test_acc={test_acc:.2f}%, test_loss={test_loss:.4f}"
             )
             writer.add_scalar(f"{label}/train_loss", train_loss, epoch)
             writer.add_scalar(f"{label}/train_acc", train_acc, epoch)

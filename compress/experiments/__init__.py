@@ -2,7 +2,7 @@ import torch
 from typing import Dict
 import torch.nn as nn
 import torchvision  # noqa
-import compress.experiments.cifar_resnet # noqa
+import compress.experiments.cifar_resnet  # noqa
 
 
 def evaluate_vision_model(
@@ -61,6 +61,8 @@ def get_cifar10_modifier(model_str):
         return mobilenetv2_cifar10_modifier
     elif model_str == "resnet18":
         return resnet18_cifar10_modifier
+    elif model_str == "resnet20":
+        return lambda model: model
     else:
         raise ValueError(
             f"Model {model_str} not supported. Supported models: ['mobilenet_v2', 'resnet18']"
@@ -84,8 +86,7 @@ def load_vision_model(
 ) -> torch.nn.Module:
     _d = {
         "resnet18": "torchvision.models.resnet18",
-        "mobilenet_v2": "torchvision.models.mobilenet_v2",\
-        # Depth must be one of 20, 32, 44, 56, 110, 1202"
+        "mobilenet_v2": "torchvision.models.mobilenet_v2",  # Depth must be one of 20, 32, 44, 56, 110, 1202
         "resnet20": "compress.experiments.cifar_resnet.resnet20",
         "resnet32": "compress.experiments.cifar_resnet.resnet32",
         "resnet44": "compress.experiments.cifar_resnet.resnet44",
