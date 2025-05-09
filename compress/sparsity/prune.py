@@ -568,21 +568,45 @@ class WandaPruner:
         return apply_masks(self.model, masks)
 
 
-def measure_nonzero_params(model: nn.Module) -> int:
-    """
-    Count the number of non-zero (i.e. *un*-pruned) parameters in the model,
-    delegating to `module.nonzero_params()` for any pruned modules.
-    """
+def get_sparsity_information(model: nn.Module) -> int:
+
     nonzero_params = 0
+    total_prunable_params = 0
+    total_parameters = 0
 
     for module in model.modules():
         if isinstance(module, (PrunedLinear, PrunedConv2d)):
             nonzero_params += module.nonzero_params()
+            total_prunable_params += module.weight.numel()
+            total_parameters += module.weight.numel()
+            if module.bias is not None:
+                total_parameters += module.bias.numel()
         else:
             for param in module.parameters(recurse=False):
                 nonzero_params += param.numel()
+                total_parameters += param.numel()
 
-    return nonzero_params
+    pruned_parameters = total_parameters - nonzero_params
+    non_pruned_parameters = total_parameters - pruned_parameters
+    return {
+        "nonzero_params": nonzero_params,
+        "total_prunable_params": total_prunable_params,
+        "sparsity_ratio_wrt_prunable": non_pruned_parameters / total_prunable_params,
+        "sparsity_ratio_wrt_total": non_pruned_parameters / total_parameters,
+    }
+
+
+def get_sparsity_information_str(model: nn.Module) -> str:
+    """
+    Get the sparsity information of a model.
+    """
+    info = get_sparsity_information(model)
+    return (
+        f"Nonzero params: {info['nonzero_params']}, "
+        f"Total prunable params: {info['total_prunable_params']}, "
+        f"Sparsity ratio (wrt prunable): {info['sparsity_ratio_wrt_prunable']:.2%}, "
+        f"Sparsity ratio (wrt total): {info['sparsity_ratio_wrt_total']:.2%}"
+    )
 
 
 def merge_pruned_modules(model: nn.Module) -> nn.Module:

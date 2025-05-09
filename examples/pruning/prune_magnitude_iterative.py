@@ -11,8 +11,10 @@ from compress.experiments import (
 from compress.sparsity.prune import (
     unstructured_resnet18_policies,
     MagnitudePruner,
-    measure_nonzero_params,
+    get_sparsity_information_str,
 )
+
+from compress.sparsity.schedulers import get_scheduler
 
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
@@ -30,6 +32,15 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Iterative Magnitude Pruning")
+    parser.add_argument("--scheduler", type=str, default="linear")
+
+    args = parser.parse_args()
+
+    scheduler = get_scheduler(args.scheduler)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     transform = transforms.Compose(
@@ -55,16 +66,14 @@ def main():
         model_args={"num_classes": 10},
     ).to(device)
 
-    total_params = sum(p.numel() for p in model.parameters())
-
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
     )
 
-    target_sparsity = 0.02
-    n_iters = 7
-    epochs_per_iter = 1
+    target_sparsity = 0.01
+    n_iters = 12
+    epochs_per_iter = 3
 
     for it in range(1, n_iters + 1):
         print(f"\n=== Iteration {it}/{n_iters} ===")
@@ -72,8 +81,7 @@ def main():
         policies = unstructured_resnet18_policies(
             {
                 "name": "sparsity_ratio",
-                "value": target_sparsity
-                + (1 - target_sparsity) * ((n_iters - it) / n_iters),
+                "value": scheduler(it, n_iters, target_sparsity),
             },
             normalize_non_prunable=True,
         )
@@ -81,11 +89,14 @@ def main():
         pruner = MagnitudePruner(model, policies)
         model = pruner.prune()
 
-        nonzero = measure_nonzero_params(model)
+        print("  Pruning done.")
+        stats = evaluate_vision_model(model, testloader)
         print(
-            f"  After pruning — nonzero params: {nonzero}/{total_params} "
-            f"({nonzero/total_params:.2%} remain)"
+            f"  Val accuracy before ft: {stats['accuracy']:.2f}% | loss: {stats['loss']:.4f}"
         )
+
+        r = get_sparsity_information_str(model)
+        print("sparsity_info:", r)
 
         for epoch in range(1, epochs_per_iter + 1):
             loss = train_one_epoch(model, trainloader, criterion, optimizer, device)
@@ -95,11 +106,8 @@ def main():
                 f"  Val accuracy: {stats['accuracy']:.2f}% | loss: {stats['loss']:.4f}"
             )
 
-    final_nonzero = measure_nonzero_params(model)
-    print("\n=== Final Results ===")
-    print(f"Accuracy : {stats['accuracy']:.2f}%")
-    print(f"Loss     : {stats['loss']:.4f}")
-    print(f"Sparsity : {(1 - final_nonzero/total_params):.2%} pruned")
+    r = get_sparsity_information_str(model)
+    print(r)
 
 
 if __name__ == "__main__":
