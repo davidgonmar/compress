@@ -40,32 +40,62 @@ class PruningPolicy:
         self.inter_group_metric = inter_group_metric
         self.intra_group_metric = intra_group_metric
 
+    def __repr__(self):
+        inter_str = (
+            f"inter_group_sparsity_ratio: {self.inter_group_metric['value']}"
+            if self.inter_group_metric
+            and self.inter_group_metric["name"] == "sparsity_ratio"
+            else (
+                f"inter_group_threshold: {self.inter_group_metric['value']}"
+                if self.inter_group_metric
+                else "inter_group_metric: None"
+            )
+        )
+        intra_str = (
+            f"intra_group_sparsity_ratio: {self.intra_group_metric['value']}"
+            if self.intra_group_metric["name"] == "sparsity_ratio"
+            else f"intra_group_threshold: {self.intra_group_metric['value']}"
+        )
+        return f"PruningPolicy({inter_str}, {intra_str})"
+
 
 PolicyDict = Dict[str, PruningPolicy]  # per layer
 
 
-def unstructured_resnet18_policies(metric) -> PolicyDict:
+def unstructured_resnet18_policies(metric, normalize_non_prunable) -> PolicyDict:
     # example policy for resnet18
     conv_keys = {}
     linear_keys = {}
+    if metric["name"] != "sparsity_ratio" and normalize_non_prunable:
+        raise ValueError(
+            "normalize_non_prunable is only supported for sparsity_ratio metric"
+        )
+
+    prunable_params = 0
     with torch.device("meta"):
+        total_params = sum(
+            p.numel()
+            for name, p in torchvision.models.resnet18(weights=None).named_parameters()
+            if "mask" not in name
+        )
         model = torchvision.models.resnet18(weights=None)
         keys = model.named_modules()
         for name, module in keys:
-            if isinstance(module, nn.Conv2d):
+            if isinstance(module, (nn.Conv2d, nn.LazyConv2d, PrunedConv2d)):
                 conv_keys[name] = PruningPolicy(
                     grouper=UnstructuredGrouperConv2d(),
                     inter_group_metric=None,
                     intra_group_metric=metric,
                 )
-            elif isinstance(module, nn.Linear):
+                prunable_params += module.weight.numel()
+            elif isinstance(module, (nn.Linear, nn.LazyLinear, PrunedLinear)):
                 linear_keys[name] = module
                 linear_keys[name] = PruningPolicy(
                     grouper=UnstructuredGrouperLinear(),
                     inter_group_metric=None,
                     intra_group_metric=metric,
                 )
-
+                prunable_params += module.weight.numel()
     return {
         **conv_keys,
         **linear_keys,
@@ -103,6 +133,7 @@ def prune_channels_resnet18_policies(metric) -> PolicyDict:
 def apply_masks(
     model: nn.Module,
     masks: Dict[str, torch.Tensor],
+    allow_reprune: bool = True,
 ) -> nn.Module:
     """
     Walks the model hierarchy and replaces any nn.Conv2d or nn.Linear
@@ -125,7 +156,13 @@ def apply_masks(
                     pruned = PrunedLinear.from_linear(child_mod, mask=mask)
                     setattr(parent, child_name, pruned)
                     child_mod = pruned
-
+                elif isinstance(child_mod, (PrunedConv2d, PrunedLinear)):
+                    if not allow_reprune:
+                        raise ValueError(
+                            f"Module {full_name} is already pruned, and allow_reprune is False"
+                        )
+                    # if the module is already pruned, just update the mask
+                    child_mod.mask = mask
             # recurse into (possibly replaced) child
             _recursive_apply(child_mod, full_name)
 
@@ -149,14 +186,23 @@ class MagnitudePruner:
         for name, policy in self.policies.items():
             module = mods[name]
             assert isinstance(
-                module, (nn.Conv2d, nn.Linear)
-            ), f"Module {name} is not a Linear or Conv2d"
+                module, (nn.Conv2d, nn.Linear, PrunedConv2d, PrunedLinear)
+            ), f"Module {name} is not nn.Conv2d, nn.Linear or PrunedConv2d, PrunedLinear"
             reshaped = policy.grouper.transform(
                 module.weight
             )  # n_groups, m_elements_per_group
+            if isinstance(module, (PrunedConv2d, PrunedLinear)):
+                mask = module.mask
+                reshaped_mask = policy.grouper.transform(mask)
+                reshaped = reshaped * reshaped_mask
             # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
             assert policy.intra_group_metric["name"] == "sparsity_ratio"
             sparsity_ratio = policy.intra_group_metric["value"]
+            # print(sparsity_ratio)
+            if hasattr(module, "count_nonzero_params"):
+                print(
+                    f"Module {name} has {module.count_nonzero_params() / reshaped.numel():.2%} nonzero params"
+                )
             ranked_elements = torch.topk(
                 reshaped.abs(),
                 k=int(sparsity_ratio * reshaped.shape[1]),
@@ -537,3 +583,20 @@ def measure_nonzero_params(model: nn.Module) -> int:
                 nonzero_params += param.numel()
 
     return nonzero_params
+
+
+def merge_pruned_modules(model: nn.Module) -> nn.Module:
+    """
+    Merge pruned modules into their parent module, replacing the pruned
+    module with a normal one.
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, (PrunedLinear, PrunedConv2d)):
+            parent = getattr(model, name.rsplit(".", 1)[0])
+            new_mod = (
+                module.to_linear()
+                if isinstance(module, PrunedLinear)
+                else module.to_conv2d()
+            )
+            setattr(parent, name.rsplit(".", 1)[-1], new_mod)
+    return model
