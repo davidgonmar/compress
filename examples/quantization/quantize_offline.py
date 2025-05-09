@@ -1,9 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.quantization import (
-    to_quantized_online,
-)
+from compress.quantization import to_quantized_offline, get_activations
 from compress.experiments import (
     load_vision_model,
     get_cifar10_modifier,
@@ -11,36 +9,19 @@ from compress.experiments import (
     cifar10_mean as mean,
     cifar10_std as std,
 )
-from compress.quantization.recipes import (
-    get_recipe_quant,
-)
+from compress.quantization.recipes import get_recipe_quant
 import argparse
 from itertools import product
 import json
-
-# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name mobilenet_v2 --pretrained_path mobilenetv2.pth
-# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet18 --pretrained_path resnet18.pth
-
-# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name mobilenet_v2 --pretrained_path mobilenetv2.pth
-# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet18 --pretrained_path resnet18.pth
-
-# python -m examples.quantization.quantize_online --model_name mobilenet_v2 --pretrained_path mobilenetv2.pth
-# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet18 --pretrained_path resnet18.pth
-
-# python -m examples.quantization.quantize_online --model_name mobilenet_v2 --pretrained_path mobilenetv2.pth
-# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet18 --pretrained_path resnet18.pth
-
-# resnet20
-# python -m examples.quantization.quantize_online --model_name resnet20 --pretrained_path resnet20.pth
-# python -m examples.quantization.quantize_online --leave_edge_layers_8_bits --model_name resnet20 --pretrained_path resnet20.pth
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--leave_edge_layers_8_bits", action="store_true")
 parser.add_argument("--model_name", type=str, default=None, required=True)
 parser.add_argument("--pretrained_path", type=str, default=None)
-parser.add_argument("--batch_size", type=int, default=512)
-
+parser.add_argument("--batch_size", type=int, default=128)
+parser.add_argument("--calibration_batches", type=int, default=10)
 args = parser.parse_args()
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(0)
 
@@ -53,11 +34,19 @@ model = load_vision_model(
     model_args={"num_classes": 10},
 )
 model.eval()
-
 model.to(device)
-# cifar10 mean and std
 
 transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
+
+train_dataset = datasets.CIFAR10(
+    root="./data", train=True, download=True, transform=transform
+)
+
+# random sample a subset of the dataset for calibration
+train_subset_size = 512
+train_subset_indices = torch.randperm(len(train_dataset))[:train_subset_size]
+train_subset = torch.utils.data.Subset(train_dataset, train_subset_indices)
+train_loader = DataLoader(train_subset, batch_size=args.batch_size, shuffle=True)
 
 test_dataset = datasets.CIFAR10(
     root="data", train=False, transform=transform, download=True
@@ -65,40 +54,43 @@ test_dataset = datasets.CIFAR10(
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
 eval_results = evaluate_vision_model(model, test_loader)
-
-results = []
-results.append(
+results = [
     {
         "type": "original",
         "loss": eval_results["loss"],
         "accuracy": eval_results["accuracy"],
     }
-)
-
-model.to("cpu")
+]
 
 bit_widths = [2, 4, 8, 16]
-train_dataset = datasets.CIFAR10(
-    root="./data", train=True, download=True, transform=transform
+
+activations = get_activations(
+    model,
+    train_loader,
+    spec=get_recipe_quant(args.model_name)(
+        bits_activation=8,
+        bits_weight=8,
+        clip_percentile=0.995,
+        leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
+        symmetric=False,
+    ),
 )
 
 for w_bits, act_bits in product(bit_widths, bit_widths):
-
-    specs = get_recipe_quant(
-        args.model_name,
-    )(
+    specs = get_recipe_quant(args.model_name)(
         bits_activation=act_bits,
         bits_weight=w_bits,
         clip_percentile=0.995,
         leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
         symmetric=False,
     )
-    quanted = to_quantized_online(
+
+    quanted = to_quantized_offline(
         model.to(device),
         specs,
+        activations=activations,
         inplace=False,
     )
-    model.to("cpu")
     quanted.to(device)
     eval_results = evaluate_vision_model(quanted, test_loader)
     print(

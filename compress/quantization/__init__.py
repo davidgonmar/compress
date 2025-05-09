@@ -213,23 +213,27 @@ def prepare_for_qat(
     return model
 
 
-def get_activations(model, data_loader):
+def get_activations(model, data_loader, spec):
     if isinstance(data_loader, torch.Tensor):
         data_loader = [data_loader]
     activations = {}
     hooks = []
-    for _, module in gather_submodules(model, should_do=default_should_do):
-        activations[module] = []
+    for name, module in gather_submodules(
+        model, should_do=keys_passlist_should_do(spec.keys())
+    ):
+        activations[name] = []
 
         def hook_fn(activations):
             def _hook_fn(module, input, output):
-                activations.append(output.detach())
+                activations.append(output.detach().to("cpu"))
 
             return _hook_fn
 
-        hooks.append(module.register_forward_hook(hook_fn(activations[module])))
+        hooks.append(module.register_forward_hook(hook_fn(activations[name])))
 
     for element in data_loader:
+        if isinstance(element, (tuple, list)):
+            element = element[0]
         element = element.to(next(model.parameters()).device)
         model(element)
 
@@ -237,8 +241,9 @@ def get_activations(model, data_loader):
         hook.remove()
 
     # cat activations
-    for module in activations:
-        activations[module] = torch.cat(activations[module], dim=0)
+    for name in activations:
+        # print(activations)
+        activations[name] = torch.cat(activations[name], dim=0)
     return activations
 
 
@@ -251,6 +256,9 @@ def to_quantized_offline(
     activations=None,
     **kwargs,
 ):
+
+    if not inplace:
+        model = copy.deepcopy(model)
     # only one of data_loader and activations should be provided
     assert (data_loader is None) != (
         activations is None
@@ -264,23 +272,14 @@ def to_quantized_offline(
         layer_and_input_acts = activations
 
     input_infos = {}
-    for module, input_act in layer_and_input_acts.items():
-        input_infos[module] = calibrate(
+    for name, input_act in layer_and_input_acts.items():
+        input_infos[name] = calibrate(
             input_act,
-            specs[next(iter(specs))]["input"],
+            specs[name]["input"],
         )
 
-    if not inplace:
-        model_initializer = kwargs.pop("model_initializer", None)
-        assert (
-            model_initializer is not None
-        ), "model_initializer must be provided if inplace=False"
-        model_ = model_initializer()
-        model_.load_state_dict(model.state_dict())
-        model = model_
     modules_to_replace = gather_submodules(
-        model,
-        should_do=should_do,
+        model, should_do=keys_passlist_should_do(specs.keys())
     )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
@@ -292,9 +291,9 @@ def to_quantized_offline(
             parent_module,
             attr_name,
             (
-                QuantizedLinear(specs[name]["weight"], input_infos[module], module)
+                QuantizedLinear(specs[name]["weight"], input_infos[name], module)
                 if isinstance(module, nn.Linear)
-                else QuantizedConv2d(specs[name]["weight"], input_infos[module], module)
+                else QuantizedConv2d(specs[name]["weight"], input_infos[name], module)
             ),
         )
 

@@ -154,3 +154,5 @@ examples/tfg/*
 *.pgf
 
 runs/
+
+*.json
