@@ -124,4 +124,7 @@ def load_vision_model(
 
 
 cifar10_mean = [0.4914, 0.4822, 0.4465]
-cifar10_std = [0.2023, 0.1994, 0.2010]
+cifar10_std = [0.2470, 0.2435, 0.2616]
+
+# This is incorrect, because it was computed by averaging the per-batch standard deviations.
+incorrect_cifar10_std = [0.2023, 0.1994, 0.2010]
