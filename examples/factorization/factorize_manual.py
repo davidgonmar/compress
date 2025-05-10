@@ -12,13 +12,15 @@ from compress.experiments import (
     load_vision_model,
     get_cifar10_modifier,
     evaluate_vision_model,
+    cifar10_mean,
+    cifar10_std,
 )
 import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--load_from", type=str, default="resnet18.pth")
-parser.add_argument("--vision-model", type=str, default="resnet18")
+parser.add_argument("--load_from", type=str, default="resnet20.pth")
+parser.add_argument("--vision-model", type=str, default="resnet20")
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
 args = parser.parse_args()
@@ -34,8 +36,8 @@ model = load_vision_model(
     model_args={"num_classes": 10},
 ).to(device)
 
-mean = [0.4914, 0.4822, 0.4465]
-std = [0.2470, 0.2435, 0.2616]
+mean = cifar10_mean
+std = cifar10_std
 
 transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
 

@@ -464,6 +464,37 @@ class TaylorExpansionPruner:
         return apply_masks(self.model, masks)
 
 
+def make_vision_runner(
+    model: nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    criterion: nn.Module,
+    device: str,
+    backwards=False,
+    verbose=False,
+):
+
+    iter_ = iter(dataloader)
+
+    def runner():
+        nonlocal iter_
+        try:
+            batch = next(iter_)
+        except StopIteration:
+            iter_ = iter(dataloader)
+            batch = next(iter_)
+        x, y = batch
+        x = x.to(device)
+        y = y.to(device)
+        model(x)
+        loss = criterion(model(x), y)
+        if backwards:
+            model.zero_grad()
+            loss.backward()
+        return loss
+
+    return runner
+
+
 class WandaPruner:
     # this one needs to store activations
     def __init__(self, model: nn.Module, policies: PolicyDict, runner, n_iters):
@@ -487,21 +518,29 @@ class WandaPruner:
         for name, module in self.model.named_modules():
             if name in self.policies.keys():
                 assert isinstance(
-                    module, (nn.Conv2d, nn.Linear)
+                    module,
+                    (
+                        nn.Conv2d,
+                        nn.Linear,
+                        nn.LazyConv2d,
+                        nn.LazyLinear,
+                        PrunedConv2d,
+                        PrunedLinear,
+                    ),
                 ), f"Module {name} is not a Linear or Conv2d"
                 module.register_forward_hook(get_hook(name))
 
     def prune(self):
         for i in range(self.n_iters):
             loss = self.runner()
-            self.model.zero_grad()
-            loss.backward()
+            # self.model.zero_grad()
+            # loss.backward()
             masks = dict()
         for name, module in self.model.named_modules():
             if name in self.policies.keys():
                 assert isinstance(
-                    module, (nn.Conv2d, nn.Linear)
-                ), f"Module {name} is not a Linear or Conv2d"
+                    module, (nn.Conv2d, nn.Linear, PrunedConv2d, PrunedLinear)
+                ), f"Module {name} is not a Linear or Conv2d, got {type(module)}"
                 weight = module.weight.data
                 # if conv -> shape [O, I, H_k, W_k]
                 # if linear -> shape [O, I]
@@ -509,7 +548,7 @@ class WandaPruner:
                 # stack
                 acts = acts.mean(dim=0)
                 # assert acts.ndim == 3, f"Activations for {name} are not 4D, got {acts.ndim} for layer {name}"
-                if isinstance(module, nn.Conv2d):
+                if isinstance(module, (nn.Conv2d, PrunedConv2d)):
                     # IM2COL
                     acts = torch.nn.functional.unfold(
                         acts,
@@ -518,6 +557,10 @@ class WandaPruner:
                         padding=module.padding,
                     )  # shape [I * H_k * W_k, H_out * W_out]
                     w = weight  # shape [O, I, H_k, W_k]
+                    if isinstance(module, PrunedConv2d):
+                        assert w.shape == module.weight.shape
+                        w = w * module.mask
+
                     # print(acts.shape, w.shape)
                     o, i, hk, wk = w.shape
                     assert acts.shape[0] == i * hk * wk
@@ -535,6 +578,9 @@ class WandaPruner:
                     # acts of shape [..., I]
                     # weight of shape [O, I]
                     w = weight.T  # shape [I, O]
+                    if isinstance(module, PrunedLinear):
+                        assert w.shape == module.weight.shape
+                        w = w * module.mask.T
                     acts = acts.reshape(*acts.shape, 1)  # shape [..., I, 1]
                     extra_dims = acts.shape[:-2]
                     vnorm = lambda x: torch.sqrt(
@@ -569,7 +615,6 @@ class WandaPruner:
 
 
 def get_sparsity_information(model: nn.Module) -> int:
-
     nonzero_params = 0
     total_prunable_params = 0
     total_parameters = 0

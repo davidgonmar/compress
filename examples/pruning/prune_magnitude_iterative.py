@@ -11,7 +11,9 @@ from compress.experiments import (
 from compress.sparsity.prune import (
     unstructured_resnet18_policies,
     MagnitudePruner,
+    WandaPruner,
     get_sparsity_information_str,
+    make_vision_runner,
 )
 
 from compress.sparsity.schedulers import get_scheduler
@@ -29,6 +31,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         optimizer.step()
         running_loss += loss.item() * images.size(0)
     return running_loss / len(dataloader.dataset)
+
+
+USE_WANDA = True
 
 
 def main():
@@ -59,10 +64,10 @@ def main():
     testloader = DataLoader(testset, batch_size=512, shuffle=False, num_workers=4)
 
     model = load_vision_model(
-        "resnet18",
-        pretrained_path="resnet18.pth",
+        "resnet20",
+        pretrained_path="resnet20.pth",
         strict=True,
-        modifier_before_load=get_cifar10_modifier("resnet18"),
+        modifier_before_load=get_cifar10_modifier("resnet20"),
         model_args={"num_classes": 10},
     ).to(device)
 
@@ -73,7 +78,7 @@ def main():
 
     target_sparsity = 0.01
     n_iters = 12
-    epochs_per_iter = 3
+    epochs_per_iter = 1
 
     for it in range(1, n_iters + 1):
         print(f"\n=== Iteration {it}/{n_iters} ===")
@@ -86,7 +91,28 @@ def main():
             normalize_non_prunable=True,
         )
         # print(policies)
-        pruner = MagnitudePruner(model, policies)
+        if not USE_WANDA:
+            pruner = MagnitudePruner(model, policies)
+
+        else:
+            # use about 500 samples randomly from train dataset
+            pruner = WandaPruner(
+                model,
+                policies,
+                make_vision_runner(
+                    model,
+                    DataLoader(
+                        torch.utils.data.Subset(
+                            trainset, torch.randint(0, len(trainset), (128 * 4,))
+                        ),
+                        batch_size=128,
+                        shuffle=True,
+                    ),
+                    criterion,
+                    device,
+                ),
+                n_iters=4,
+            )
         model = pruner.prune()
 
         print("  Pruning done.")
@@ -111,4 +137,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()

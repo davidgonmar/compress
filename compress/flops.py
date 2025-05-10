@@ -319,6 +319,9 @@ def count_model_flops(model, input_size, formatted=True, backward=False):
     Returns:
         The number of FLOPs in the model.
     """
+    state_dict = model.state_dict()
+    assert backward is False, "Backward pass is not supported yet"
+    model.eval()
     start_counting()
     x = torch.randn(input_size).cuda()
     x = FlopTensor(x)
@@ -336,6 +339,8 @@ def count_model_flops(model, input_size, formatted=True, backward=False):
     res["total"] = total
     if formatted:
         res = format_count_model_flops_results(res)
+
+    model.load_state_dict(state_dict)
     return res
 
 

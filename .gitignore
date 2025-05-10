@@ -156,3 +156,7 @@ examples/tfg/*
 runs/
 
 *.json
+
+tfg/
+
+*.pdf
