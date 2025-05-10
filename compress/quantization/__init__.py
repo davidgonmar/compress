@@ -164,7 +164,7 @@ def prepare_for_qat(
         model = copy.deepcopy(model)
     if use_lsq:
         assert "data_batch" in kwargs, "data_batch must be provided if use_lsq=True"
-        activations = get_activations(model, kwargs["data_batch"])
+        activations = get_activations(model, kwargs["data_batch"], specs)
     else:
         activations = None
     modules_to_replace = gather_submodules(
@@ -191,7 +191,7 @@ def prepare_for_qat(
                     specs[name]["weight"],
                     specs[name]["input"],
                     module,
-                    activations[module],
+                    activations[name],
                     online=online,
                 )
             elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
@@ -199,7 +199,7 @@ def prepare_for_qat(
                     specs[name]["weight"],
                     specs[name]["input"],
                     module,
-                    activations[module],
+                    activations[name],
                     online=online,
                 )
         if use_PACT and isinstance(module, (nn.ReLU, nn.ReLU6)):
