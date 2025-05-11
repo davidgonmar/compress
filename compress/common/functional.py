@@ -2,7 +2,7 @@ import math
 import torch
 
 
-DEFAULT_NORMALIZE = True
+DEFAULT_NORMALIZE = False
 
 
 def hoyer_sparsity(input: torch.Tensor, normalize=DEFAULT_NORMALIZE) -> torch.Tensor:

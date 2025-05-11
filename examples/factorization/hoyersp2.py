@@ -7,15 +7,20 @@ from compress.factorization.regularizers import (
     SingularValuesRegularizer,
     extract_weights_and_reshapers,
 )
-from compress.experiments import load_vision_model, get_cifar10_modifier
-
+from compress.experiments import (
+    load_vision_model,
+    get_cifar10_modifier,
+    cifar10_mean,
+    cifar10_std,
+)
+from compress.factorization.utils import matrix_approx_rank
 
 transform = transforms.Compose(
     [
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize(cifar10_mean, cifar10_std),
     ]
 )
 
@@ -29,7 +34,7 @@ val_dataset = datasets.CIFAR10(
     transform=transforms.Compose(
         [
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize(cifar10_mean, cifar10_std),
         ]
     ),
 )
@@ -41,16 +46,21 @@ val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = load_vision_model(
-    "resnet18",
-    pretrained_path="resnet18.pth",
+    "resnet20",
+    pretrained_path="resnet20.pth",
     strict=True,
-    modifier_before_load=get_cifar10_modifier("resnet18"),
+    modifier_before_load=get_cifar10_modifier("resnet20"),
     modifier_after_load=None,
     model_args={"num_classes": 10},
 ).to(device)
 
 criterion = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+optimizer = torch.optim.SGD(
+    model.parameters(),
+    lr=0.01,
+    momentum=0.9,
+    weight_decay=5e-4,
+)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.2)
 
 
@@ -62,28 +72,32 @@ regularizer = SingularValuesRegularizer(
         keywords={"weight", "kernel"},
     ),
     weights=1.0,
-    normalize=True,
+    normalize=False,
 )
 
 
-num_epochs = 350
+num_epochs = 100
+
+START = 0.05
+END = 0.007
+import math
 
 
-def weight_schedule(epochnum):
-    # penalty decreases exponentially from 3.0 to 0.1
-    return 0.1 + 0.9 * (0.1 ** (epochnum / num_epochs)) * 0.5
-
-
-def update_weights(regularizer, weight):
-    regularizer.weights = [weight] * len(regularizer.weights)
+def weight_schedule(ep, T_0=10, T_mult=1):
+    T_i = T_0
+    ep_i = ep
+    # determine current cycle
+    while ep_i >= T_i:
+        ep_i -= T_i
+        T_i *= T_mult
+    # cosine annealing within the cycle
+    return END + 0.5 * (START - END) * (1 + math.cos(math.pi * ep_i / T_i))
 
 
 for epoch in range(num_epochs):
     model.train()
     train_loss = 0.0
     reg_loss = 0.0
-
-    update_weights(regularizer, weight_schedule(epoch))
 
     for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
         x, y = batch
@@ -92,8 +106,9 @@ for epoch in range(num_epochs):
         optimizer.zero_grad()
         y_hat = model(x)
         loss = criterion(y_hat, y)
+        weight = weight_schedule(epoch)
         reg = regularizer()
-        total_loss = loss + reg
+        total_loss = loss + weight * reg
 
         total_loss.backward()
         optimizer.step()
@@ -108,7 +123,25 @@ for epoch in range(num_epochs):
         f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Regularization Loss: {reg_loss:.4f}"
     )
 
-    if epoch % 5 == 0:
+    def mul(shape):
+        result = 1
+        for dim in shape:
+            result *= dim
+        return result
+
+    print("approx ranks:")
+    for name, param in model.named_modules():
+        if isinstance(param, torch.nn.Conv2d):
+            approx_rank = matrix_approx_rank(param.weight)
+            print(
+                f"{name}: {approx_rank} out of {param.weight.shape[0]}, {mul(param.weight.shape[1:])} total"
+            )
+        elif isinstance(param, torch.nn.Linear):
+            approx_rank = matrix_approx_rank(param.weight)
+            print(
+                f"{name}: {approx_rank} out of {param.weight.shape[0]}, {mul(param.weight.shape[1:])} total"
+            )
+    if epoch % 5 == 0 or True:
         model.eval()
         val_loss = 0.0
         correct = 0

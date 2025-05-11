@@ -14,24 +14,58 @@ import torch.nn as nn
 Reshaper = Callable[[torch.Tensor], torch.Tensor]
 
 
+class SafeSvals(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input: torch.Tensor) -> torch.Tensor:
+        assert not input.is_complex(), "Complex tensors are not supported"
+        U, S, Vh = torch.linalg.svd(input, full_matrices=False)
+        ctx.save_for_backward(input, U, S, Vh)
+        return S
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+        # grad output of shape (r)
+        input, U, S, Vh = ctx.saved_tensors
+        # singular_vals_with_neighboors_too_close
+        ill = torch.abs(S[:-1] - S[1:]) < 1e-6
+        padleft = torch.zeros(1, device=ill.device, dtype=ill.dtype)
+        padright = torch.zeros(1, device=ill.device, dtype=ill.dtype)
+        illleft = torch.cat((padleft, ill), dim=0)
+        illright = torch.cat((ill, padright), dim=0)
+        ill = illleft | illright
+        # dont take into account
+        grad_output = torch.where(ill, torch.zeros_like(grad_output), grad_output)
+        # masking is implicit for U and Vh
+        # print("input", input.shape)
+        # print("grad_output", grad_output.shape)
+        # print("U", U.shape)
+        # print("Vh", Vh.shape)
+        # crop grad output till where s is 0
+        return torch.einsum("k,ik,kj->ij", grad_output, U, Vh)
+
+
+def safe_svals(input: torch.Tensor) -> torch.Tensor:
+    return SafeSvals.apply(input)
+
+
 def singular_values_hoyer_sparsity(
     input: torch.Tensor, normalize=DEFAULT_NORMALIZE
 ) -> torch.Tensor:
-    singular_values = torch.linalg.svdvals(input)
+    singular_values = safe_svals(input)
     return hoyer_sparsity(singular_values, normalize)
 
 
 def singular_values_squared_hoyer_sparsity(
     input: torch.Tensor, normalize=DEFAULT_NORMALIZE
 ) -> torch.Tensor:
-    singular_values = torch.linalg.svdvals(input)
+    singular_values = safe_svals(input)
     return squared_hoyer_sparsity(singular_values, normalize)
 
 
 def singular_values_scad(
     input: torch.Tensor, lambda_val: float, a_val: float, reduction: str = "sum"
 ) -> torch.Tensor:
-    singular_values = torch.linalg.svdvals(input)
+    singular_values = safe_svals(input)
     return scad(singular_values, lambda_val, a_val, reduction)
 
 
@@ -40,7 +74,7 @@ def nuclear_norm(matrix: torch.Tensor) -> torch.Tensor:
 
 
 def singular_values_entropy(input: torch.Tensor) -> torch.Tensor:
-    singular_values = torch.linalg.svdvals(input)
+    singular_values = safe_svals(input)
     smx = torch.nn.functional.softmax(singular_values, dim=-1)
     return -torch.sum(smx * torch.log(smx.clamp_min(1e-12)))
 
