@@ -68,7 +68,7 @@ def _to_float(self, kwargs_to_extract, orig_layer_cls):
     return rt
 
 
-class QATLinear:
+class QATLinear(nn.Module):
     def __init__(
         self,
         weight_spec: IntAffineQuantizationSpec,
@@ -102,7 +102,7 @@ class QATLinear:
         return f"QATLinear({self.in_features}, {self.out_features}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
 
 
-class QATConv2d:
+class QATConv2d(nn.Module):
     def __init__(
         self,
         weight_spec: IntAffineQuantizationSpec,
@@ -158,7 +158,26 @@ class QATConv2d:
         return f"QATConv({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
 
 
-class FusedQATConv2dBatchNorm2d:
+def _get_bn_and_conv_weight(conv, bn):
+    # Get the weight and bias of the conv layer
+    w = conv.weight
+    b = conv.bias if conv.bias is not None else 0
+
+    # Get the weight and bias of the bn layer
+    gamma = bn.weight
+    beta = bn.bias
+    running_mean = bn.running_mean
+    running_var = bn.running_var
+    eps = bn.eps
+
+    # returns the transformed weight and bias
+    inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
+    w = w * inv_std.reshape(-1, 1, 1, 1)
+    b = beta + (b - running_mean) * inv_std
+    return w, b
+
+
+class FusedQATConv2dBatchNorm2d(nn.Module):
     def __init__(
         self,
         weight_spec: IntAffineQuantizationSpec,
@@ -169,24 +188,32 @@ class FusedQATConv2dBatchNorm2d:
         super().__init__()
         self.conv = original_conv_layer
         self.bn = original_bn_layer
+        self.weight_spec, self.input_spec = weight_spec, input_spec
+
+        _extract_kwargs_from_orig_layer(
+            self,
+            [
+                "in_channels",
+                "out_channels",
+                "kernel_size",
+                "stride",
+                "padding",
+                "dilation",
+                "groups",
+            ],
+            original_conv_layer,
+        )
+        _extract_kwargs_from_orig_layer(
+            self,
+            ["num_features", "eps", "momentum"],
+            original_bn_layer,
+        )
 
     def forward(self, x: torch.Tensor):
         w = self.conv.weight
         b = self.conv.bias
 
-        bn = self.bn
-
-        gamma = bn.weight
-        beta = bn.bias
-        running_mean = bn.running_mean
-        running_var = bn.running_var
-        eps = bn.eps
-
-        inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
-
-        w = w * inv_std.reshape(-1, 1, 1, 1)
-
-        b = beta + (b - running_mean) * inv_std
+        w, b = _get_bn_and_conv_weight(self.conv, self.bn)
 
         return _forward_qat(
             self,
@@ -267,10 +294,11 @@ def _forward_lsq(
     **kwargs,
 ):
     if self.online:
-        x = fake_quantize(x, calibrate(x, self.input_spec))
+        info = calibrate(x, self.input_spec)
+        x = LSQQuantize.apply(x, info.scale, info)
     else:
-        x = fake_quantize(x, self.input_info)
-    w = fake_quantize(weight, calibrate(weight, self.weight_spec))
+        x = LSQQuantize.apply(x, self.input_info.scale, self.input_info)
+    w = LSQQuantize.apply(weight, self.weight_info.scale, self.weight_info)
     return functional(x, w, bias, **kwargs)
 
 
@@ -280,7 +308,7 @@ def _lsq_prepare(
     weight_spec: IntAffineQuantizationSpec,
     input_spec: IntAffineQuantizationSpec,
     data_batch: torch.Tensor = None,
-    online: bool = True,
+    online: bool = False,
 ):
     self.weight_spec = weight_spec
     self.weight_info = calibrate(layer.weight, weight_spec)
@@ -329,14 +357,14 @@ def _lsq_to_quant(self, orig_layer_cls, quant_layer_cls):
     return rt
 
 
-class LSQLinear:
+class LSQLinear(nn.Module):
     def __init__(
         self,
         weight_spec: IntAffineQuantizationSpec,
         input_spec: IntAffineQuantizationSpec,
         original_layer: nn.Linear,
         data_batch: torch.Tensor = None,
-        online: bool = True,
+        online: bool = False,
     ):
         _extract_kwargs_from_orig_layer(
             self,
@@ -386,7 +414,7 @@ conv2d_kwargs = [
 ]
 
 
-class LSQConv2d:
+class LSQConv2d(nn.Module):
 
     def __init__(
         self,
@@ -394,7 +422,7 @@ class LSQConv2d:
         input_spec: IntAffineQuantizationSpec,
         conv2d: nn.Conv2d,
         data_batch: torch.Tensor = None,
-        online: bool = True,
+        online: bool = False,
     ):
         super().__init__()
         _extract_kwargs_from_orig_layer(self, conv2d_kwargs, conv2d)
@@ -433,7 +461,7 @@ class LSQConv2d:
     )
 
 
-class LSQConv2dBatchNorm2d:
+class FusedLSQConv2dBatchNorm2d(nn.Module):
     def __init__(
         self,
         weight_spec: IntAffineQuantizationSpec,
@@ -441,31 +469,41 @@ class LSQConv2dBatchNorm2d:
         conv2d: nn.Conv2d,
         bn: nn.BatchNorm2d,
         data_batch: torch.Tensor = None,
-        online: bool = True,
+        online: bool = False,
     ):
         super().__init__()
         self.conv = conv2d
         self.bn = bn
-        _lsq_prepare(self, conv2d, weight_spec, input_spec, data_batch, online)
+        self.weight_info = calibrate(
+            _get_bn_and_conv_weight(conv2d, bn)[0],
+            weight_spec,
+        )
+        self.weight_info.scale.requires_grad_(True)
+        _extract_kwargs_from_orig_layer(
+            self,
+            conv2d_kwargs,
+            conv2d,
+        )
+        _extract_kwargs_from_orig_layer(
+            self,
+            ["num_features", "eps", "momentum"],
+            bn,
+        )
+
+        self.weight_spec = weight_spec
+        self.input_spec = input_spec
+
+        self.online = online
+        if not online:
+            assert data_batch is not None, "data_batch is required for offline LSQ"
+            self.input_info = calibrate(data_batch, input_spec)
+            self.input_info.scale.requires_grad_(True)
+        else:
+            self.input_info = calibrate(torch.empty(1), input_spec)
+            self.input_spec = input_spec
 
     def forward(self, x: torch.Tensor):
-        w = self.conv.weight
-        b = self.conv.bias
-
-        bn = self.bn
-
-        gamma = bn.weight
-        beta = bn.bias
-        running_mean = bn.running_mean
-        running_var = bn.running_var
-        eps = bn.eps
-
-        inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
-
-        w = w * inv_std.reshape(-1, 1, 1, 1)
-
-        b = beta + (b - running_mean) * inv_std
-
+        w, b = _get_bn_and_conv_weight(self.conv, self.bn)
         return _forward_lsq(
             self,
             x,
@@ -476,19 +514,6 @@ class LSQConv2dBatchNorm2d:
             padding=self.conv.padding,
             dilation=self.conv.dilation,
             groups=self.conv.groups,
-        )
-
-    to_conv2d = partial(
-        _lsq_to_float,
-        conv2d_kwargs,
-        nn.Conv2d,
-    )
-
-    def __repr__(self):
-        return (
-            f"LSQConv2dBatchNorm({self.in_channels}, {self.out_channels}, {self.kernel_size}, "
-            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups}), "
-            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
         )
 
 

@@ -298,6 +298,8 @@ def get_all_resnet20_layers():
         for name, mod in model.named_modules():
             if isinstance(mod, torch.nn.Conv2d):
                 names.append(name)
+            elif isinstance(mod, torch.nn.Linear):
+                names.append(name)
         return names
 
 
@@ -394,7 +396,7 @@ def get_resnet20_recipe_quant(
         # otherwise it does not matter and we can just do all signed
         weight_specs = {}
         input_specs = {}
-        for k in get_all_resnet18_layers():
+        for k in get_all_resnet20_layers():
             weight_specs[k] = IntAffineQuantizationSpec(
                 nbits=bits_weight,
                 signed=True,
@@ -407,6 +409,7 @@ def get_resnet20_recipe_quant(
                 quant_mode=IntAffineQuantizationMode.ASYMMETRIC,
                 percentile=clip_percentile,
             )
+
         if leave_edge_layers_8_bits:
             for k in ("fc", "conv1"):
                 input_specs[k] = IntAffineQuantizationSpec(
@@ -421,12 +424,14 @@ def get_resnet20_recipe_quant(
                     quant_mode=IntAffineQuantizationMode.ASYMMETRIC,
                     percentile=clip_percentile,
                 )
+
         quant_specs = {}
         for k in weight_specs.keys():
             quant_specs[k] = {
                 "input": input_specs[k],
                 "weight": weight_specs[k],
             }
+
         return quant_specs
 
 

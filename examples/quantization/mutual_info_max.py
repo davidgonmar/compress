@@ -7,7 +7,12 @@ from torchvision import datasets, transforms
 from tqdm import tqdm
 
 from compress.quantization import prepare_for_qat
-from compress.experiments import load_vision_model, get_cifar10_modifier
+from compress.experiments import (
+    load_vision_model,
+    get_cifar10_modifier,
+    cifar10_mean,
+    cifar10_std,
+)
 from compress.quantization.recipes import get_recipe_quant
 
 
@@ -73,7 +78,7 @@ assert 0.0 <= args.alpha <= 1.0, "alpha must be in [0,1]"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-common_tf = [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+common_tf = [transforms.ToTensor(), transforms.Normalize(cifar10_mean, cifar10_std)]
 train_loader = torch.utils.data.DataLoader(
     datasets.CIFAR10(
         "./data", True, download=True, transform=transforms.Compose(common_tf)
@@ -103,10 +108,10 @@ for p in teacher.parameters():
 
 print("Preparing student for QAT…")
 stu_raw = load_vision_model(
-    "resnet18",
-    pretrained_path="resnet18.pth",
+    args.model_name,
+    pretrained_path=args.pretrained_path,
     strict=True,
-    modifier_before_load=get_cifar10_modifier("resnet18"),
+    modifier_before_load=get_cifar10_modifier(args.model_name),
     model_args={"num_classes": 10},
 )
 quant_specs = get_recipe_quant(args.model_name)(
@@ -122,6 +127,7 @@ student = prepare_for_qat(
     use_lsq=True,
     use_PACT=True,
     data_batch=next(iter(train_loader))[0][:4].to(device),
+    online=True,
 ).to(device)
 
 layer_names = (

@@ -19,6 +19,8 @@ from compress.quantization.qat import (
     MutualInfoRegularizer,
     AutoBitAllocationConv2d,
     AutoBitAllocationLinear,
+    FusedQATConv2dBatchNorm2d,
+    FusedLSQConv2dBatchNorm2d,
 )
 
 import torch.nn.functional as F
@@ -208,6 +210,203 @@ def fuse_bn(
     return model
 
 
+def qat_fold_batch_norm(
+    conv: nn.Conv2d,
+    bn: nn.BatchNorm2d,
+    weight_spec: IntAffineQuantizationSpec,
+    input_spec: IntAffineQuantizationSpec,
+):
+    w = conv.weight.detach().clone()
+    if conv.bias is None:
+        b = torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
+    else:
+        b = conv.bias.detach().clone()
+
+    gamma = bn.weight
+    beta = bn.bias
+    running_mean = bn.running_mean
+    running_var = bn.running_var
+    eps = bn.eps
+
+    inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
+
+    w = w * inv_std.reshape(-1, 1, 1, 1)
+
+    b = beta + (b - running_mean) * inv_std
+
+    mod = FusedQATConv2dBatchNorm2d(
+        weight_spec,
+        input_spec,
+        conv,
+        bn,
+    )
+
+    return mod
+
+
+def lsq_fold_batch_norm(
+    conv: nn.Conv2d,
+    bn: nn.BatchNorm2d,
+    weight_spec: IntAffineQuantizationSpec,
+    input_spec: IntAffineQuantizationSpec,
+    data_batch=None,
+    online=False,
+):
+    w = conv.weight.detach().clone()
+    if conv.bias is None:
+        b = torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
+    else:
+        b = conv.bias.detach().clone()
+
+    gamma = bn.weight
+    beta = bn.bias
+    running_mean = bn.running_mean
+    running_var = bn.running_var
+    eps = bn.eps
+
+    inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
+
+    w = w * inv_std.reshape(-1, 1, 1, 1)
+
+    b = beta + (b - running_mean) * inv_std
+
+    mod = FusedLSQConv2dBatchNorm2d(
+        weight_spec,
+        input_spec,
+        conv,
+        bn,
+        data_batch=data_batch,
+        online=online,
+    )
+
+    return mod
+
+
+def qat_fold_bn(
+    model: nn.Module,
+    fuse_bn_keys: list,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
+    inplace=True,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    # each element in the key is a tuple of (conv_key, bn_key)
+    conv_keys = list(map(lambda x: x[0], fuse_bn_keys))
+    bn_keys = list(map(lambda x: x[1], fuse_bn_keys))
+
+    # gather all conv and bn layers
+    convs = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(conv_keys),
+    )
+    bns = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(bn_keys),
+    )
+
+    # create a dict with the layer type as key and the input and weight specs as values
+    convs_dict = {name: module for name, module in convs}
+
+    bns_dict = {name: module for name, module in bns}
+
+    # fuse the conv and bn layers
+    for conv_key, bn_key in fuse_bn_keys:
+        if conv_key not in convs_dict:
+            raise KeyError(f"Conv layer {conv_key} not found in model")
+        if bn_key not in bns_dict:
+            raise KeyError(f"BN layer {bn_key} not found in model")
+
+        conv = convs_dict[conv_key]
+        bn = bns_dict[bn_key]
+
+        fused_conv = qat_fold_batch_norm(
+            conv, bn, specs[conv_key]["weight"], specs[conv_key]["input"]
+        )
+
+        parent_module = model
+        *parent_path, attr_name = conv_key.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(parent_module, attr_name, fused_conv)
+
+        # remove the bn layer
+        parent_module = model
+        *parent_path, attr_name = bn_key.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+        setattr(parent_module, attr_name, nn.Identity())
+
+    return model
+
+
+def lsq_fold_bn(
+    model: nn.Module,
+    fuse_bn_keys: list,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
+    inplace=True,
+    data_batch=None,
+    online=False,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    # each element in the key is a tuple of (conv_key, bn_key)
+    conv_keys = list(map(lambda x: x[0], fuse_bn_keys))
+    bn_keys = list(map(lambda x: x[1], fuse_bn_keys))
+
+    # gather all conv and bn layers
+    convs = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(conv_keys),
+    )
+    bns = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(bn_keys),
+    )
+
+    # create a dict with the layer type as key and the input and weight specs as values
+    convs_dict = {name: module for name, module in convs}
+
+    bns_dict = {name: module for name, module in bns}
+
+    # fuse the conv and bn layers
+    for conv_key, bn_key in fuse_bn_keys:
+        if conv_key not in convs_dict:
+            raise KeyError(f"Conv layer {conv_key} not found in model")
+        if bn_key not in bns_dict:
+            raise KeyError(f"BN layer {bn_key} not found in model")
+
+        conv = convs_dict[conv_key]
+        bn = bns_dict[bn_key]
+
+        fused_conv = lsq_fold_batch_norm(
+            conv,
+            bn,
+            specs[conv_key]["weight"],
+            specs[conv_key]["input"],
+            data_batch=data_batch,
+            online=online,
+        )
+
+        parent_module = model
+        *parent_path, attr_name = conv_key.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(parent_module, attr_name, fused_conv)
+
+        # remove the bn layer
+        parent_module = model
+        *parent_path, attr_name = bn_key.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+        setattr(parent_module, attr_name, nn.Identity())
+
+    return model
+
+
 resnet20_fuse_pairs = [
     # stem
     ("conv1", "bn1"),
@@ -300,6 +499,7 @@ def prepare_for_qat(
     inplace=True,
     use_lsq=False,
     method_args={},
+    fuse_bn_keys=None,
     **kwargs,
 ):
 
@@ -310,6 +510,19 @@ def prepare_for_qat(
         activations = get_activations(model, kwargs["data_batch"], specs)
     else:
         activations = None
+
+    if fuse_bn_keys is not None:
+        if use_lsq:
+            lsq_fold_bn(
+                model,
+                fuse_bn_keys,
+                inplace=True,
+                specs=specs,
+                data_batch=kwargs["data_batch"],
+                online=method_args.get("online", False),
+            )
+        else:
+            qat_fold_bn(model, fuse_bn_keys, inplace=True, specs=specs)
     modules_to_replace = gather_submodules(
         model,
         should_do=keys_passlist_should_do(
