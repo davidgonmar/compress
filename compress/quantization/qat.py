@@ -16,6 +16,7 @@ from compress.quantization.ptq import (
 import copy
 from collections import defaultdict
 import math
+from functools import partial
 
 
 # ============================================================
@@ -23,118 +24,472 @@ import math
 # ============================================================
 
 
-class QATLinear(nn.Linear):
+def _qat_prepare(
+    self,
+    layer: nn.Module,
+    weight_spec: IntAffineQuantizationSpec,
+    input_spec: IntAffineQuantizationSpec,
+):
+    self.weight_spec = weight_spec
+    self.input_spec = input_spec
+    self.weight = nn.Parameter(layer.weight, requires_grad=False).requires_grad_(True)
+    self.bias = (
+        nn.Parameter(layer.bias, requires_grad=False).requires_grad_(True)
+        if layer.bias is not None
+        else None
+    )
+
+
+def _forward_qat(
+    self,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    functional: callable,
+    **kwargs,
+):
+    x = fake_quantize(x, calibrate(x, self.input_spec))
+    w = fake_quantize(weight, calibrate(weight, self.weight_spec))
+    return functional(x, w, bias, **kwargs)
+
+
+def _extract_kwargs_from_orig_layer(self, keys_list, orig_layer):
+    # Extract kwargs from the original layer
+    for key in keys_list:
+        setattr(self, key, getattr(orig_layer, key))
+
+
+def _to_float(self, kwargs_to_extract, orig_layer_cls):
+    # Extract kwargs from the original layer
+    kwargs = {key: getattr(self, key) for key in kwargs_to_extract}
+    rt = orig_layer_cls(**kwargs)
+    rt.weight = self.weight
+    rt.bias = self.bias
+    return rt
+
+
+class QATLinear:
     def __init__(
         self,
         weight_spec: IntAffineQuantizationSpec,
         input_spec: IntAffineQuantizationSpec,
         original_layer: nn.Linear,
     ):
-        in_features, out_features, bias = (
-            original_layer.in_features,
-            original_layer.out_features,
-            original_layer.bias is not None,
+        super().__init__()
+        _extract_kwargs_from_orig_layer(
+            self,
+            ["in_features", "out_features", "bias"],
+            original_layer,
         )
-        assert isinstance(original_layer, nn.Linear), "Only nn.Linear is supported"
-        super().__init__(in_features, out_features, bias)
-        self.weight_spec = weight_spec
-        self.input_spec = input_spec
-        self.weight = nn.Parameter(
-            original_layer.weight, requires_grad=False
-        ).requires_grad_(True)
-        self.bias = (
-            nn.Parameter(original_layer.bias, requires_grad=False).requires_grad_(True)
-            if bias
-            else None
-        )
+        _qat_prepare(self, original_layer, weight_spec, input_spec)
 
     def forward(self, x: torch.Tensor):
-        x = fake_quantize(x, calibrate(x, self.input_spec))
-        w = fake_quantize(self.weight, calibrate(self.weight, self.weight_spec))
-        return nn.functional.linear(x, w, self.bias)
+        return _forward_qat(
+            self,
+            x,
+            self.weight,
+            self.bias,
+            nn.functional.linear,
+        )
 
-    def to_linear(self):
-        ret = nn.Linear(self.in_features, self.out_features, self.bias is not None)
-        ret.weight = self.weight
-        ret.bias = self.bias
-        return ret
+    to_linear = partial(
+        _to_float,
+        ["in_features", "out_features", "bias"],
+        nn.Linear,
+    )
 
     def __repr__(self):
-        return f"FakeQuantizedLinear({self.in_features}, {self.out_features}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
+        return f"QATLinear({self.in_features}, {self.out_features}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
 
 
-class QATConv2d(nn.Conv2d):
+class QATConv2d:
     def __init__(
         self,
         weight_spec: IntAffineQuantizationSpec,
         input_spec: IntAffineQuantizationSpec,
         original_layer: nn.Conv2d,
     ):
-        (
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-        ) = (
-            original_layer.in_channels,
-            original_layer.out_channels,
-            original_layer.kernel_size,
-            original_layer.stride,
-            original_layer.padding,
-            original_layer.dilation,
-            original_layer.groups,
-            original_layer.bias is not None,
+        super().__init__()
+        _extract_kwargs_from_orig_layer(
+            self,
+            [
+                "in_channels",
+                "out_channels",
+                "kernel_size",
+                "stride",
+                "padding",
+                "dilation",
+                "groups",
+                "bias",
+            ],
+            original_layer,
         )
-        super().__init__(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-        )
-        assert isinstance(original_layer, nn.Conv2d), "Only nn.Conv2d is supported"
-        self.weight_spec = weight_spec
-        self.input_spec = input_spec
-        self.weight = nn.Parameter(
-            original_layer.weight, requires_grad=False
-        ).requires_grad_(True)
-        self.bias = (
-            nn.Parameter(original_layer.bias, requires_grad=False).requires_grad_(True)
-            if bias
-            else None
-        )
+        _qat_prepare(self, original_layer, weight_spec, input_spec)
 
     def forward(self, x: torch.Tensor):
+        return _forward_qat(
+            self,
+            x,
+            self.weight,
+            self.bias,
+            nn.functional.conv2d,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+
+    to_conv2d = partial(
+        _to_float,
+        [
+            "in_channels",
+            "out_channels",
+            "kernel_size",
+            "stride",
+            "padding",
+            "dilation",
+            "groups",
+            "bias",
+        ],
+        nn.Conv2d,
+    )
+
+    def __repr__(self):
+        return f"QATConv({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
+
+
+class FusedQATConv2dBatchNorm2d:
+    def __init__(
+        self,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
+        original_conv_layer: nn.Conv2d,
+        original_bn_layer: nn.BatchNorm2d,
+    ):
+        super().__init__()
+        self.conv = original_conv_layer
+        self.bn = original_bn_layer
+
+    def forward(self, x: torch.Tensor):
+        w = self.conv.weight
+        b = self.conv.bias
+
+        bn = self.bn
+
+        gamma = bn.weight
+        beta = bn.bias
+        running_mean = bn.running_mean
+        running_var = bn.running_var
+        eps = bn.eps
+
+        inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
+
+        w = w * inv_std.reshape(-1, 1, 1, 1)
+
+        b = beta + (b - running_mean) * inv_std
+
+        return _forward_qat(
+            self,
+            x,
+            w,
+            b,
+            nn.functional.conv2d,
+            stride=self.conv.stride,
+            padding=self.conv.padding,
+            dilation=self.conv.dilation,
+            groups=self.conv.groups,
+        )
+
+    to_conv2d = partial(
+        _to_float,
+        [
+            "in_channels",
+            "out_channels",
+            "kernel_size",
+            "stride",
+            "padding",
+            "dilation",
+            "groups",
+            "bias",
+        ],
+        nn.Conv2d,
+    )
+
+    def __repr__(self):
+        return f"FusedQATConv2dBatchNorm({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
+
+
+# ============================================================
+# ============= LEARNED STEP QUANTIZATION (LSQ) ==============
+# ============================================================
+
+
+class LSQQuantize(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale, info):
+        assert info.zero_point is None, "Zero point is not supported"
+        ctx.save_for_backward(x, scale)
+        ctx.qmin = info.qmin
+        ctx.qmax = info.qmax
+        return fake_quantize(x, info)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, scale = ctx.saved_tensors
+        qmin, qmax = ctx.qmin, ctx.qmax
+        v_s = x / scale
+        mask = (v_s >= qmin) & (v_s <= qmax)
+        x_grad = grad_output * mask.float()
+        s_grad = (
+            (
+                torch.where(
+                    -qmin >= v_s,
+                    -qmin,
+                    torch.where(qmax <= v_s, qmax, -v_s + torch.round(v_s)),
+                )
+                * grad_output
+            )
+            .sum()
+            .reshape(scale.shape)
+        )
+        # rescale as the paper mentions
+        rescaling = 1 / math.sqrt((x.numel() * (qmax - qmin)))
+        s_grad = s_grad * rescaling
+        return x_grad, s_grad, None
+
+
+def _forward_lsq(
+    self,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    functional: callable,
+    **kwargs,
+):
+    if self.online:
         x = fake_quantize(x, calibrate(x, self.input_spec))
-        w = fake_quantize(self.weight, calibrate(self.weight, self.weight_spec))
-        return nn.functional.conv2d(
-            x, w, self.bias, self.stride, self.padding, self.dilation, self.groups
+    else:
+        x = fake_quantize(x, self.input_info)
+    w = fake_quantize(weight, calibrate(weight, self.weight_spec))
+    return functional(x, w, bias, **kwargs)
+
+
+def _lsq_prepare(
+    self,
+    layer: nn.Module,
+    weight_spec: IntAffineQuantizationSpec,
+    input_spec: IntAffineQuantizationSpec,
+    data_batch: torch.Tensor = None,
+    online: bool = True,
+):
+    self.weight_spec = weight_spec
+    self.weight_info = calibrate(layer.weight, weight_spec)
+    self.weight_info.scale.requires_grad_(True)
+    self.weight = nn.Parameter(layer.weight, requires_grad=False).requires_grad_(True)
+    self.bias = (
+        nn.Parameter(layer.bias, requires_grad=False).requires_grad_(True)
+        if layer.bias is not None
+        else None
+    )
+
+    self.online = online
+    if not online:
+        assert data_batch is not None, "data_batch is required for offline LSQ"
+        self.input_info = calibrate(data_batch, input_spec)
+        self.input_info.scale.requires_grad_(True)
+        self.input_spec = input_spec
+    else:
+        self.input_spec = input_spec
+
+
+def _lsq_to_float(self, kwargs_to_extract, orig_layer_cls):
+    # Extract kwargs from the original layer
+    kwargs = {key: getattr(self, key) for key in kwargs_to_extract}
+    rt = orig_layer_cls(**kwargs)
+    rt.weight = self.weight
+    rt.bias = self.bias
+    return rt
+
+
+def _lsq_to_quant(self, orig_layer_cls, quant_layer_cls):
+    # Extract kwargs from the original layer
+    kwargs = {
+        key: getattr(self, key) for key in ["in_features", "out_features", "bias"]
+    }
+    input_info = (
+        self.input_info
+        if not self.online
+        else calibrate(torch.empty(1), self.input_spec)
+    )
+    rt = quant_layer_cls(self.weight_info.spec, input_info, orig_layer_cls(**kwargs))
+    rt.weight_info = self.weight_info
+    rt.weight = torch.nn.Parameter(
+        quantize(self.weight, self.weight_info), requires_grad=False
+    )
+    return rt
+
+
+class LSQLinear:
+    def __init__(
+        self,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
+        original_layer: nn.Linear,
+        data_batch: torch.Tensor = None,
+        online: bool = True,
+    ):
+        _extract_kwargs_from_orig_layer(
+            self,
+            ["in_features", "out_features", "bias"],
+            original_layer,
+        )
+        super().__init__()
+        _lsq_prepare(self, original_layer, weight_spec, input_spec, data_batch, online)
+
+    def forward(self, x: torch.Tensor):
+        return _forward_lsq(
+            self,
+            x,
+            self.weight,
+            self.bias,
+            nn.functional.linear,
         )
 
     def __repr__(self):
-        return f"FakeQuantizedConv2d({self.in_channels}, {self.out_channels}, ..., act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
-
-    def to_conv2d(self):
-        ret = nn.Conv2d(
-            self.in_channels,
-            self.out_channels,
-            self.kernel_size,
-            self.stride,
-            self.padding,
-            self.dilation,
-            self.groups,
-            self.bias is not None,
+        return (
+            f"LSQQuantizedLinear({self.in_features}, {self.out_features}, {self.bias}), "
+            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
         )
-        ret.weight = self.weight
-        ret.bias = self.bias
-        return ret
+
+    to_linear = partial(
+        _lsq_to_float,
+        ["in_features", "out_features", "bias"],
+        nn.Linear,
+    )
+
+    to_quant_linear = partial(
+        _lsq_to_quant,
+        nn.Linear,
+        QuantizedLinear,
+    )
+
+
+conv2d_kwargs = [
+    "in_channels",
+    "out_channels",
+    "kernel_size",
+    "stride",
+    "padding",
+    "dilation",
+    "groups",
+    "bias",
+]
+
+
+class LSQConv2d:
+
+    def __init__(
+        self,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
+        conv2d: nn.Conv2d,
+        data_batch: torch.Tensor = None,
+        online: bool = True,
+    ):
+        super().__init__()
+        _extract_kwargs_from_orig_layer(self, conv2d_kwargs, conv2d)
+        _lsq_prepare(self, conv2d, weight_spec, input_spec, data_batch, online)
+
+    def forward(self, x: torch.Tensor):
+        return _forward_lsq(
+            self,
+            x,
+            self.weight,
+            self.bias,
+            nn.functional.conv2d,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+
+    def __repr__(self):
+        return (
+            f"LSQQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, "
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups}), "
+            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
+        )
+
+    to_conv2d = partial(
+        _lsq_to_float,
+        conv2d_kwargs,
+        nn.Conv2d,
+    )
+
+    to_quant_conv2d = partial(
+        _lsq_to_quant,
+        nn.Conv2d,
+        QuantizedConv2d,
+    )
+
+
+class LSQConv2dBatchNorm2d:
+    def __init__(
+        self,
+        weight_spec: IntAffineQuantizationSpec,
+        input_spec: IntAffineQuantizationSpec,
+        conv2d: nn.Conv2d,
+        bn: nn.BatchNorm2d,
+        data_batch: torch.Tensor = None,
+        online: bool = True,
+    ):
+        super().__init__()
+        self.conv = conv2d
+        self.bn = bn
+        _lsq_prepare(self, conv2d, weight_spec, input_spec, data_batch, online)
+
+    def forward(self, x: torch.Tensor):
+        w = self.conv.weight
+        b = self.conv.bias
+
+        bn = self.bn
+
+        gamma = bn.weight
+        beta = bn.bias
+        running_mean = bn.running_mean
+        running_var = bn.running_var
+        eps = bn.eps
+
+        inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
+
+        w = w * inv_std.reshape(-1, 1, 1, 1)
+
+        b = beta + (b - running_mean) * inv_std
+
+        return _forward_lsq(
+            self,
+            x,
+            w,
+            b,
+            nn.functional.conv2d,
+            stride=self.conv.stride,
+            padding=self.conv.padding,
+            dilation=self.conv.dilation,
+            groups=self.conv.groups,
+        )
+
+    to_conv2d = partial(
+        _lsq_to_float,
+        conv2d_kwargs,
+        nn.Conv2d,
+    )
+
+    def __repr__(self):
+        return (
+            f"LSQConv2dBatchNorm({self.in_channels}, {self.out_channels}, {self.kernel_size}, "
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups}), "
+            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
+        )
 
 
 # ============================================================
@@ -365,212 +720,6 @@ class MutualInfoRegularizer:
         ), "No activations found. Make sure to run the model first."
         res["mutual_info_loss"] = -mutual_info_loss(actsstu, actstea)
         return res
-
-
-# ============================================================
-# ============= LEARNED STEP QUANTIZATION (LSQ) ==============
-# ============================================================
-
-
-class LSQQuantize(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, scale, info):
-        assert info.zero_point is None, "Zero point is not supported"
-        ctx.save_for_backward(x, scale)
-        ctx.qmin = info.qmin
-        ctx.qmax = info.qmax
-        return fake_quantize(x, info)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        x, scale = ctx.saved_tensors
-        qmin, qmax = ctx.qmin, ctx.qmax
-        v_s = x / scale
-        mask = (v_s >= qmin) & (v_s <= qmax)
-        x_grad = grad_output * mask.float()
-        s_grad = (
-            (
-                torch.where(
-                    -qmin >= v_s,
-                    -qmin,
-                    torch.where(qmax <= v_s, qmax, -v_s + torch.round(v_s)),
-                )
-                * grad_output
-            )
-            .sum()
-            .reshape(scale.shape)
-        )
-        # rescale as the paper mentions
-        rescaling = 1 / math.sqrt((x.numel() * (qmax - qmin)))
-        s_grad = s_grad * rescaling
-        return x_grad, s_grad, None
-
-
-class LSQLinear(nn.Linear):
-    def __init__(
-        self,
-        weight_spec: IntAffineQuantizationSpec,
-        input_spec: IntAffineQuantizationSpec,
-        linear: nn.Linear,
-        data_batch: torch.Tensor = None,
-        online: bool = True,
-    ):
-        in_features, out_features, bias = (
-            linear.in_features,
-            linear.out_features,
-            linear.bias is not None,
-        )
-        assert isinstance(linear, nn.Linear), "Only nn.Linear is supported"
-        super().__init__(in_features, out_features, bias)
-        self.weight_info = calibrate(linear.weight, weight_spec)
-        self.weight_info.scale.requires_grad_(True)
-        self.weight = nn.Parameter(linear.weight, requires_grad=False).requires_grad_(
-            True
-        )
-        self.bias = (
-            nn.Parameter(linear.bias, requires_grad=False).requires_grad_(True)
-            if bias
-            else None
-        )
-        self.online = online
-        if not online:
-            assert data_batch is not None, "data_batch is required for offline LSQ"
-            self.input_info = calibrate(data_batch, input_spec)
-            self.input_info.scale.requires_grad_(True)
-            self.input_spec = input_spec
-        else:
-            self.input_spec = input_spec
-
-    def forward(self, x: torch.Tensor):
-        input_info = calibrate(x, self.input_spec) if self.online else self.input_info
-        x = LSQQuantize.apply(x, input_info.scale, input_info)
-        w = LSQQuantize.apply(self.weight, self.weight_info.scale, self.weight_info)
-        return nn.functional.linear(x, w, self.bias)
-
-    def __repr__(self):
-        return (
-            f"LSQQuantizedLinear({self.in_features}, {self.out_features}, {self.bias}), "
-            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
-        )
-
-    def to_linear(self):
-        ret = nn.Linear(self.in_features, self.out_features, self.bias is not None)
-        ret.weight = self.weight
-        ret.bias = self.bias
-        return ret
-
-    def to_quant_linear(self):
-        input_info = (
-            self.input_info
-            if not self.online
-            else calibrate(torch.empty(1), self.input_spec)
-        )
-        ret = QuantizedLinear(self.weight_info.spec, input_info, self.to_linear())
-        ret.weight_info = self.weight_info
-        ret.weight = torch.nn.Parameter(
-            quantize(self.weight, self.weight_info), requires_grad=False
-        )
-        return ret
-
-
-class LSQConv2d(nn.Conv2d):
-    def __init__(
-        self,
-        weight_spec: IntAffineQuantizationSpec,
-        input_spec: IntAffineQuantizationSpec,
-        conv2d: nn.Conv2d,
-        data_batch: torch.Tensor = None,
-        online: bool = True,
-    ):
-        (
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-        ) = (
-            conv2d.in_channels,
-            conv2d.out_channels,
-            conv2d.kernel_size,
-            conv2d.stride,
-            conv2d.padding,
-            conv2d.dilation,
-            conv2d.groups,
-            conv2d.bias is not None,
-        )
-        super().__init__(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-        )
-        self.weight_info = calibrate(conv2d.weight, weight_spec)
-        self.weight_info.scale.requires_grad_(True)
-        self.weight = nn.Parameter(conv2d.weight, requires_grad=False).requires_grad_(
-            True
-        )
-        self.bias = (
-            nn.Parameter(conv2d.bias, requires_grad=False).requires_grad_(True)
-            if bias
-            else None
-        )
-        self.online = online
-        if not online:
-            assert data_batch is not None, "data_batch is required for offline LSQ"
-            self.input_info = calibrate(data_batch, input_spec)
-            self.input_info.scale.requires_grad_(True)
-            self.input_spec = input_spec
-        else:
-            self.input_spec = input_spec
-
-    def forward(self, x: torch.Tensor):
-        input_info = calibrate(x, self.input_spec) if self.online else self.input_info
-        x = LSQQuantize.apply(x, input_info.scale, input_info)
-        w = LSQQuantize.apply(self.weight, self.weight_info.scale, self.weight_info)
-        return nn.functional.conv2d(
-            x, w, self.bias, self.stride, self.padding, self.dilation, self.groups
-        )
-
-    def __repr__(self):
-        return (
-            f"LSQQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias}), "
-            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
-        )
-
-    def to_conv2d(self):
-        ret = nn.Conv2d(
-            self.in_channels,
-            self.out_channels,
-            self.kernel_size,
-            self.stride,
-            self.padding,
-            self.dilation,
-            self.groups,
-            self.bias is not None,
-        )
-        ret.weight = self.weight
-        ret.bias = self.bias
-        return ret
-
-    def to_quant_conv2d(self):
-        input_info = (
-            self.input_info
-            if not self.online
-            else calibrate(torch.empty(1), self.input_spec)
-        )
-        ret = QuantizedConv2d(self.weight_info.spec, input_info, self.to_conv2d())
-        ret.weight_info = self.weight_info
-        ret.weight = torch.nn.Parameter(
-            quantize(self.weight, self.weight_info), requires_grad=False
-        )
-        return ret
 
 
 # ============================================================
