@@ -26,13 +26,15 @@ test_dataset = datasets.CIFAR10(
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=64, shuffle=False)
 
 model = load_vision_model(
-    "resnet18",
-    pretrained_path="resnet18.pth",
+    "resnet20",
+    pretrained_path="resnet20.pth",
     strict=True,
-    modifier_before_load=get_cifar10_modifier("resnet18"),
+    modifier_before_load=get_cifar10_modifier("resnet20"),
     modifier_after_load=None,
     model_args={"num_classes": 10},
 ).to(device)
+
+print(model)
 
 result = evaluate_vision_model(model, test_loader)
 

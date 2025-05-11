@@ -227,10 +227,16 @@ def ste_floor(x):
     return STEFloor.apply(x)
 
 
+def _or0(x):
+    if x is None:
+        return 0
+    return x
+
+
 def quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
     return info.spec.grouper.ungroup(
         torch.clamp(
-            ste_round(info.spec.grouper.group(x) / info.scale + (info.zero_point or 0)),
+            ste_round(info.spec.grouper.group(x) / info.scale + _or0(info.zero_point)),
             info.qmin,
             info.qmax,
         ).to(info.get_dtype()),
@@ -241,7 +247,7 @@ def quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
 def dequantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
     return info.spec.grouper.ungroup(
         info.scale
-        * (info.spec.grouper.group(x.to(torch.float32)) - (info.zero_point or 0)),
+        * (info.spec.grouper.group(x.to(torch.float32)) - _or0(info.zero_point)),
         x,
     )
 

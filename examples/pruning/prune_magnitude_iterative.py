@@ -78,7 +78,7 @@ def main():
 
     target_sparsity = 0.01
     n_iters = 12
-    epochs_per_iter = 1
+    epochs_per_iter = 5
 
     for it in range(1, n_iters + 1):
         print(f"\n=== Iteration {it}/{n_iters} ===")
@@ -114,7 +114,7 @@ def main():
                 n_iters=4,
             )
         model = pruner.prune()
-
+        pruner = pruner.dispose()
         print("  Pruning done.")
         stats = evaluate_vision_model(model, testloader)
         print(

@@ -179,6 +179,9 @@ class MagnitudePruner:
         self.policies = policies
         assert global_prune is False, "Global pruning not supported yet"
 
+    def dispose(self):
+        self.model = None
+
     def prune(self):
         # iterate over policies and apply pruning
         mods = dict(self.model.named_modules())
@@ -612,6 +615,25 @@ class WandaPruner:
                 self.activations[name] = []
 
         return apply_masks(self.model, masks)
+
+    def dispose(self):
+        for name, module in self.model.named_modules():
+            if name in self.policies.keys():
+                assert isinstance(
+                    module,
+                    (
+                        nn.Conv2d,
+                        nn.Linear,
+                        nn.LazyConv2d,
+                        nn.LazyLinear,
+                        PrunedConv2d,
+                        PrunedLinear,
+                    ),
+                ), f"Module {name} is not a Linear or Conv2d"
+                module._forward_hooks.clear()
+                module._backward_hooks.clear()
+        self.activations = {}
+        self.model = None
 
 
 def get_sparsity_information(model: nn.Module) -> int:

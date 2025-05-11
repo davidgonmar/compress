@@ -105,14 +105,157 @@ def get_quant_dict(
     }
 
 
+def fold_batch_norm(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
+    if not isinstance(conv, nn.Conv2d):
+        raise TypeError(f"Expected nn.Conv2d, got {type(conv)}")
+    if not isinstance(bn, nn.BatchNorm2d):
+        raise TypeError(f"Expected nn.BatchNorm2d, got {type(bn)}")
+
+    w = conv.weight.detach().clone()
+    if conv.bias is None:
+        b = torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
+    else:
+        b = conv.bias.detach().clone()
+
+    # assert eval mode
+    assert bn.training is False, "BatchNorm must be in eval mode"
+    assert bn.track_running_stats is True, "BatchNorm must be tracking running stats"
+
+    gamma = bn.weight
+    beta = bn.bias
+    running_mean = bn.running_mean
+    running_var = bn.running_var
+    eps = bn.eps
+
+    inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
+
+    w = w * inv_std.reshape(-1, 1, 1, 1)
+
+    b = beta + (b - running_mean) * inv_std
+
+    fused_conv = nn.Conv2d(
+        in_channels=conv.in_channels,
+        out_channels=conv.out_channels,
+        kernel_size=conv.kernel_size,
+        stride=conv.stride,
+        padding=conv.padding,
+        dilation=conv.dilation,
+        groups=conv.groups,
+        bias=True,
+        padding_mode=conv.padding_mode,
+        device=w.device,
+        dtype=w.dtype,
+    )
+
+    fused_conv.weight.data.copy_(w)
+    fused_conv.bias.data.copy_(b)
+    return fused_conv
+
+
+def fuse_bn(
+    model: nn.Module,
+    fuse_bn_keys: list,
+    inplace=True,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    # each element in the key is a tuple of (conv_key, bn_key)
+    conv_keys = list(map(lambda x: x[0], fuse_bn_keys))
+    bn_keys = list(map(lambda x: x[1], fuse_bn_keys))
+
+    # gather all conv and bn layers
+    convs = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(conv_keys),
+    )
+    bns = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(bn_keys),
+    )
+
+    # create a dict with the layer type as key and the input and weight specs as values
+    convs_dict = {name: module for name, module in convs}
+
+    bns_dict = {name: module for name, module in bns}
+
+    # fuse the conv and bn layers
+    for conv_key, bn_key in fuse_bn_keys:
+        if conv_key not in convs_dict:
+            raise KeyError(f"Conv layer {conv_key} not found in model")
+        if bn_key not in bns_dict:
+            raise KeyError(f"BN layer {bn_key} not found in model")
+
+        conv = convs_dict[conv_key]
+        bn = bns_dict[bn_key]
+
+        fused_conv = fold_batch_norm(conv, bn)
+
+        parent_module = model
+        *parent_path, attr_name = conv_key.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        setattr(parent_module, attr_name, fused_conv)
+
+        # remove the bn layer
+        parent_module = model
+        *parent_path, attr_name = bn_key.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+        setattr(parent_module, attr_name, nn.Identity())
+
+    return model
+
+
+resnet20_fuse_pairs = [
+    # stem
+    ("conv1", "bn1"),
+    # layer1 – BasicBlock(0, 1, 2)
+    ("layer1.0.conv1", "layer1.0.bn1"),
+    ("layer1.0.conv2", "layer1.0.bn2"),
+    ("layer1.1.conv1", "layer1.1.bn1"),
+    ("layer1.1.conv2", "layer1.1.bn2"),
+    ("layer1.2.conv1", "layer1.2.bn1"),
+    ("layer1.2.conv2", "layer1.2.bn2"),
+    # layer2 – BasicBlock(0, 1, 2)
+    ("layer2.0.conv1", "layer2.0.bn1"),
+    ("layer2.0.conv2", "layer2.0.bn2"),
+    ("layer2.0.shortcut.0", "layer2.0.shortcut.1"),  # down‑sample path
+    ("layer2.1.conv1", "layer2.1.bn1"),
+    ("layer2.1.conv2", "layer2.1.bn2"),
+    ("layer2.2.conv1", "layer2.2.bn1"),
+    ("layer2.2.conv2", "layer2.2.bn2"),
+    # layer3 – BasicBlock(0, 1, 2)
+    ("layer3.0.conv1", "layer3.0.bn1"),
+    ("layer3.0.conv2", "layer3.0.bn2"),
+    ("layer3.0.shortcut.0", "layer3.0.shortcut.1"),  # down‑sample path
+    ("layer3.1.conv1", "layer3.1.bn1"),
+    ("layer3.1.conv2", "layer3.1.bn2"),
+    ("layer3.2.conv1", "layer3.2.bn1"),
+    ("layer3.2.conv2", "layer3.2.bn2"),
+]
+
+
+def get_fuse_bn_keys(model_name: str):
+    if model_name == "resnet20":
+        return resnet20_fuse_pairs
+    else:
+        print("Model not supported for BN fusion")
+        return []
+
+
 def to_quantized_online(
     model: nn.Module,
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     inplace=True,
+    fuse_bn_keys=None,
     **kwargs,
 ):
     if not inplace:
         model = copy.deepcopy(model)
+    if fuse_bn_keys is not None:
+        fuse_bn(model, fuse_bn_keys)
 
     modules_to_replace = gather_submodules(
         model,

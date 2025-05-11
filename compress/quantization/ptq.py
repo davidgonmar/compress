@@ -189,9 +189,6 @@ class QuantizedConv2d(nn.Conv2d):
                 self.dilation,
                 self.groups,
             )
-
-            if self.bias is not None:
-                conv2dres += self.bias.reshape(1, -1, 1, 1)
         else:
             conv2dres = triton_quantized_int8_conv2d(
                 x,

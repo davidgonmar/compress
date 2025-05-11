@@ -181,4 +181,5 @@ def calibrate(
         xmax = quantile(xm.abs(), percentile, dim=0)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         zero_point = None
+
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
