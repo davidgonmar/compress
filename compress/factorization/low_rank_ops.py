@@ -258,8 +258,7 @@ class LowRankConv2d(nn.Module):
     def from_conv2d_activation(
         conv2d: nn.Conv2d,
         act_cov_mat_chol: torch.Tensor,  # shape (i * h * w)^2. Result of cholesky factorization of the input activations covariance matrix (X @ X^T) = L @ L^T
-        ratio_to_keep: float | None = None,
-        energy_to_keep: float | None = None,
+        keep_metric: dict[str, float],
     ):
         # adapted from https://arxiv.org/abs/2403.07378
         W, b = conv2d.weight, conv2d.bias
@@ -269,11 +268,11 @@ class LowRankConv2d(nn.Module):
             full_matrices=True,
         )
         rank = 0
-        if ratio_to_keep is not None:
-            rank = _get_rank_ratio_to_keep(S, ratio_to_keep)
-        elif energy_to_keep is not None:
-            rank = _get_svals_energy_ratio_to_keep(S, energy_to_keep)
-        else:
+        if keep_metric["name"] == "rank_ratio_to_keep":
+            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
+            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
+        elif keep_metric["name"] == "params_ratio_to_keep":
             raise ValueError(
                 "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep']"
             )
@@ -281,11 +280,9 @@ class LowRankConv2d(nn.Module):
 
         act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
         W0 = (
-            (
-                (U[:, :rank] @ torch.diag(S[:rank]))
-                .reshape(i, h, w, rank)
-                .permute(3, 0, 1, 2)
-            ).reshape(rank, -1)
+            ((U[:, :rank] @ S).reshape(i, h, w, rank).permute(3, 0, 1, 2)).reshape(
+                rank, -1
+            )
             @ act_cov_mat_cholinv.T
         ).reshape(
             rank, i, h, w

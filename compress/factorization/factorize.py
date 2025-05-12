@@ -488,9 +488,7 @@ def factorize_with_activation_aware_svd(
     model: nn.Module,
     dataloader,
     inplace=True,
-    should_do=default_should_do,
-    energy_to_keep=None,
-    ratio_to_keep=None,
+    cfg_dict=None,
 ):
     if not inplace:
         model = copy.deepcopy(model)
@@ -500,30 +498,34 @@ def factorize_with_activation_aware_svd(
 
     modules_to_replace = gather_submodules(
         model,
-        should_do=should_do,
+        should_do=keys_passlist_should_do(cfg_dict.keys()),
     )
 
     def hook_fn(module, input, output):
         input = input[0] if isinstance(input, tuple) else input
-        acts[module] = input
+        if acts.get(module) is None:
+            acts[module] = input
+        else:
+            acts[module] = torch.cat((acts[module], input), dim=0)
 
     for name, module in modules_to_replace:
         hook = module.register_forward_hook(hook_fn)
         hooks.append(hook)
 
-    for batch in tqdm(dataloader, desc="Getting activations"):
-        if isinstance(batch, dict):
-            inputs = {
-                key: value.to(next(model.parameters()).device)
-                for key, value in batch.items()
-            }
-            model(**inputs)
-        else:
-            inputs, targets = batch
-            inputs, targets = inputs.to(next(model.parameters()).device), targets.to(
-                next(model.parameters()).device
-            )
-            model(inputs)
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Getting activations"):
+            if isinstance(batch, dict):
+                inputs = {
+                    key: value.to(next(model.parameters()).device)
+                    for key, value in batch.items()
+                }
+                model(**inputs)
+            else:
+                inputs, targets = batch
+                inputs, targets = inputs.to(
+                    next(model.parameters()).device
+                ), targets.to(next(model.parameters()).device)
+                model(inputs)
 
     for hook in hooks:
         hook.remove()
@@ -575,17 +577,11 @@ def factorize_with_activation_aware_svd(
             attr_name,
             (
                 LowRankLinear.from_linear_activation(
-                    module,
-                    chols[module],
-                    energy_to_keep=energy_to_keep,
-                    ratio_to_keep=ratio_to_keep,
+                    module, chols[module], cfg_dict[name]
                 )
                 if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
                 else LowRankConv2d.from_conv2d_activation(
-                    module,
-                    chols[module],
-                    energy_to_keep=energy_to_keep,
-                    ratio_to_keep=ratio_to_keep,
+                    module, chols[module], cfg_dict[name]
                 )
             ),
         )

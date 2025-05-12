@@ -78,8 +78,8 @@ regularizer = SingularValuesRegularizer(
 
 num_epochs = 100
 
-START = 0.05
-END = 0.007
+START = 0.0
+END = 0.004
 import math
 
 
