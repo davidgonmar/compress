@@ -14,7 +14,7 @@ from compress.experiments import (
 )
 from compress.quantization.recipes import get_recipe_quant
 
-
+torch.manual_seed(0)
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
 parser.add_argument(
     "--method", default="qat", type=str, help="method to use"
@@ -53,6 +53,16 @@ parser.add_argument(
 
 parser.add_argument(
     "--epochs", default=90, type=int, help="number of epochs for training"
+)
+
+parser.add_argument("--lr", default=0.01, type=float, help="learning rate for training")
+
+parser.add_argument(
+    "--momentum", default=0.9, type=float, help="momentum for SGD optimizer"
+)
+
+parser.add_argument(
+    "--weight_decay", default=5e-4, type=float, help="weight decay for SGD optimizer"
 )
 
 args = parser.parse_args()
@@ -113,9 +123,9 @@ criterion = nn.CrossEntropyLoss()
 
 optimizer = optim.SGD(
     model.parameters(),
-    lr=0.01,
-    momentum=0.9,
-    weight_decay=5e-4,
+    lr=args.lr,
+    momentum=args.momentum,
+    weight_decay=args.weight_decay,
 )
 scheduler = StepLR(optimizer, step_size=20, gamma=0.1)
 
