@@ -618,8 +618,8 @@ def requantize_lsq(
         scale_weights = module.weight_info.scale
         scale_acts = module.input_info.scale
 
-        reduce_ratio_weights = new_nbits_weights // nbits_weights
-        reduce_ratio_acts = new_nbits_acts // nbits_acts
+        reduce_ratio_weights = float(new_nbits_weights) / float(nbits_weights)
+        reduce_ratio_acts = float(new_nbits_acts) / float(nbits_acts)
 
         new_scale_weights = scale_weights * reduce_ratio_weights
         new_scale_acts = scale_acts * reduce_ratio_acts
