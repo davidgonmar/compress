@@ -48,18 +48,14 @@ class ComplexAdapter(nn.Module):
             nn.Conv2d(c_in, hidden, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(hidden),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
             nn.Conv2d(hidden, hidden, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(hidden),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
             nn.Conv2d(hidden, c_out, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(c_out),
-            nn.ReLU(inplace=True),
         )
-
     def forward(self, x):
         return self.net(x)
+
 
 
 parser = argparse.ArgumentParser(
