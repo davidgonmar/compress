@@ -19,7 +19,7 @@ torch.manual_seed(0)
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
 parser.add_argument("--method", default="qat", type=str)
 parser.add_argument("--bits_list", nargs="+", type=int, default=[8, 4, 2])
-parser.add_argument("--epoch_milestones", nargs="+", type=int, default=[30, 60, 90])
+parser.add_argument("--epoch_milestones", nargs="+", type=int, default=[0, 30, 60])
 parser.add_argument(
     "--leave_last_layer_8_bits", type=lambda x: str(x).lower() == "true", default=True
 )
@@ -71,7 +71,7 @@ model = load_vision_model(
     model_args={"num_classes": 10},
 ).to(device)
 
-print(model)
+
 
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list))
 bits_schedule.sort()
@@ -94,6 +94,7 @@ model = prepare_for_qat(
     fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 )
 
+print(model)
 model = model.to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(
