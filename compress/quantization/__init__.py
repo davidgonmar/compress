@@ -578,6 +578,61 @@ def prepare_for_qat(
     return model
 
 
+def requantize_lsq(
+    model: nn.Module,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
+    inplace=True,
+    **kwargs,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(
+            specs.keys(),
+        ),
+    )
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        if not isinstance(module, (LSQConv2d, LSQLinear, FusedLSQConv2dBatchNorm2d)):
+            continue
+
+        nbits_acts = module.weight_spec.nbits
+        nbits_weights = module.input_spec.nbits
+
+        new_nbits_acts = specs[name]["input"].nbits
+        new_nbits_weights = specs[name]["weight"].nbits
+
+        # assert divisibility
+        assert (
+            nbits_acts % new_nbits_acts == 0
+        ), f"new_nbits_acts {new_nbits_acts} not divisible by nbits_acts {nbits_acts}"
+        assert (
+            nbits_weights % new_nbits_weights == 0
+        ), f"new_nbits_weights {new_nbits_weights} not divisible by nbits_weights {nbits_weights}"
+
+        scale_weights = module.weight_info.scale
+        scale_acts = module.input_info.scale
+
+        reduce_ratio_weights = new_nbits_weights // nbits_weights
+        reduce_ratio_acts = new_nbits_acts // nbits_acts
+
+        new_scale_weights = scale_weights * reduce_ratio_weights
+        new_scale_acts = scale_acts * reduce_ratio_acts
+
+        # modify inplace
+        module.weight_info.scale = nn.Parameter(new_scale_weights, requires_grad=True)
+        module.input_info.scale = nn.Parameter(new_scale_acts, requires_grad=True)
+        module.weight_spec = specs[name]["weight"]
+        module.input_spec = specs[name]["input"]
+
+    return model
+
+
 def get_activations(model, data_loader, spec, move_to_cpu=False):
     if isinstance(data_loader, torch.Tensor):
         data_loader = [data_loader]
