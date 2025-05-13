@@ -1,12 +1,11 @@
 import argparse
-
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
-from compress.quantization import prepare_for_qat
+from compress.quantization import prepare_for_qat, get_fuse_bn_keys
 from compress.experiments import (
     load_vision_model,
     get_cifar10_modifier,
@@ -43,21 +42,21 @@ class TwoConvAdapter(nn.Module):
 
 
 parser = argparse.ArgumentParser(
-    description="CIFAR‑10 QAT with feature‑KD (2‑conv adapters)"
+    description="CIFAR-10 QAT with feature-KD (2-conv adapters)"
 )
 parser.add_argument(
-    "--nbits", default=2, type=int, help="bit‑width for student activations & weights"
+    "--nbits", default=2, type=int, help="bit-width for student activations & weights"
 )
 parser.add_argument(
     "--leave_last_layer_8_bits",
     type=lambda x: str(x).lower() == "true",
     default=True,
-    help="leave edge layers in 8‑bit precision",
+    help="leave edge layers in 8-bit precision",
 )
 parser.add_argument(
-    "--alpha", default=0.5, type=float, help="weight for CE vs feature‑KD loss (0‑1)"
+    "--alpha", default=0.5, type=float, help="weight for CE vs feature-KD loss (0-1)"
 )
-parser.add_argument("--epochs", default=100, type=int)
+parser.add_argument("--epochs", default=90, type=int)
 parser.add_argument("--batch_size", default=256, type=int)
 parser.add_argument("--val_batch_size", default=512, type=int)
 parser.add_argument("--model_name", type=str, default="resnet20")
@@ -78,10 +77,19 @@ assert 0.0 <= args.alpha <= 1.0, "alpha must be in [0,1]"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-common_tf = [transforms.ToTensor(), transforms.Normalize(cifar10_mean, cifar10_std)]
+common_tf = [transforms.ToTensor(), transforms.Normalize((cifar10_mean), (cifar10_std))]
 train_loader = torch.utils.data.DataLoader(
     datasets.CIFAR10(
-        "./data", True, download=True, transform=transforms.Compose(common_tf)
+        "./data",
+        True,
+        download=True,
+        transform=transforms.Compose(
+            [
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(32, padding=4),
+                *common_tf,
+            ],
+        ),
     ),
     batch_size=args.batch_size,
     shuffle=True,
@@ -108,14 +116,14 @@ for p in teacher.parameters():
 
 print("Preparing student for QAT…")
 stu_raw = load_vision_model(
-    args.model_name,
-    pretrained_path=args.pretrained_path,
+    "resnet20",
+    pretrained_path="resnet20.pth",
     strict=True,
-    modifier_before_load=get_cifar10_modifier(args.model_name),
+    modifier_before_load=get_cifar10_modifier("resnet20"),
     model_args={"num_classes": 10},
 )
 quant_specs = get_recipe_quant(args.model_name)(
-    bits_activation=args.nbits,
+    bits_activation=2,
     bits_weight=args.nbits,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
     clip_percentile=0.99,
@@ -125,11 +133,14 @@ student = prepare_for_qat(
     stu_raw,
     specs=quant_specs,
     use_lsq=True,
-    use_PACT=True,
-    data_batch=next(iter(train_loader))[0][:4].to(device),
-    online=True,
+    data_batch=next(iter(train_loader))[0][:100].to(device),
+    method_args={"online": False},
+    fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 ).to(device)
 
+writer = SummaryWriter()
+
+print(student)
 layer_names = (
     ["layer1", "layer2", "layer3", "layer4"]
     if args.model_name == "resnet18"
@@ -139,7 +150,7 @@ teacher_feats, student_feats = {}, {}
 teacher_hooks = attach_feature_hooks(teacher, layer_names, teacher_feats)
 student_hooks = attach_feature_hooks(student, layer_names, student_feats)
 
-dummy = next(iter(train_loader))[0][:4].to(device)
+dummy = next(iter(train_loader))[0][:100].to(device)
 with torch.no_grad():
     teacher(dummy)
     student(dummy)
@@ -163,12 +174,29 @@ student_feats.clear()
 criterion_ce = nn.CrossEntropyLoss()
 criterion_mse = nn.MSELoss()
 
-optimizer_student = torch.optim.AdamW(student.parameters(), lr=1e-4)
-optimizer_matchers = torch.optim.AdamW(
-    [p for m in estimators.values() for p in m.parameters()], lr=1e-4
+optimizer_student = torch.optim.SGD(
+    student.parameters(),
+    lr=0.001,
+    momentum=0.9,
+    weight_decay=5e-4,
+    nesterov=True,
 )
-scheduler_student = StepLR(optimizer_student, step_size=2, gamma=0.1)
-scheduler_matchers = StepLR(optimizer_matchers, step_size=2, gamma=0.1)
+
+optimizer_matchers = torch.optim.SGD(
+    [p for m in estimators.values() for p in m.parameters()],
+    lr=0.01,
+    momentum=0.9,
+    weight_decay=5e-4,
+    nesterov=True,
+)
+
+scheduler_student = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer_student, T_max=args.epochs
+)
+
+scheduler_matchers = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer_matchers, T_max=args.epochs
+)
 
 print("Starting training…")
 for epoch in range(1, args.epochs + 1):
@@ -177,7 +205,10 @@ for epoch in range(1, args.epochs + 1):
         est.train()
     running_loss = 0.0
 
-    for images, labels in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
+    for batch_idx, (images, labels) in enumerate(
+        tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
+    ):
+        global_step = (epoch - 1) * len(train_loader) + batch_idx
         images, labels = images.to(device, non_blocking=True), labels.to(
             device, non_blocking=True
         )
@@ -191,8 +222,8 @@ for epoch in range(1, args.epochs + 1):
         ce_loss = criterion_ce(logits_s, labels)
         kd_losses = [
             criterion_mse(
-                estimators[n](student_feats[n]).view(-1),
-                teacher_feats[n].detach().view(-1),
+                estimators[n](student_feats[n]).reshape(-1),
+                teacher_feats[n].detach().reshape(-1),
             )
             for n in layer_names
         ]
@@ -201,19 +232,42 @@ for epoch in range(1, args.epochs + 1):
 
         optimizer_student.zero_grad(set_to_none=True)
         loss.backward(retain_graph=args.matcher_steps > 1)
+
+        # log per-layer weight gradient norms
+        for name, param in student.named_parameters():
+            if "weight" in name and param.grad is not None:
+                writer.add_scalar(
+                    f"grad_student/{name.replace('.', '/')}",
+                    param.grad.norm().item(),
+                    global_step,
+                )
+
+        writer.add_scalar("train/ce_loss", ce_loss.item(), global_step)
+        writer.add_scalar("train/kd_loss", kd_loss.item(), global_step)
+        writer.add_scalar("train/loss", loss.item(), global_step)
         optimizer_student.step()
 
-        for _ in range(args.matcher_steps):
+        for i in range(args.matcher_steps):
             optimizer_matchers.zero_grad(set_to_none=True)
             kd_losses = [
                 criterion_mse(
-                    estimators[n](student_feats[n].detach()).view(-1),
-                    teacher_feats[n].detach().view(-1),
+                    estimators[n](student_feats[n].detach()).reshape(-1),
+                    teacher_feats[n].detach().reshape(-1),
                 )
                 for n in layer_names
             ]
             kd_loss = torch.stack(kd_losses).mean()
             kd_loss.backward()
+            if i == 0:
+                grad_norm_matcher = torch.sqrt(
+                    sum(
+                        p.grad.norm() ** 2
+                        for m in estimators.values()
+                        for p in m.parameters()
+                        if p.grad is not None
+                    )
+                )
+                writer.add_scalar("grad/matcher", grad_norm_matcher, global_step)
             optimizer_matchers.step()
 
         running_loss += loss.item() * images.size(0)
@@ -237,8 +291,12 @@ for epoch in range(1, args.epochs + 1):
     acc = 100.0 * correct / total
 
     print(
-        f"Epoch {epoch:3d} | Loss {avg_loss:.4f} | Val Acc {acc:.2f}% | KD {kd_loss.item():.4f}"
+        f"Epoch {epoch:3d} | Loss {avg_loss:.4f} | Val Acc {acc:.2f}% | KD {kd_loss.item():.4f}"
     )
+    writer.add_scalar("train/avg_loss", avg_loss, epoch)
+    writer.add_scalar("val/accuracy", acc, epoch)
 
 for h in teacher_hooks + student_hooks:
     h.remove()
+
+writer.close()

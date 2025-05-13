@@ -78,12 +78,12 @@ regularizer = SingularValuesRegularizer(
 
 num_epochs = 100
 
-START = 0.0
-END = 0.004
+START = 0.01
+END = 0.001
 import math
 
 
-def weight_schedule(ep, T_0=10, T_mult=1):
+def weight_schedule(ep, T_0=20, T_mult=1):
     T_i = T_0
     ep_i = ep
     # determine current cycle

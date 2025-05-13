@@ -2,6 +2,11 @@ from compress.quantization import (
     IntAffineQuantizationSpec,
     IntAffineQuantizationMode,
 )
+from compress.quantization.common import (
+    PerTensor,
+    ConvWeightsPerOutChannel,
+    LinearWeightsPerOutChannel,
+)
 import torchvision
 import torch
 from compress.experiments.cifar_resnet import resnet20
@@ -309,6 +314,10 @@ def get_resnet20_recipe_quant(
     clip_percentile: float,
     leave_edge_layers_8_bits: bool,
     symmetric: bool,
+    conv_weight_grouper=ConvWeightsPerOutChannel(),
+    conv_activation_grouper=PerTensor(),
+    linear_weight_grouper=LinearWeightsPerOutChannel(),
+    linear_activation_grouper=PerTensor(),
 ):
 
     if symmetric:
@@ -331,15 +340,22 @@ def get_resnet20_recipe_quant(
             if l in (2, 3):
                 after_relu.add(f"layer{l}.0.shortcut.0")
 
-        after_relu.add("fc")
+        after_relu.add("linear")
 
         weight_specs = {}
+
+        def _get_grouper(name, is_w):
+            if "linear" in name:
+                return linear_weight_grouper if is_w else linear_activation_grouper
+            return conv_weight_grouper if is_w else conv_activation_grouper
+
         for k in after_relu:
             weight_specs[k] = IntAffineQuantizationSpec(
                 nbits=bits_weight,
                 signed=True,
                 quant_mode=IntAffineQuantizationMode.SYMMETRIC,
                 percentile=clip_percentile,
+                grouper=_get_grouper(k, True),
             )
 
         for k in non_after_relu:
@@ -348,6 +364,7 @@ def get_resnet20_recipe_quant(
                 signed=True,
                 quant_mode=IntAffineQuantizationMode.SYMMETRIC,
                 percentile=clip_percentile,
+                grouper=_get_grouper(k, True),
             )
 
         input_specs = {}
@@ -358,6 +375,7 @@ def get_resnet20_recipe_quant(
                 signed=False,
                 quant_mode=IntAffineQuantizationMode.SYMMETRIC,
                 percentile=clip_percentile,
+                grouper=_get_grouper(k, False),
             )
 
         for k in non_after_relu:
@@ -366,15 +384,17 @@ def get_resnet20_recipe_quant(
                 signed=True,
                 quant_mode=IntAffineQuantizationMode.SYMMETRIC,
                 percentile=clip_percentile,
+                grouper=_get_grouper(k, False),
             )
 
         if leave_edge_layers_8_bits:
-            for k in ("fc", "conv1"):
+            for k in ("linear", "conv1"):
                 input_specs[k] = IntAffineQuantizationSpec(
                     nbits=8,
                     signed=k == "conv1",
                     quant_mode=IntAffineQuantizationMode.SYMMETRIC,
                     percentile=clip_percentile,
+                    grouper=_get_grouper(k, False),
                 )
 
                 weight_specs[k] = IntAffineQuantizationSpec(
@@ -382,8 +402,8 @@ def get_resnet20_recipe_quant(
                     signed=True,
                     quant_mode=IntAffineQuantizationMode.SYMMETRIC,
                     percentile=clip_percentile,
+                    grouper=_get_grouper(k, True),
                 )
-
         quant_specs = {}
         for k in weight_specs.keys():
             quant_specs[k] = {

@@ -34,6 +34,8 @@ args = parser.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(
     [
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomCrop(32, padding=4),
         transforms.ToTensor(),
         transforms.Normalize(cifar10_mean, cifar10_std),
     ]
@@ -64,29 +66,28 @@ model = load_vision_model(
 ).to(device)
 
 specs = get_resnet20_recipe_quant(
-    bits_activation=args.nbits,
+    bits_activation=4,
     bits_weight=args.nbits,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
     clip_percentile=0.99,
     symmetric=True,
 )
 
-
 model = prepare_for_qat(
     model,
     specs=specs,
     use_lsq=True,
     use_PACT=True,
-    data_batch=next(iter(train_loader))[0][:4].to(device),
+    data_batch=next(iter(train_loader))[0][:100].to(device),
     fuse_bn_keys=get_fuse_bn_keys("resnet20"),
-    online=True,
+    online=False,
 )  # W8A8
 print(model)
 model = model.to(device)
 criterion = nn.CrossEntropyLoss()
 
-optimizer = optim.AdamW(model.parameters(), lr=0.0001)
-scheduler = StepLR(optimizer, step_size=8, gamma=0.1)
+optimizer = optim.AdamW(model.parameters(), lr=0.001)
+scheduler = StepLR(optimizer, step_size=20, gamma=0.1)
 
 for epoch in range(100):
     model.train()

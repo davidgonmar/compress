@@ -98,8 +98,14 @@ class QATLinear(nn.Module):
         nn.Linear,
     )
 
-    def __repr__(self):
-        return f"QATLinear({self.in_features}, {self.out_features}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
+
+def __repr__(self):
+    return (
+        f"QATLinear(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
+        f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
+        f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
+        f"{self.in_features}, {self.out_features}, {self.bias})"
+    )
 
 
 class QATConv2d(nn.Module):
@@ -155,7 +161,13 @@ class QATConv2d(nn.Module):
     )
 
     def __repr__(self):
-        return f"QATConv({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
+        return (
+            f"QATConv2d(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
+            f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
+            f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
+            f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
+        )
 
 
 def _get_bn_and_conv_weight(conv, bn):
@@ -243,7 +255,13 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
     )
 
     def __repr__(self):
-        return f"FusedQATConv2dBatchNorm({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, act_bits={self.input_spec.nbits}, weight_bits={self.weight_spec.nbits})"
+        return (
+            f"FusedQATConv2dBatchNorm(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
+            f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
+            f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
+            f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
+        )
 
 
 # ============================================================
@@ -255,34 +273,46 @@ class LSQQuantize(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, scale, info):
         assert info.zero_point is None, "Zero point is not supported"
+        assert (
+            info.scale is scale
+        ), "Scale must be the same as the one used in calibration"
         ctx.save_for_backward(x, scale)
         ctx.qmin = info.qmin
         ctx.qmax = info.qmax
+        ctx.spec = info.spec
         return fake_quantize(x, info)
 
     @staticmethod
     def backward(ctx, grad_output):
         x, scale = ctx.saved_tensors
         qmin, qmax = ctx.qmin, ctx.qmax
-        v_s = x / scale
+        spec = ctx.spec
+
+        # print(x.shape, scale.shape, grad_output.shape,ctx.spec.grouper.group(x).shape)
+        x_grouped = spec.grouper.group(x)
+        v_s = x_grouped / scale
+        # print(grad_output)
         mask = (v_s >= qmin) & (v_s <= qmax)
-        x_grad = grad_output * mask.float()
+        x_grad = ctx.spec.grouper.group(grad_output) * mask.float()
         s_grad = (
-            (
-                torch.where(
-                    -qmin >= v_s,
-                    -qmin,
-                    torch.where(qmax <= v_s, qmax, -v_s + torch.round(v_s)),
-                )
-                * grad_output
+            torch.where(
+                v_s <= qmin,
+                qmin,
+                torch.where(qmax <= v_s, qmax, -v_s + torch.round(v_s).detach()),
             )
-            .sum()
-            .reshape(scale.shape)
-        )
+            * ctx.spec.grouper.group(grad_output)
+        ).sum(dim=0)
+        """
         # rescale as the paper mentions
         rescaling = 1 / math.sqrt((x.numel() * (qmax - qmin)))
-        s_grad = s_grad * rescaling
-        return x_grad, s_grad, None
+        """
+        # the previous is for the per-tensor case
+        # generically, we need to rescale by the number of elements in the group
+        numels_grp = x_grouped.shape[0]  # shape[1] is the number of groups
+
+        s_grad = s_grad * (1 / math.sqrt(numels_grp * (qmax - qmin)))
+        # print(s_grad)
+        return ctx.spec.grouper.ungroup(x_grad, x), s_grad, None
 
 
 def _forward_lsq(
@@ -313,6 +343,7 @@ def _lsq_prepare(
     self.weight_spec = weight_spec
     self.weight_info = calibrate(layer.weight, weight_spec)
     self.weight_info.scale.requires_grad_(True)
+
     self.weight = nn.Parameter(layer.weight, requires_grad=False).requires_grad_(True)
     self.bias = (
         nn.Parameter(layer.bias, requires_grad=False).requires_grad_(True)
@@ -349,6 +380,7 @@ def _lsq_to_quant(self, orig_layer_cls, quant_layer_cls):
         if not self.online
         else calibrate(torch.empty(1), self.input_spec)
     )
+
     rt = quant_layer_cls(self.weight_info.spec, input_info, orig_layer_cls(**kwargs))
     rt.weight_info = self.weight_info
     rt.weight = torch.nn.Parameter(
@@ -366,12 +398,12 @@ class LSQLinear(nn.Module):
         data_batch: torch.Tensor = None,
         online: bool = False,
     ):
+        super().__init__()
         _extract_kwargs_from_orig_layer(
             self,
             ["in_features", "out_features", "bias"],
             original_layer,
         )
-        super().__init__()
         _lsq_prepare(self, original_layer, weight_spec, input_spec, data_batch, online)
 
     def forward(self, x: torch.Tensor):
@@ -385,8 +417,10 @@ class LSQLinear(nn.Module):
 
     def __repr__(self):
         return (
-            f"LSQQuantizedLinear({self.in_features}, {self.out_features}, {self.bias}), "
-            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
+            f"LSQQuantizedLinear(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
+            f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
+            f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
+            f"{self.in_features}, {self.out_features}, {self.bias})"
         )
 
     to_linear = partial(
@@ -443,9 +477,11 @@ class LSQConv2d(nn.Module):
 
     def __repr__(self):
         return (
-            f"LSQQuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, "
-            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups}), "
-            f"weight_signed={self.weight_info.spec.signed}, input_signed={self.input_spec.signed}"
+            f"LSQConv2d(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
+            f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
+            f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
+            f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
         )
 
     to_conv2d = partial(
@@ -514,6 +550,15 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
             padding=self.conv.padding,
             dilation=self.conv.dilation,
             groups=self.conv.groups,
+        )
+
+    def __repr__(self):
+        return (
+            f"FusedLSQConv2dBatchNorm(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
+            f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
+            f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
+            f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
         )
 
 
