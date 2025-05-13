@@ -40,6 +40,7 @@ class TwoConvAdapter(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
 class ComplexAdapter(nn.Module):
     def __init__(self, c_in: int, c_out: int):
         super().__init__()
@@ -53,9 +54,9 @@ class ComplexAdapter(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden, c_out, kernel_size=3, padding=1, bias=False),
         )
+
     def forward(self, x):
         return self.net(x)
-
 
 
 parser = argparse.ArgumentParser(
@@ -183,7 +184,11 @@ estimators = {}
 for name in layer_names:
     c_in = student_feats[name].shape[1]
     c_out = teacher_feats[name].shape[1]
-    estimators[name] = TwoConvAdapter(c_in, c_out).to(device) if not args.complex_adapter else ComplexAdapter(c_in, c_out).to(device)
+    estimators[name] = (
+        TwoConvAdapter(c_in, c_out).to(device)
+        if not args.complex_adapter
+        else ComplexAdapter(c_in, c_out).to(device)
+    )
 
 print(
     {

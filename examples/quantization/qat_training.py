@@ -12,9 +12,7 @@ from compress.experiments import (
     cifar10_mean,
     cifar10_std,
 )
-from compress.quantization.recipes import (
-    get_resnet20_recipe_quant,
-)
+from compress.quantization.recipes import get_recipe_quant
 
 
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
@@ -22,13 +20,41 @@ parser.add_argument(
     "--method", default="qat", type=str, help="method to use"
 )  # qat, lsq
 parser.add_argument(
-    "--nbits", default=2, type=int, help="number of bits for quantization"
+    "--nbits_activations", default=2, type=int, help="number of bits for quantization"
+)
+parser.add_argument(
+    "--nbits_weights",
+    default=2,
+    type=int,
+    help="number of bits for quantization (weights)",
 )
 parser.add_argument(
     "--leave_last_layer_8_bits",
     type=lambda x: (str(x).lower() == "true"),
     default=True,
 )
+parser.add_argument(
+    "--model_name",
+    default="resnet20",
+    type=str,
+    help="model name to use",
+)
+
+parser.add_argument(
+    "--pretrained_path",
+    default="resnet20.pth",
+    type=str,
+    help="path to pretrained model",
+)
+
+parser.add_argument(
+    "--batch_size", default=256, type=int, help="batch size for training"
+)
+
+parser.add_argument(
+    "--epochs", default=90, type=int, help="number of epochs for training"
+)
+
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,17 +83,17 @@ val_dataset = datasets.CIFAR10(
 )
 val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=512, shuffle=False)
 model = load_vision_model(
-    "resnet20",
-    pretrained_path="resnet20.pth",
+    args.model_name,
+    pretrained_path=args.pretrained_path,
     strict=True,
-    modifier_before_load=get_cifar10_modifier("resnet20"),
+    modifier_before_load=get_cifar10_modifier(args.model_name),
     modifier_after_load=None,
     model_args={"num_classes": 10},
 ).to(device)
 
-specs = get_resnet20_recipe_quant(
-    bits_activation=4,
-    bits_weight=args.nbits,
+specs = get_recipe_quant(args.model_name)(
+    bits_activation=args.nbits_activations,
+    bits_weight=args.nbits_weights,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
     clip_percentile=0.99,
     symmetric=True,
@@ -76,20 +102,24 @@ specs = get_resnet20_recipe_quant(
 model = prepare_for_qat(
     model,
     specs=specs,
-    use_lsq=True,
-    use_PACT=True,
+    use_lsq=args.method == "lsq",
     data_batch=next(iter(train_loader))[0][:100].to(device),
-    fuse_bn_keys=get_fuse_bn_keys("resnet20"),
-    online=False,
-)  # W8A8
+    fuse_bn_keys=get_fuse_bn_keys(args.model_name),
+)
+
 print(model)
 model = model.to(device)
 criterion = nn.CrossEntropyLoss()
 
-optimizer = optim.AdamW(model.parameters(), lr=0.001)
+optimizer = optim.SGD(
+    model.parameters(),
+    lr=0.01,
+    momentum=0.9,
+    weight_decay=5e-4,
+)
 scheduler = StepLR(optimizer, step_size=20, gamma=0.1)
 
-for epoch in range(100):
+for epoch in range(args.epochs):
     model.train()
     train_loss_acc = 0.0
     for images, labels in tqdm(
