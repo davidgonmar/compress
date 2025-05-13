@@ -71,6 +71,8 @@ model = load_vision_model(
     model_args={"num_classes": 10},
 ).to(device)
 
+print(model)
+
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list))
 bits_schedule.sort()
 schedule_index = 0
@@ -116,6 +118,7 @@ for epoch in range(args.epochs):
             symmetric=True,
         )
         requantize_lsq(model, specs=specs)
+        print(model)
         schedule_index += 1
 
     model.train()
