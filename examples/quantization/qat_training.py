@@ -13,6 +13,7 @@ from compress.experiments import (
     cifar10_std,
 )
 from compress.quantization.recipes import get_recipe_quant
+import json
 
 torch.manual_seed(0)
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
@@ -66,6 +67,8 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
+
+results = []
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(
@@ -163,3 +166,14 @@ for epoch in range(args.epochs):
 
     accuracy = 100 * correct / total
     print(f"Epoch {epoch + 1}, Accuracy: {accuracy:.2f}%")
+    results.append(
+        {
+            "epoch": epoch + 1,
+            "loss": train_loss_acc / len(train_loader.dataset),
+            "accuracy": accuracy,
+        }
+    )
+
+filename = f"qat_results_w{args.nbits_weights}a{args.nbits_activations}.json"
+with open(filename, "w") as f:
+    json.dump(results, f, indent=4)
