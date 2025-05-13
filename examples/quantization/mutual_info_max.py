@@ -40,6 +40,27 @@ class TwoConvAdapter(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class ComplexAdapter(nn.Module):
+    def __init__(self, c_in: int, c_out: int):
+        super().__init__()
+        hidden = max(c_in, c_out)
+        self.net = nn.Sequential(
+            nn.Conv2d(c_in, hidden, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(hidden, hidden, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(hidden, c_out, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c_out),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
 
 parser = argparse.ArgumentParser(
     description="CIFAR-10 QAT with feature-KD (2-conv adapters)"
@@ -72,6 +93,13 @@ parser.add_argument(
     type=int,
     help="number of matcher updates per student update",
 )
+
+parser.add_argument(
+    "--complex_adapter",
+    action="store_true",
+    help="use complex adapter instead of 2-conv adapter",
+)
+
 args = parser.parse_args()
 assert 0.0 <= args.alpha <= 1.0, "alpha must be in [0,1]"
 
@@ -159,7 +187,7 @@ estimators = {}
 for name in layer_names:
     c_in = student_feats[name].shape[1]
     c_out = teacher_feats[name].shape[1]
-    estimators[name] = TwoConvAdapter(c_in, c_out).to(device)
+    estimators[name] = TwoConvAdapter(c_in, c_out).to(device) if not args.complex_adapter else ComplexAdapter(c_in, c_out).to(device)
 
 print(
     {
