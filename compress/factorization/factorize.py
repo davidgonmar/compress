@@ -432,7 +432,7 @@ def to_low_rank_global(
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-        print("Replacing", name, "ratio=", selected_indices_per_module[name])
+        # print("Replacing", name, "ratio=", selected_indices_per_module[name])
         setattr(
             parent_module,
             attr_name,
