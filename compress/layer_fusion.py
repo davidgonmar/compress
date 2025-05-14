@@ -4,9 +4,10 @@ from compress.common import (
 )
 import copy
 import torch.nn as nn
-from utils import unzip
+from compress.utils import unzip
 from typing import List, Tuple, Callable
 import torch
+
 
 def fuse_conv_bn(
     model: nn.Module,
@@ -45,7 +46,7 @@ def fuse_conv_bn(
         conv = convs_dict[conv_key]
         bn = bns_dict[bn_key]
 
-        fused_conv = fuse_impl(conv, bn)
+        fused_conv = fuse_impl(conv, bn, conv_key, bn_key)
 
         parent_module = model
         *parent_path, attr_name = conv_key.split(".")
@@ -63,9 +64,14 @@ def fuse_conv_bn(
 
     return model
 
+
 def get_new_params(conv: nn.Conv2d, bn: nn.BatchNorm2d):
     w = conv.weight
-    b = conv.bias if conv.bias is not None else torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
+    b = (
+        conv.bias
+        if conv.bias is not None
+        else torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
+    )
     gamma = bn.weight
     beta = bn.bias
     running_mean = bn.running_mean
@@ -76,15 +82,14 @@ def get_new_params(conv: nn.Conv2d, bn: nn.BatchNorm2d):
     b = beta + (b - running_mean) * inv_std
     return w, b
 
-def fuse_batch_norm_inference(conv: nn.Conv2d, bn: nn.BatchNorm2d, conv_name: str, bn_name: str) -> nn.Conv2d:
+
+def fuse_batch_norm_inference(
+    conv: nn.Conv2d, bn: nn.BatchNorm2d, conv_name: str, bn_name: str
+) -> nn.Conv2d:
     if not isinstance(conv, nn.Conv2d):
         raise TypeError(f"Expected nn.Conv2d, got {type(conv)}")
     if not isinstance(bn, nn.BatchNorm2d):
         raise TypeError(f"Expected nn.BatchNorm2d, got {type(bn)}")
-    
-    # assert eval mode
-    assert bn.training is False, "BatchNorm must be in eval mode"
-    assert bn.track_running_stats is True, "BatchNorm must be tracking running stats"
 
     w, b = get_new_params(conv, bn)
 

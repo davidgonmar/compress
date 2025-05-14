@@ -43,7 +43,7 @@ from compress.common import (
     keys_passlist_should_do,
 )
 
-from compress.layer_fusion import fold_batch_norm_inference, fuse_conv_bn
+from compress.layer_fusion import fuse_batch_norm_inference, fuse_conv_bn
 from torch import nn
 from tqdm import tqdm
 import torch
@@ -93,49 +93,11 @@ def get_quant_dict(
 
     return {
         name: {
-            "input": input_spec,
-            "weight": weight_spec,
+            "input": copy.deepcopy(input_spec),
+            "weight": copy.deepcopy(weight_spec),
         }
         for name, module in mods
     }
-
-
-def lsq_fold_batch_norm(
-    conv: nn.Conv2d,
-    bn: nn.BatchNorm2d,
-    weight_spec: IntAffineQuantizationSpec,
-    input_spec: IntAffineQuantizationSpec,
-    data_batch=None,
-    online=False,
-):
-    w = conv.weight.detach().clone()
-    if conv.bias is None:
-        b = torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
-    else:
-        b = conv.bias.detach().clone()
-
-    gamma = bn.weight
-    beta = bn.bias
-    running_mean = bn.running_mean
-    running_var = bn.running_var
-    eps = bn.eps
-
-    inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
-
-    w = w * inv_std.reshape(-1, 1, 1, 1)
-
-    b = beta + (b - running_mean) * inv_std
-
-    mod = FusedLSQConv2dBatchNorm2d(
-        weight_spec,
-        input_spec,
-        conv,
-        bn,
-        data_batch=data_batch,
-        online=online,
-    )
-
-    return mod
 
 
 resnet20_fuse_pairs = [
@@ -185,7 +147,7 @@ def to_quantized_online(
     if not inplace:
         model = copy.deepcopy(model)
     if fuse_bn_keys is not None:
-        fuse_conv_bn(model, fuse_bn_keys, fuse_impl=fold_batch_norm_inference)
+        fuse_conv_bn(model, fuse_bn_keys, fuse_impl=fuse_batch_norm_inference)
 
     modules_to_replace = gather_submodules(
         model,
@@ -223,7 +185,6 @@ def to_quantized_online(
     return model
 
 
-
 def fuse_conv_bn_qat(
     conv: nn.Conv2d,
     bn: nn.BatchNorm2d,
@@ -231,8 +192,8 @@ def fuse_conv_bn_qat(
     bn_name: str,
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
 ):
-    if conv_name not in specs or bn_name not in specs:
-        raise KeyError(f"Conv layer {conv_name} or BN layer {bn_name} not found in model")
+    if conv_name not in specs:
+        raise KeyError(f"Conv layer {conv_name} not found in model")
 
     weight_spec = specs[conv_name]["weight"]
     input_spec = specs[conv_name]["input"]
@@ -243,7 +204,8 @@ def fuse_conv_bn_qat(
         conv,
         bn,
     )
-            
+
+
 def fuse_conv_bn_lsq(
     conv: nn.Conv2d,
     bn: nn.BatchNorm2d,
@@ -253,8 +215,8 @@ def fuse_conv_bn_lsq(
     data_batch=None,
     online=False,
 ):
-    if conv_name not in specs or bn_name not in specs:
-        raise KeyError(f"Conv layer {conv_name} or BN layer {bn_name} not found in model")
+    if conv_name not in specs:
+        raise KeyError(f"Conv layer {conv_name} not found in model")
 
     weight_spec = specs[conv_name]["weight"]
     input_spec = specs[conv_name]["input"]
@@ -267,7 +229,7 @@ def fuse_conv_bn_lsq(
         data_batch=data_batch,
         online=online,
     )
-    
+
 
 def prepare_for_qat(
     model: nn.Module,
@@ -289,7 +251,8 @@ def prepare_for_qat(
             _model_acts = fuse_conv_bn(
                 model,
                 fuse_bn_keys,
-                fuse_impl=fold_batch_norm_inference,
+                fuse_impl=fuse_batch_norm_inference,
+                inplace=False,
             )
         else:
             _model_acts = model
@@ -317,7 +280,6 @@ def prepare_for_qat(
                     fuse_conv_bn_qat,
                     specs=specs,
                 ),
-                specs=specs,
             )
     modules_to_replace = gather_submodules(
         model,
@@ -394,7 +356,6 @@ def requantize_lsq(
         new_nbits_acts = specs[name]["input"].nbits
         new_nbits_weights = specs[name]["weight"].nbits
 
-
         scale_weights = module.weight_info.scale
         scale_acts = module.input_info.scale
 
@@ -451,9 +412,9 @@ def to_quantized_offline(
     model: nn.Module,
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     inplace=True,
-    should_do=default_should_do,
     data_loader=None,
     activations=None,
+    fuse_bn_keys=None,
     **kwargs,
 ):
 
@@ -464,9 +425,15 @@ def to_quantized_offline(
         activations is None
     ), "Either data_loader or activations should be provided"
 
+    if fuse_bn_keys is not None:
+        fuse_conv_bn(
+            model,
+            fuse_bn_keys,
+            fuse_impl=fuse_batch_norm_inference,
+        )
     if activations is None:
         # first, estimate the quantization parameters with hooks
-        layer_and_input_acts = get_activations(model, data_loader)
+        layer_and_input_acts = get_activations(model, data_loader, specs)
 
     else:
         layer_and_input_acts = activations

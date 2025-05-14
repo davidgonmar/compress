@@ -72,7 +72,6 @@ model = load_vision_model(
 ).to(device)
 
 
-
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list[1:]))
 bits_schedule.sort()
 schedule_index = 0
