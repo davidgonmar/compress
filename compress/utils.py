@@ -1,4 +1,5 @@
 from typing import List
+import torch
 
 
 def extract_weights(
@@ -33,3 +34,12 @@ def dims_sub(dims1: list[int], dims2: list[int]):
 
 def unzip(lst: List[tuple]):
     return tuple(list(map(lambda x: x[i], lst)) for i in range(len(lst[0])))
+
+
+def get_all_convs_and_linears(model):
+    res = []
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+            res.append(name)
+
+    return res

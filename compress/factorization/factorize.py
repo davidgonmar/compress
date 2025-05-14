@@ -208,15 +208,18 @@ def plot_singular_values(model: nn.Module, should_do: Callable = default_should_
     print("Done plotting singular values")
 
 
-def maximize_energy_pulp(cum_energy_vectors, j):
+def maximize_energy_pulp(cum_energy_vectors, cumulative_cost_vectors, total_cost):
     import pulp
 
-    # We are given N vectors of cumulative energies. We want to, by selecting a total of j indices for all vectors (consecutive in each vector),
-    # maximize the sum of energies at the selected indices. This can be formulated as a binary linear program:
+    # We are given N vectors of cumulative energies and of cumulative vectors. We want to, by selecting a (cumulative)
+    # subset of indices from each vector (cumulative in the sense that if j is chosen, all(j' < j) are also chosen), maximize
+    # the sum of energies at the selected indices such that the sum of the cumulative costs at the selected indices is less than or equal to the total cost.
+
     # Let x_{i, j} be a binary variable indicating whether the j-th index in the i-th vector is selected.
     # Then, we want to maximize sum_{i, j} x_{i, j} * cum_energy_vectors[i][j] subject to the constraints:
     # 1. sum_{j} x_{i, j} = 1 for all i
-    # 2. sum_{i, j} j * x_{i, j} = j
+    # 2. sum_{i, j} j * x_{i, j} * cost_vectors[i][j] <= total_cost
+
     prob = pulp.LpProblem("MaximizeEnergy", pulp.LpMaximize)
 
     selection_vars = {}
@@ -230,20 +233,22 @@ def maximize_energy_pulp(cum_energy_vectors, j):
         for vec_idx, vec in enumerate(cum_energy_vectors)
         for idx in range(len(vec))
     )
+
     prob += (
         pulp.lpSum(
-            idx * selection_vars[(vec_idx, idx)]
+            selection_vars[(vec_idx, idx)]
+            * cumulative_cost_vectors[vec_idx][idx].item()
             for vec_idx, vec in enumerate(cum_energy_vectors)
             for idx in range(len(vec))
         )
-        == j
+        <= total_cost
     )
     for vec_idx, vec in enumerate(cum_energy_vectors):
         prob += (
             pulp.lpSum(selection_vars[(vec_idx, idx)] for idx in range(len(vec))) == 1
         )
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=10))
+    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=1))
 
     selected_indices = {}
     for vec_idx, vec in enumerate(cum_energy_vectors):
@@ -253,26 +258,98 @@ def maximize_energy_pulp(cum_energy_vectors, j):
     print("Time to solve:", prob.solutionTime)
     print("Status:", pulp.LpStatus[prob.status])
     print("Objective value:", pulp.value(prob.objective))
+    print("Exhausted metric:")
+    # prints the total used cost
+    print(
+        sum(
+            cumulative_cost_vectors[i][selected_indices[i]].item()
+            for i in range(len(cum_energy_vectors))
+        )
+    )
     return selected_indices
+
+
+def generate_cost_flops_linear(mat, size):
+    # generates a vector of length s.shape[0]
+    # where each element is the cost of selecting the corresponding singular value
+    # in the context of a linear layer
+
+    # a decomposed linear layer has shapes W_o in [O, R] and W_i in [R, I]
+    # flops(R) = B * I * R + O * R
+
+    r_vec = torch.arange(0, min(mat.shape[0], mat.shape[1]), 1)
+    i, o = mat.shape
+    return r_vec * (i + o)
+
+
+def generate_cost_flops_conv2d(mat, out_size):
+    # a separated convolution requires
+    # flops(R) = R * C_in * H_k * W_k * H_out * W_out + C_out * R * H_out * W_out = R * H_out * W_out * (C_in * H_k * W_k + C_out)
+
+    R = torch.arange(
+        0, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]), 1
+    )
+
+    C_out, C_in, H_k, W_k = mat.shape
+    H_out, W_out = out_size[2], out_size[3]
+    return R * H_out * W_out * (C_in * H_k * W_k + C_out)
 
 
 # Given a total rank ratio, estimates the rank ratio for each layer
 def to_low_rank_global(
-    model: nn.Module, should_do: Callable = default_should_do, inplace=True, **kwargs
+    model: nn.Module,
+    ratio_to_keep,
+    keys,
+    input_shape,
+    metric="flops",
+    inplace=True,
+    **kwargs,
 ):
-    modules_to_replace = gather_submodules(
-        model,
-        should_do=should_do,
-    )
     if not inplace:
         model = copy.deepcopy(model)
+
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(keys),
+    )
+    reshapeds = []
+
+    rand_inp = torch.randn(input_shape).to(next(model.parameters()).device)
+
+    # get output sizes of every layer
+    hooks = []
+    sizes = []
+
+    def hook_fn(module, input, output):
+        if isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
+            sizes.append(output.shape)
+        elif isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
+            sizes.append(output.shape)
+        else:
+            raise ValueError("Module should be either Conv2d or Linear")
+
+    for name, module in modules_to_replace:
+        hook = module.register_forward_hook(hook_fn)
+        hooks.append(hook)
+
+    with torch.no_grad():
+        model(rand_inp)
+
+    for hook in hooks:
+        hook.remove()
+
+    assert len(sizes) == len(
+        modules_to_replace
+    ), "Sizes and modules to replace do not match"
 
     def _get_cumulative_energies(module):
         if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
             weight = module.weight.detach()
+            reshapeds.append(weight)
         elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
             reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
             weight = reshaped.detach()
+            reshapeds.append(reshaped)
         else:
             return None
 
@@ -283,11 +360,34 @@ def to_low_rank_global(
         _get_cumulative_energies(module) for _, module in modules_to_replace
     ]
 
-    n_rank_to_keep = (
-        sum(len(energy) for energy in cum_energies) * kwargs["ratio_to_keep"]
-    )
+    ws = [mod.weight.detach() for _, mod in modules_to_replace]
+    # costs
+    if metric == "rank":
+        costs = [torch.arange(0, len(energy), 1) for energy in cum_energies]
+        costs = [torch.cumsum(cost, 0) for cost in costs]
+    elif metric == "flops":
+        costs = [
+            (
+                generate_cost_flops_linear(w, out_size)
+                if len(out_size) == 2
+                else generate_cost_flops_conv2d(w, out_size)
+            )
+            / 1000000
+            for w, out_size in zip(ws, sizes)
+        ]
 
-    selected_indices = maximize_energy_pulp(cum_energies, n_rank_to_keep)
+    # print("lengths of costs")
+    # print([len(cost) for cost in cum_costs])
+    # print("lengths of energies")
+    # print([len(energy) for energy in cum_energies])
+    if metric == "rank":
+        n_rank_to_keep = sum(len(energy) for energy in cum_energies) * ratio_to_keep
+    elif metric == "flops":
+        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
+
+        print("total cost", n_rank_to_keep)
+
+    selected_indices = maximize_energy_pulp(cum_energies, costs, n_rank_to_keep)
 
     selected_indices_per_module = {}
     for i, (name, module) in enumerate(modules_to_replace):
@@ -302,17 +402,25 @@ def to_low_rank_global(
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-
+        # print("Replacing", name, "ratio=", selected_indices_per_module[name])
         setattr(
             parent_module,
             attr_name,
             (
                 LowRankLinear.from_linear(
-                    module, ratio_to_keep=selected_indices_per_module[name]
+                    module,
+                    keep_metric={
+                        "name": "rank_ratio_to_keep",
+                        "value": selected_indices_per_module[name],
+                    },
                 )
                 if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
                 else LowRankConv2d.from_conv2d(
-                    module, ratio_to_keep=selected_indices_per_module[name]
+                    module,
+                    keep_metric={
+                        "name": "rank_ratio_to_keep",
+                        "value": selected_indices_per_module[name],
+                    },
                 )
             ),
         )
@@ -587,55 +695,3 @@ def factorize_with_activation_aware_svd(
         )
 
     return model
-
-
-def hoyer_svd_sparsity_grad_adder(params: torch.Tensor, weight):
-    for param in params:
-        if param.dim() not in [2, 4]:
-            continue
-        if param.dim() == 4:
-            # reshape to (O, I * H * W) from (O, I, H, W)
-            param_rs = param.reshape(param.shape[0], -1)
-        else:
-            param_rs = param
-        U, S, Vt = torch.linalg.svd(param_rs)
-        fro = S.pow(2).sum().sqrt()
-        nuc = S.sum()
-        # crop either U or Vt
-        if U.shape[0] > Vt.shape[1]:
-            U = U[:, : Vt.shape[1]]
-        else:
-            Vt = Vt[: U.shape[0], :]
-        update = (1 / fro) * ((U @ Vt) - (nuc / (fro**2)) * param_rs)
-        if len(param.shape) == 4:
-            # reshape back to (O, I, H, W)
-            update = update.reshape(
-                param.shape[0], param.shape[1], param.shape[2], param.shape[3]
-            )
-        param.grad = (param.grad if param.grad is not None else 0) + (weight * update)
-
-
-def hoyer_svd_sparsity_grad_adder_given_svds(params, svds, weight):
-    for name, param in params:
-        if param.dim() not in [2, 4]:
-            continue
-        if param.dim() == 4:
-            # reshape to (O, I * H * W) from (O, I, H, W)
-            param_rs = param.reshape(param.shape[0], -1)
-        else:
-            param_rs = param
-        U, S, Vt = svds[name]
-        fro = S.pow(2).sum().sqrt()
-        nuc = S.sum()
-        # crop either U or Vt
-        if U.shape[0] > Vt.shape[1]:
-            U = U[:, : Vt.shape[1]]
-        else:
-            Vt = Vt[: U.shape[0], :]
-        update = (1 / fro) * ((U @ Vt) - (nuc / (fro**2)) * param_rs)
-        if len(param.shape) == 4:
-            # reshape back to (O, I, H, W)
-            update = update.reshape(
-                param.shape[0], param.shape[1], param.shape[2], param.shape[3]
-            )
-        param.grad = (param.grad if param.grad is not None else 0) + (weight * update)
