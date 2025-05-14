@@ -110,3 +110,42 @@ def fuse_batch_norm_inference(
     fused_conv.weight.data.copy_(w.detach())
     fused_conv.bias.data.copy_(b.detach())
     return fused_conv
+
+
+class TrainableFusedConv2dBatchNorm2d(nn.Module):
+    def __init__(
+        self,
+        conv: nn.Conv2d,
+        bn: nn.BatchNorm2d,
+    ):
+        super(TrainableFusedConv2dBatchNorm2d, self).__init__()
+        if not isinstance(conv, nn.Conv2d):
+            raise TypeError(f"Expected nn.Conv2d, got {type(conv)}")
+        if not isinstance(bn, nn.BatchNorm2d):
+            raise TypeError(f"Expected nn.BatchNorm2d, got {type(bn)}")
+        self.conv = conv
+        self.bn = bn
+
+    @property
+    def weight(self):
+        return get_new_params(self.conv, self.bn)[0]
+
+    @property
+    def bias(self):
+        return get_new_params(self.conv, self.bn)[1]
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        return x
+
+
+def fuse_batch_norm_training(
+    conv: nn.Conv2d, bn: nn.BatchNorm2d, conv_name: str, bn_name: str
+) -> TrainableFusedConv2dBatchNorm2d:
+    if not isinstance(conv, nn.Conv2d):
+        raise TypeError(f"Expected nn.Conv2d, got {type(conv)}")
+    if not isinstance(bn, nn.BatchNorm2d):
+        raise TypeError(f"Expected nn.BatchNorm2d, got {type(bn)}")
+
+    return TrainableFusedConv2dBatchNorm2d(conv, bn)
