@@ -295,6 +295,27 @@ def generate_cost_flops_conv2d(mat, out_size):
     return R * H_out * W_out * (C_in * H_k * W_k + C_out)
 
 
+def generate_cost_params_linear(mat, size):
+    # instead of flops, takes into account the number of parameters
+    # a decomposed linear layer has shapes W_o in [O, R] and W_i in [R, I]
+    # params(R) = R * (I + O)
+    r_vec = torch.arange(0, min(mat.shape[0], mat.shape[1]), 1)
+    i, o = mat.shape
+    return r_vec * (i + o)
+
+
+def generate_cost_params_conv2d(mat, out_size):
+    # instead of flops, takes into account the number of parameters
+    # a separated convolution requires
+    # params(R) = R * C_in * H_k * W_k + C_out * R
+    R = torch.arange(
+        0, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]), 1
+    )
+
+    C_out, C_in, H_k, W_k = mat.shape
+    return R * (C_in * H_k * W_k + C_out)
+
+
 # Given a total rank ratio, estimates the rank ratio for each layer
 def to_low_rank_global(
     model: nn.Module,
@@ -375,6 +396,15 @@ def to_low_rank_global(
             / 1000000
             for w, out_size in zip(ws, sizes)
         ]
+    elif metric == "params":
+        costs = [
+            (
+                generate_cost_params_linear(w, out_size)
+                if len(out_size) == 2
+                else generate_cost_params_conv2d(w, out_size)
+            )
+            for w, out_size in zip(ws, sizes)
+        ]
 
     # print("lengths of costs")
     # print([len(cost) for cost in cum_costs])
@@ -384,8 +414,8 @@ def to_low_rank_global(
         n_rank_to_keep = sum(len(energy) for energy in cum_energies) * ratio_to_keep
     elif metric == "flops":
         n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
-
-        print("total cost", n_rank_to_keep)
+    elif metric == "params":
+        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
 
     selected_indices = maximize_energy_pulp(cum_energies, costs, n_rank_to_keep)
 
@@ -402,7 +432,7 @@ def to_low_rank_global(
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-        # print("Replacing", name, "ratio=", selected_indices_per_module[name])
+        print("Replacing", name, "ratio=", selected_indices_per_module[name])
         setattr(
             parent_module,
             attr_name,

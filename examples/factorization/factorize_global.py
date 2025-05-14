@@ -19,7 +19,6 @@ from compress.utils import get_all_convs_and_linears
 parser = argparse.ArgumentParser()
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--do_global", action="store_true")
-parser.add_argument("--do_global2", action="store_true")
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,6 +84,7 @@ for ratio in ratios:
         ratio_to_keep=ratio,
         inplace=False,
         keys=keys,
+        metric="params",
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     model_lr.to(device)
