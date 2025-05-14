@@ -25,7 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = load_vision_model(
     "resnet20",
-    pretrained_path="resnet20.pth",
+    pretrained_path="cifar10_resnet20_hoyer_finetuned (1).pth",
     strict=True,
     modifier_before_load=get_cifar10_modifier("resnet20"),
     modifier_after_load=None,
@@ -94,3 +94,5 @@ for ratio in ratios:
     print(
         f"Ratio: {ratio:.8f}, Test Loss: {eval_results['loss']:.4f}, Test Accuracy: {eval_results['accuracy']:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Flops: {fl}"
     )
+
+    torch.save(model_lr, f"resnet20_lr_{ratio}.pth")

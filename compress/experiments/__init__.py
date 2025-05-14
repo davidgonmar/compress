@@ -83,6 +83,7 @@ def load_vision_model(
     modifier_before_load=None,
     modifier_after_load=None,
     model_args={},
+    accept_model_directly=False,
 ) -> torch.nn.Module:
     _d = {
         "resnet18": "torchvision.models.resnet18",
@@ -125,7 +126,10 @@ def load_vision_model(
         elif isinstance(loaded, dict):
             model.load_state_dict(loaded, strict=strict)
         elif isinstance(loaded, nn.Module):
+            if accept_model_directly:
+                return loaded
             model.load_state_dict(loaded.state_dict(), strict=strict)
+
         else:
             raise ValueError("Loaded model is not a dict or nn.Module")
     model = _maybe_identity(model, modifier_after_load)
