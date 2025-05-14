@@ -1,3 +1,5 @@
+from typing import List
+
 def extract_weights(
     model,
     cls_list=None,
@@ -26,3 +28,6 @@ def extract_weights(
 def dims_sub(dims1: list[int], dims2: list[int]):
     # dims in 1 but not in 2
     return [dim for dim in dims1 if dim not in dims2]
+
+def unzip(lst: List[tuple]):
+    return tuple(list(map(lambda x: x[i], lst)) for i in range(len(lst[0])))

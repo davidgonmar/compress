@@ -42,21 +42,14 @@ from compress.common import (
     combine_should_do,
     keys_passlist_should_do,
 )
+
+from compress.layer_fusion import fold_batch_norm_inference, fuse_conv_bn
 from torch import nn
 from tqdm import tqdm
 import torch
 import gc
 from typing import Dict, Literal
-
-
-def assert_all_in_classes(
-    dict: Dict[str, IntAffineQuantizationSpec],
-    classes: tuple,
-    message: str = "All keys in the dict must be in the classes",
-):
-    for key in dict:
-        assert isinstance(key, tuple(classes)), f"{key} is not in {classes}. {message}"
-    return True
+import functools
 
 
 def merge_dicts(dict1: Dict, dict2: Dict) -> Dict:
@@ -107,143 +100,6 @@ def get_quant_dict(
     }
 
 
-def fold_batch_norm(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
-    if not isinstance(conv, nn.Conv2d):
-        raise TypeError(f"Expected nn.Conv2d, got {type(conv)}")
-    if not isinstance(bn, nn.BatchNorm2d):
-        raise TypeError(f"Expected nn.BatchNorm2d, got {type(bn)}")
-
-    w = conv.weight.detach().clone()
-    if conv.bias is None:
-        b = torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
-    else:
-        b = conv.bias.detach().clone()
-
-    # assert eval mode
-    assert bn.training is False, "BatchNorm must be in eval mode"
-    assert bn.track_running_stats is True, "BatchNorm must be tracking running stats"
-
-    gamma = bn.weight
-    beta = bn.bias
-    running_mean = bn.running_mean
-    running_var = bn.running_var
-    eps = bn.eps
-
-    inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
-
-    w = w * inv_std.reshape(-1, 1, 1, 1)
-
-    b = beta + (b - running_mean) * inv_std
-
-    fused_conv = nn.Conv2d(
-        in_channels=conv.in_channels,
-        out_channels=conv.out_channels,
-        kernel_size=conv.kernel_size,
-        stride=conv.stride,
-        padding=conv.padding,
-        dilation=conv.dilation,
-        groups=conv.groups,
-        bias=True,
-        padding_mode=conv.padding_mode,
-        device=w.device,
-        dtype=w.dtype,
-    )
-
-    fused_conv.weight.data.copy_(w)
-    fused_conv.bias.data.copy_(b)
-    return fused_conv
-
-
-def fuse_bn(
-    model: nn.Module,
-    fuse_bn_keys: list,
-    inplace=True,
-):
-    if not inplace:
-        model = copy.deepcopy(model)
-
-    # each element in the key is a tuple of (conv_key, bn_key)
-    conv_keys = list(map(lambda x: x[0], fuse_bn_keys))
-    bn_keys = list(map(lambda x: x[1], fuse_bn_keys))
-
-    # gather all conv and bn layers
-    convs = gather_submodules(
-        model,
-        should_do=keys_passlist_should_do(conv_keys),
-    )
-    bns = gather_submodules(
-        model,
-        should_do=keys_passlist_should_do(bn_keys),
-    )
-
-    # create a dict with the layer type as key and the input and weight specs as values
-    convs_dict = {name: module for name, module in convs}
-
-    bns_dict = {name: module for name, module in bns}
-
-    # fuse the conv and bn layers
-    for conv_key, bn_key in fuse_bn_keys:
-        if conv_key not in convs_dict:
-            raise KeyError(f"Conv layer {conv_key} not found in model")
-        if bn_key not in bns_dict:
-            raise KeyError(f"BN layer {bn_key} not found in model")
-
-        conv = convs_dict[conv_key]
-        bn = bns_dict[bn_key]
-
-        fused_conv = fold_batch_norm(conv, bn)
-
-        parent_module = model
-        *parent_path, attr_name = conv_key.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
-        setattr(parent_module, attr_name, fused_conv)
-
-        # remove the bn layer
-        parent_module = model
-        *parent_path, attr_name = bn_key.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-        setattr(parent_module, attr_name, nn.Identity())
-
-    return model
-
-
-def qat_fold_batch_norm(
-    conv: nn.Conv2d,
-    bn: nn.BatchNorm2d,
-    weight_spec: IntAffineQuantizationSpec,
-    input_spec: IntAffineQuantizationSpec,
-):
-    w = conv.weight.detach().clone()
-    if conv.bias is None:
-        b = torch.zeros(conv.out_channels, device=w.device, dtype=w.dtype)
-    else:
-        b = conv.bias.detach().clone()
-
-    gamma = bn.weight
-    beta = bn.bias
-    running_mean = bn.running_mean
-    running_var = bn.running_var
-    eps = bn.eps
-
-    inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
-
-    w = w * inv_std.reshape(-1, 1, 1, 1)
-
-    b = beta + (b - running_mean) * inv_std
-
-    mod = FusedQATConv2dBatchNorm2d(
-        weight_spec,
-        input_spec,
-        conv,
-        bn,
-    )
-
-    return mod
-
-
 def lsq_fold_batch_norm(
     conv: nn.Conv2d,
     bn: nn.BatchNorm2d,
@@ -280,131 +136,6 @@ def lsq_fold_batch_norm(
     )
 
     return mod
-
-
-def qat_fold_bn(
-    model: nn.Module,
-    fuse_bn_keys: list,
-    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
-    inplace=True,
-):
-    if not inplace:
-        model = copy.deepcopy(model)
-
-    # each element in the key is a tuple of (conv_key, bn_key)
-    conv_keys = list(map(lambda x: x[0], fuse_bn_keys))
-    bn_keys = list(map(lambda x: x[1], fuse_bn_keys))
-
-    # gather all conv and bn layers
-    convs = gather_submodules(
-        model,
-        should_do=keys_passlist_should_do(conv_keys),
-    )
-    bns = gather_submodules(
-        model,
-        should_do=keys_passlist_should_do(bn_keys),
-    )
-
-    # create a dict with the layer type as key and the input and weight specs as values
-    convs_dict = {name: module for name, module in convs}
-
-    bns_dict = {name: module for name, module in bns}
-
-    # fuse the conv and bn layers
-    for conv_key, bn_key in fuse_bn_keys:
-        if conv_key not in convs_dict:
-            raise KeyError(f"Conv layer {conv_key} not found in model")
-        if bn_key not in bns_dict:
-            raise KeyError(f"BN layer {bn_key} not found in model")
-
-        conv = convs_dict[conv_key]
-        bn = bns_dict[bn_key]
-
-        fused_conv = qat_fold_batch_norm(
-            conv, bn, specs[conv_key]["weight"], specs[conv_key]["input"]
-        )
-
-        parent_module = model
-        *parent_path, attr_name = conv_key.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
-        setattr(parent_module, attr_name, fused_conv)
-
-        # remove the bn layer
-        parent_module = model
-        *parent_path, attr_name = bn_key.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-        setattr(parent_module, attr_name, nn.Identity())
-
-    return model
-
-
-def lsq_fold_bn(
-    model: nn.Module,
-    fuse_bn_keys: list,
-    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
-    inplace=True,
-    activations=None,
-    online=False,
-):
-    if not inplace:
-        model = copy.deepcopy(model)
-
-    # each element in the key is a tuple of (conv_key, bn_key)
-    conv_keys = list(map(lambda x: x[0], fuse_bn_keys))
-    bn_keys = list(map(lambda x: x[1], fuse_bn_keys))
-
-    # gather all conv and bn layers
-    convs = gather_submodules(
-        model,
-        should_do=keys_passlist_should_do(conv_keys),
-    )
-    bns = gather_submodules(
-        model,
-        should_do=keys_passlist_should_do(bn_keys),
-    )
-
-    # create a dict with the layer type as key and the input and weight specs as values
-    convs_dict = {name: module for name, module in convs}
-
-    bns_dict = {name: module for name, module in bns}
-
-    # fuse the conv and bn layers
-    for conv_key, bn_key in fuse_bn_keys:
-        if conv_key not in convs_dict:
-            raise KeyError(f"Conv layer {conv_key} not found in model")
-        if bn_key not in bns_dict:
-            raise KeyError(f"BN layer {bn_key} not found in model")
-
-        conv = convs_dict[conv_key]
-        bn = bns_dict[bn_key]
-
-        fused_conv = lsq_fold_batch_norm(
-            conv,
-            bn,
-            specs[conv_key]["weight"],
-            specs[conv_key]["input"],
-            data_batch=activations[conv_key],
-            online=online,
-        )
-
-        parent_module = model
-        *parent_path, attr_name = conv_key.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
-        setattr(parent_module, attr_name, fused_conv)
-
-        # remove the bn layer
-        parent_module = model
-        *parent_path, attr_name = bn_key.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-        setattr(parent_module, attr_name, nn.Identity())
-
-    return model
 
 
 resnet20_fuse_pairs = [
@@ -454,7 +185,7 @@ def to_quantized_online(
     if not inplace:
         model = copy.deepcopy(model)
     if fuse_bn_keys is not None:
-        fuse_bn(model, fuse_bn_keys)
+        fuse_conv_bn(model, fuse_bn_keys, fuse_impl=fold_batch_norm_inference)
 
     modules_to_replace = gather_submodules(
         model,
@@ -492,6 +223,52 @@ def to_quantized_online(
     return model
 
 
+
+def fuse_conv_bn_qat(
+    conv: nn.Conv2d,
+    bn: nn.BatchNorm2d,
+    conv_name: str,
+    bn_name: str,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
+):
+    if conv_name not in specs or bn_name not in specs:
+        raise KeyError(f"Conv layer {conv_name} or BN layer {bn_name} not found in model")
+
+    weight_spec = specs[conv_name]["weight"]
+    input_spec = specs[conv_name]["input"]
+
+    return FusedQATConv2dBatchNorm2d(
+        weight_spec,
+        input_spec,
+        conv,
+        bn,
+    )
+            
+def fuse_conv_bn_lsq(
+    conv: nn.Conv2d,
+    bn: nn.BatchNorm2d,
+    conv_name: str,
+    bn_name: str,
+    specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
+    data_batch=None,
+    online=False,
+):
+    if conv_name not in specs or bn_name not in specs:
+        raise KeyError(f"Conv layer {conv_name} or BN layer {bn_name} not found in model")
+
+    weight_spec = specs[conv_name]["weight"]
+    input_spec = specs[conv_name]["input"]
+
+    return FusedLSQConv2dBatchNorm2d(
+        weight_spec,
+        input_spec,
+        conv,
+        bn,
+        data_batch=data_batch,
+        online=online,
+    )
+    
+
 def prepare_for_qat(
     model: nn.Module,
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
@@ -509,10 +286,10 @@ def prepare_for_qat(
         assert "data_batch" in kwargs, "data_batch must be provided if use_lsq=True"
         model.eval()
         if fuse_bn_keys is not None:
-            _model_acts = fuse_bn(
+            _model_acts = fuse_conv_bn(
                 model,
                 fuse_bn_keys,
-                inplace=False,
+                fuse_impl=fold_batch_norm_inference,
             )
         else:
             _model_acts = model
@@ -522,16 +299,26 @@ def prepare_for_qat(
 
     if fuse_bn_keys is not None:
         if use_lsq:
-            lsq_fold_bn(
+            fuse_conv_bn(
                 model,
                 fuse_bn_keys,
-                inplace=True,
-                specs=specs,
-                activations=activations,
-                online=method_args.get("online", False),
+                fuse_impl=functools.partial(
+                    fuse_conv_bn_lsq,
+                    specs=specs,
+                    data_batch=kwargs["data_batch"],
+                    online=method_args.get("online", False),
+                ),
             )
         else:
-            qat_fold_bn(model, fuse_bn_keys, inplace=True, specs=specs)
+            fuse_conv_bn(
+                model,
+                fuse_bn_keys,
+                fuse_impl=functools.partial(
+                    fuse_conv_bn_qat,
+                    specs=specs,
+                ),
+                specs=specs,
+            )
     modules_to_replace = gather_submodules(
         model,
         should_do=keys_passlist_should_do(
@@ -763,149 +550,6 @@ def merge_qat_model(model: nn.Module, inplace=True):
                 module.to_linear()
                 if hasattr(module, "to_linear")
                 else module.to_conv2d() if hasattr(module, "to_conv2d") else module
-            ),
-        )
-
-    return model
-
-
-def fake_quantize_floor(x, info: IntAffineQuantizationInfo):
-    assert info.zero_point is None
-    return ste_floor(x / info.scale).clamp(info.qmin, info.qmax) * info.scale
-
-
-def adaround_for_layer(model, layer, input_specs, weight_specs, data_loader):
-    model.train()
-    layer_w = layer.weight
-    V = nn.Parameter(torch.randn_like(layer_w).requires_grad_(True))
-    optim = torch.optim.Adam([V], lr=0.001)
-
-    def rectified_sigmoid(V):
-        x = torch.sigmoid(V)
-        x = x * 1.2 + (-0.1)
-        return torch.clamp(x, 0.0, 1.0)
-
-    def regularize(V, beta=1.0):
-        hV = rectified_sigmoid(V)
-        diff = 2.0 * hV - 1.0
-        diff_abs_pow = torch.abs(diff).pow(beta)
-        val = 1.0 - diff_abs_pow
-        return val.sum()
-
-    def beta_schedule(epoch):
-        return max(1, epoch - 3) / 50.0
-
-    info = (
-        calibrate(layer.weight, input_specs["linear"])
-        if isinstance(layer, nn.Linear)
-        else calibrate(layer.weight, input_specs["conv2d"])
-    )
-    epoch = 0
-
-    def _hook_fn(module, input, output):
-        input = input[0]
-        if module == layer:
-            if isinstance(module, nn.Linear):
-                curr_out_not_quant = F.linear(input, module.weight, module.bias)
-                quant_w = fake_quantize_floor(
-                    module.weight + rectified_sigmoid(V), info
-                )
-                curr_out_quant = F.linear(input, quant_w, module.bias)
-            else:
-                assert isinstance(module, nn.Conv2d)
-                curr_out_not_quant = F.conv2d(
-                    input,
-                    module.weight,
-                    module.bias,
-                    module.stride,
-                    module.padding,
-                    module.dilation,
-                    module.groups,
-                )
-                quant_w = fake_quantize_floor(
-                    module.weight + rectified_sigmoid(V), info
-                )
-                curr_out_quant = F.conv2d(
-                    input,
-                    quant_w,
-                    module.bias,
-                    module.stride,
-                    module.padding,
-                    module.dilation,
-                    module.groups,
-                )
-
-            def mse(x, y):
-                return (x - y).pow(2).mean()
-
-            loss = mse(
-                curr_out_not_quant.reshape(-1), curr_out_quant.reshape(-1)
-            ) + regularize(V, beta_schedule(epoch))
-            optim.zero_grad()
-            layer_w.grad = None
-            V.grad = None
-            loss.backward(inputs=[V])
-            optim.step()
-            raise ValueError("Stop here")
-
-        else:
-            return output
-
-    hook = layer.register_forward_hook(_hook_fn)
-
-    for i in range(50):
-        for element in data_loader:
-            try:
-                model(element)
-            except ValueError:
-                continue
-        epoch += 1
-
-    hook.remove()
-    ret = layer.weight + rectified_sigmoid(V)
-
-    """if bool(torch.isnan(rectified_sigmoid(V)).sum() != 0):
-        print(f"Found NaN in the weight of {layer}. Total NaNs: {torch.isnan(ret).sum()} out of {ret.numel()}")
-        print(V)
-    """
-    is_nan_idxs = torch.isnan(ret)
-    ret[is_nan_idxs] = layer.weight[is_nan_idxs]
-    return ret
-
-
-def to_quantized_adaround(
-    model: nn.Module,
-    input_specs: IntAffineQuantizationSpec,
-    weight_specs: IntAffineQuantizationSpec,
-    data_loader,
-    inplace=True,
-    should_do=default_should_do,
-    **kwargs,
-):
-    if not inplace:
-        model = copy.deepcopy(model)
-    modules_to_replace = gather_submodules(
-        model,
-        should_do=should_do,
-    )
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
-        parent_module = model
-        *parent_path, attr_name = name.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-        w = nn.Parameter(
-            adaround_for_layer(model, module, input_specs, weight_specs, data_loader)
-        )
-        module.weight = nn.Parameter(w)
-        setattr(
-            parent_module,
-            attr_name,
-            (
-                QuantizedLinear(weight_specs["linear"], input_specs["linear"], module)
-                if isinstance(module, nn.Linear)
-                else QuantizedConv2d(
-                    weight_specs["conv2d"], input_specs["conv2d"], module
-                )
             ),
         )
 
