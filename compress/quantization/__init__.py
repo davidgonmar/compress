@@ -607,13 +607,6 @@ def requantize_lsq(
         new_nbits_acts = specs[name]["input"].nbits
         new_nbits_weights = specs[name]["weight"].nbits
 
-        # assert divisibility
-        assert (
-            nbits_acts % new_nbits_acts == 0
-        ), f"new_nbits_acts {new_nbits_acts} not divisible by nbits_acts {nbits_acts}"
-        assert (
-            nbits_weights % new_nbits_weights == 0
-        ), f"new_nbits_weights {new_nbits_weights} not divisible by nbits_weights {nbits_weights}"
 
         scale_weights = module.weight_info.scale
         scale_acts = module.input_info.scale
