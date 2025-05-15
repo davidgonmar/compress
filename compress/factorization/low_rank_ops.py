@@ -82,6 +82,12 @@ class LowRankLinear(nn.Module):
         assert S.shape == (rank, rank)
         assert U.shape == (out_f, out_f)
         assert V_T.shape == (in_f, in_f)
+
+        # first check if it is worth it
+        mem_orig = W.numel()
+        mem_low_rank = rank * (in_f + out_f)
+        if mem_low_rank >= mem_orig:
+            return linear
         W0 = (
             U[:, :rank] @ S if not keep_singular_values_separated else U[:, :rank]
         )  # in R^{OUT x RANK}
@@ -218,6 +224,12 @@ class LowRankConv2d(nn.Module):
             raise ValueError(
                 "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
             )
+        
+        # first check if it is worth it
+        mem_orig = W.numel()
+        mem_low_rank = rank * (i * h * w + o)
+        if mem_low_rank >= mem_orig:
+            return conv2d
         W0 = (
             (
                 (U[:, :rank] @ torch.diag(S[:rank]))
