@@ -65,6 +65,7 @@ class LowRankLinear(nn.Module):
         # Low rank linear -> W = U @ S @ V_T -> O = X @ (U @ S @ V_T).T + b = (X @ W1.T) @ W0.T + b
         W, b = linear.weight, linear.bias
         U, S, V_T = torch.linalg.svd(W, full_matrices=True)  # complete SVD
+
         rank = 0
         if keep_metric["name"] == "rank_ratio_to_keep":
             rank = _get_rank_ratio_to_keep(S, keep_metric["value"])

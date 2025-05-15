@@ -12,6 +12,7 @@ from compress.utils import extract_weights
 import copy
 import torch
 from typing import Dict
+import functools
 
 
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
@@ -173,7 +174,7 @@ def plot_singular_values(model: nn.Module, should_do: Callable = default_should_
 
     mods_and_reshapers = extract_weights_and_reshapers(
         model, cls_list=[nn.Linear, nn.Conv2d]
-    )
+    )[:2]
     num_plots = len(mods_and_reshapers)
 
     if num_plots == 0:
@@ -190,6 +191,22 @@ def plot_singular_values(model: nn.Module, should_do: Callable = default_should_
         weight = param.data
         reshaped_weight = reshaper(weight)
         U, S, V = torch.svd(reshaped_weight)
+
+        # print low rank distortion
+        cropped_S = S[:5]
+        cropped_U = U[:, :5]
+        cropped_V = V[:5, :]
+
+        reconstructed = torch.matmul(
+            cropped_U, torch.matmul(torch.diag(cropped_S), cropped_V)
+        )
+
+        distortion = torch.norm(reshaped_weight - reconstructed) / torch.norm(
+            reshaped_weight
+        )
+
+        print(S)
+        print(f"Distortion for layer {i}: {distortion.item()}")
 
         # nornmalize singular values
         S = S / S[0]
@@ -248,7 +265,7 @@ def maximize_energy_pulp(cum_energy_vectors, cumulative_cost_vectors, total_cost
             pulp.lpSum(selection_vars[(vec_idx, idx)] for idx in range(len(vec))) == 1
         )
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=1))
+    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=60))
 
     selected_indices = {}
     for vec_idx, vec in enumerate(cum_energy_vectors):
@@ -292,6 +309,7 @@ def generate_cost_flops_conv2d(mat, out_size):
 
     C_out, C_in, H_k, W_k = mat.shape
     H_out, W_out = out_size[2], out_size[3]
+
     return R * H_out * W_out * (C_in * H_k * W_k + C_out)
 
 
@@ -720,6 +738,203 @@ def factorize_with_activation_aware_svd(
                 if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
                 else LowRankConv2d.from_conv2d_activation(
                     module, chols[module], cfg_dict[name]
+                )
+            ),
+        )
+
+    return model
+
+
+# global activation aware svd
+def factorize_with_global_activation_aware_svd(
+    model: nn.Module,
+    dataloader,
+    keys,
+    ratio_to_keep,
+    metric="flops",
+    inplace=True,
+):
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    acts = {}
+    outs = {}
+    hooks = []
+
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(keys),
+    )
+
+    def hook_fn(name, module, input, output):
+        input = input[0] if isinstance(input, tuple) else input
+        if acts.get(name) is None:
+            acts[name] = input
+
+        else:
+            acts[name] = torch.cat((acts[name], input), dim=0)
+
+        if outs.get(name) is None:
+            outs[name] = output
+
+        else:
+            outs[name] = torch.cat((outs[name], output), dim=0)
+
+    for name, module in modules_to_replace:
+        hook = module.register_forward_hook(functools.partial(hook_fn, name))
+        hooks.append(hook)
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Getting activations"):
+            if isinstance(batch, dict):
+                inputs = {
+                    key: value.to(next(model.parameters()).device)
+                    for key, value in batch.items()
+                }
+                model(**inputs)
+            else:
+                inputs, targets = batch
+                inputs, targets = inputs.to(
+                    next(model.parameters()).device
+                ), targets.to(next(model.parameters()).device)
+                model(inputs)
+
+    for hook in hooks:
+        hook.remove()
+
+    # get the cholesky decomposition of the covariance matrix of each activation im2col'ed in case of conv2d
+    chols = {}
+    for name, module in modules_to_replace:
+        act = acts[name]
+        if isinstance(module, nn.Conv2d):
+            # Input should be of shape (B, Cin, H, W)
+
+            assert act.dim() == 4
+            im2coled = nn.functional.unfold(
+                act,
+                kernel_size=module.kernel_size,
+                padding=module.padding,
+                stride=module.stride,
+            )  # shape (B, Cin * H_k * W_k, H_out * W_out)
+            # shape (B * H_out * W_out, Cin * H_k * W_k)
+            im2coled = im2coled.permute(0, 2, 1).reshape(
+                im2coled.shape[0] * im2coled.shape[2], -1
+            )
+        elif isinstance(module, nn.Linear):
+            # Input should be of shape (B, Cin)
+            assert act.dim() == 2
+
+            im2coled = act
+        else:
+            raise ValueError("Module should be either Conv2d or Linear")
+
+        m = im2coled.T @ im2coled
+        m = m.double()
+        try:
+            chol = torch.linalg.cholesky(m)
+
+        except RuntimeError:
+            print("Cholesky failed, using eigvalsh")
+            eigenvalues = torch.linalg.eigvalsh(m)
+            m = (-eigenvalues[0] + 1e-6) * torch.eye(m.shape[0]).to(m.device) + m
+            chol = torch.linalg.cholesky(m)
+
+        chols[module] = chol.float()
+        # if conv, chols is of shape [Cin * H_k * W_k, Cin * H_k * W_k]
+        # if linear, chols is of shape [Cin, Cin]
+
+    # energies
+    cum_energies = []
+    for name, module in modules_to_replace:
+        if isinstance(module, nn.Linear):
+            weight = module.weight.detach()  # shape (Cout, Cin)
+        elif isinstance(module, nn.Conv2d):
+            reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
+            weight = reshaped.detach().T  # shape (Cout, Cin * H_k * W_k)
+
+        aa = weight @ chols[module]
+
+        # shape (Cout, Cin * H_k * W_k) @ (Cin * H_k * W_k, Cin * H_k * W_k) = (Cout, Cin * H_k * W_k) if conv
+        # or (Cout, Cin) if linear
+        svals = torch.linalg.svdvals(aa)
+        cum_energy = torch.cumsum(svals**2, 0) / torch.sum(svals**2)
+        cum_energies.append(cum_energy)
+
+    # costs
+    ws = [mod.weight.detach() for _, mod in modules_to_replace]
+
+    if metric == "rank":
+        costs = [torch.arange(0, len(energy), 1) for energy in cum_energies]
+        costs = [torch.cumsum(cost, 0) for cost in costs]
+
+    elif metric == "flops":
+        costs = [
+            (
+                generate_cost_flops_linear(w, out_size)
+                if len(out_size) == 2
+                else generate_cost_flops_conv2d(w, out_size)
+            )
+            / 1000000
+            for w, out_size in zip(
+                ws, [outs[name].shape for name, _ in modules_to_replace]
+            )
+        ]
+
+    elif metric == "params":
+        costs = [
+            (
+                generate_cost_params_linear(w, out_size)
+                if len(out_size) == 2
+                else generate_cost_params_conv2d(w, out_size)
+            )
+            for w, out_size in zip(
+                ws, [outs[name].shape for name, _ in modules_to_replace]
+            )
+        ]
+
+    if metric == "rank":
+        n_rank_to_keep = sum(len(energy) for energy in cum_energies) * ratio_to_keep
+
+    elif metric == "flops":
+        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
+
+    elif metric == "params":
+        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
+
+    selected_indices = maximize_energy_pulp(cum_energies, costs, n_rank_to_keep)
+    selected_indices_per_module = {}
+    for i, (name, module) in enumerate(modules_to_replace):
+        selected_idx = selected_indices[i]
+        if selected_idx == -1:
+            selected_indices_per_module[name] = 1.0
+        else:
+            selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
+
+    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+        parent_module = model
+        *parent_path, attr_name = name.split(".")
+        for part in parent_path:
+            parent_module = getattr(parent_module, part)
+
+        metric = {
+            "name": "rank_ratio_to_keep",
+            "value": selected_indices_per_module[name],
+        }
+        print("Replacing", name, "ratio=", selected_indices_per_module[name])
+        setattr(
+            parent_module,
+            attr_name,
+            (
+                LowRankLinear.from_linear_activation(
+                    module,
+                    chols[module],
+                    metric,
+                )
+                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
+                else LowRankConv2d.from_conv2d_activation(
+                    module,
+                    chols[module],
+                    metric,
                 )
             ),
         )

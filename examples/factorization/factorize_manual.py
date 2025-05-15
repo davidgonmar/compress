@@ -6,6 +6,7 @@ from compress.factorization.factorize import (
     all_same_svals_energy_ratio,
     all_same_params_ratio,
     all_same_rank_ratio,
+    plot_singular_values,
 )
 from compress.flops import count_model_flops
 from compress.experiments import (
@@ -34,6 +35,7 @@ model = load_vision_model(
     modifier_before_load=get_cifar10_modifier(args.vision_model),
     modifier_after_load=None,
     model_args={"num_classes": 10},
+    accept_model_directly=True,
 ).to(device)
 
 mean = cifar10_mean
@@ -107,6 +109,10 @@ params_ratio = [
     0.8,
     0.9,
 ]
+
+plot_singular_values(
+    model,
+)
 for x in (
     energies
     if args.metric == "energy"
@@ -132,12 +138,13 @@ for x in (
     )
     if args.keep_edge_layer:
         del cfg["conv1"]
-        del cfg["fc"]
+        del cfg["linear"]
     model_lr = to_low_rank_manual(
         model,
         cfg_dict=cfg,
         inplace=False,
     )
+    print(model_lr)
     n_params = sum(p.numel() for p in model_lr.parameters())
     model_lr.to(device)
     eval_results = evaluate_vision_model(model_lr, test_loader)
