@@ -126,7 +126,6 @@ model.to(args.device)
 
 def evaluate_model(m):
     m.eval()
-    metric.reset()
     for batch in eval_loader:
         batch = {k: v.to(args.device) for k, v in batch.items()}
         with torch.no_grad():
@@ -140,6 +139,7 @@ def evaluate_model(m):
     return metric.compute()
 
 
+print(model)
 baseline_stats = {
     "flops": count_model_flops(model, (3, args.max_seq_length), dtype=torch.int64),
     "metrics": evaluate_model(model),
@@ -150,13 +150,10 @@ print(
 
 # -- Gather all linear layers only ------------------------------------------
 
-all_keys = get_all_convs_and_linears(model)
-# filter to linear layers in transformer blocks:
-linear_keys = [k for k in all_keys if "linear" in k]
+linear_keys = get_all_convs_and_linears(model)
 
-# Optionally, exclude first/last if requested
+
 if args.keep_edge_layer:
-    # keep embedding→encoder and classifier head intact
     linear_keys = [
         k for k in linear_keys if "encoder.layer.0" not in k and "classifier" not in k
     ]
@@ -169,7 +166,7 @@ for r in args.ratios:
     # factorize (non-inplace)
     m_lr = to_low_rank_global(
         model,
-        input_shape=(1, 3, args.max_seq_length),
+        sample_input=torch.zeros((3, args.max_seq_length)).long(),
         ratio_to_keep=r,
         inplace=False,
         keys=linear_keys,
@@ -179,7 +176,7 @@ for r in args.ratios:
     m_lr.to(args.device)
 
     # eval
-    fl = count_model_flops(m_lr, (1, 3, args.max_seq_length))
+    fl = count_model_flops(m_lr, (3, args.max_seq_length), torch.long)
     met = evaluate_model(m_lr)
     param_ratio = sum(p.numel() for p in m_lr.parameters()) / sum(
         p.numel() for p in model.parameters()

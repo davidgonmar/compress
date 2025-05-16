@@ -191,23 +191,6 @@ def plot_singular_values(model: nn.Module, should_do: Callable = default_should_
         weight = param.data
         reshaped_weight = reshaper(weight)
         U, S, V = torch.svd(reshaped_weight)
-
-        # print low rank distortion
-        cropped_S = S[:5]
-        cropped_U = U[:, :5]
-        cropped_V = V[:5, :]
-
-        reconstructed = torch.matmul(
-            cropped_U, torch.matmul(torch.diag(cropped_S), cropped_V)
-        )
-
-        distortion = torch.norm(reshaped_weight - reconstructed) / torch.norm(
-            reshaped_weight
-        )
-
-        print(S)
-        print(f"Distortion for layer {i}: {distortion.item()}")
-
         # nornmalize singular values
         S = S / S[0]
 
@@ -339,7 +322,7 @@ def to_low_rank_global(
     model: nn.Module,
     ratio_to_keep,
     keys,
-    input_shape,
+    sample_input,
     metric="flops",
     inplace=True,
     **kwargs,
@@ -353,7 +336,7 @@ def to_low_rank_global(
     )
     reshapeds = []
 
-    rand_inp = torch.randn(input_shape).to(next(model.parameters()).device)
+    rand_inp = sample_input.to(next(model.parameters()).device)
 
     # get output sizes of every layer
     hooks = []
@@ -400,6 +383,7 @@ def to_low_rank_global(
     ]
 
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
+    mods = [mod for _, mod in modules_to_replace]
     # costs
     if metric == "rank":
         costs = [torch.arange(0, len(energy), 1) for energy in cum_energies]
@@ -408,20 +392,20 @@ def to_low_rank_global(
         costs = [
             (
                 generate_cost_flops_linear(w, out_size)
-                if len(out_size) == 2
+                if isinstance(mod, nn.Linear)
                 else generate_cost_flops_conv2d(w, out_size)
             )
             / 1000000
-            for w, out_size in zip(ws, sizes)
+            for w, out_size, mod in zip(ws, sizes, mods)
         ]
     elif metric == "params":
         costs = [
             (
                 generate_cost_params_linear(w, out_size)
-                if len(out_size) == 2
+                if isinstance(mod, nn.Linear)
                 else generate_cost_params_conv2d(w, out_size)
             )
-            for w, out_size in zip(ws, sizes)
+            for w, out_size, mod in zip(ws, sizes, mods)
         ]
 
     # print("lengths of costs")
