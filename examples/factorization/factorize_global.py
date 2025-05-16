@@ -25,7 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = load_vision_model(
     "resnet20",
-    pretrained_path="cifar10_resnet20_hoyer_finetuned (1).pth",
+    pretrained_path="cifar10_resnet20_hoyer_finetuned.pth",
     strict=True,
     modifier_before_load=get_cifar10_modifier("resnet20"),
     modifier_after_load=None,
@@ -84,7 +84,7 @@ for ratio in ratios:
         ratio_to_keep=ratio,
         inplace=False,
         keys=keys,
-        metric="params",
+        metric="flops",
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     model_lr.to(device)

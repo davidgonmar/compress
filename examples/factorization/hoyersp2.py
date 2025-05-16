@@ -55,19 +55,19 @@ def parse_args():
     parser.add_argument(
         "--start_reg",
         type=float,
-        default=0.05,
+        default=0.5,
         help="initial regularization weight (cosine schedule start)",
     )
     parser.add_argument(
         "--end_reg",
         type=float,
-        default=0.0001,
+        default=0.00,
         help="final regularization weight (cosine schedule end)",
     )
     parser.add_argument(
         "--T0",
         type=int,
-        default=20,
+        default=50,
         help="number of epochs for the first regularization annealing cycle",
     )
     parser.add_argument(
@@ -103,6 +103,16 @@ def weight_schedule(epoch, start, end, T_0, T_mult):
         ep_i -= T_i
         T_i *= T_mult
     return end + 0.5 * (start - end) * (1 + math.cos(math.pi * ep_i / T_i))
+
+
+def weight_schedule_inverted_warp(epoch, start, end, T_0, T_mult, alpha=4.0):
+    cycle_pos = epoch % T_0
+    t = cycle_pos / T_0
+    warped_t = 1 - (1 - t) ** alpha
+    return end + 0.5 * (start - end) * (1 + math.cos(math.pi * warped_t))
+
+
+weight_schedule = weight_schedule_inverted_warp
 
 
 def main():
@@ -147,7 +157,7 @@ def main():
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=0.001,
+        lr=0.0005,
     )
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer, step_size=args.step_size, gamma=args.gamma
@@ -198,6 +208,9 @@ def main():
         scheduler.step()
         print(
             f"Learning Rate after epoch {epoch+1}: {optimizer.param_groups[0]['lr']:.5f}"
+        )
+        print(
+            f"reg_w after epoch {epoch+1}: {weight_schedule(epoch, args.start_reg, args.end_reg, args.T0, args.T_mult)}"
         )
 
         print("Approximate ranks per layer:")

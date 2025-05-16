@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument(
         "--gamma",
         type=float,
-        default=1.0,
+        default=0.1,
         help="multiplicative factor of learning rate decay",
     )
 
@@ -52,13 +52,13 @@ def parse_args():
     parser.add_argument(
         "--pretrained_path",
         type=str,
-        default="resnet20.pth",
+        default="resnet20_lr_0.9997.pth",
         help="path to pretrained weights",
     )
     parser.add_argument(
         "--save_path",
         type=str,
-        default="cifar10_resnet20_finetuned.pth",
+        default="any.pth",
         help="path to save the best model",
     )
 
@@ -105,12 +105,7 @@ if __name__ == "__main__":
     ).to(device)
 
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=args.lr,
-        momentum=args.momentum,
-        weight_decay=args.weight_decay,
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer, step_size=args.step_size, gamma=args.gamma
     )

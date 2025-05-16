@@ -224,7 +224,7 @@ class LowRankConv2d(nn.Module):
             raise ValueError(
                 "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
             )
-        
+
         # first check if it is worth it
         mem_orig = W.numel()
         mem_low_rank = rank * (i * h * w + o)

@@ -20,7 +20,9 @@ import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--load_from", type=str, default="resnet20.pth")
+parser.add_argument(
+    "--load_from", type=str, default="cifar10_resnet20_hoyer_finetuned.pth"
+)
 parser.add_argument("--vision-model", type=str, default="resnet20")
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
@@ -62,7 +64,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 criterion = torch.nn.CrossEntropyLoss()
-eval_results = evaluate_vision_model(model, test_loader, eval=False)
+eval_results = evaluate_vision_model(model, test_loader)
 n_params = sum(p.numel() for p in model.parameters())
 flops = count_model_flops(model, (1, 3, 32, 32))
 print(
@@ -70,19 +72,18 @@ print(
 )
 
 energies = [
-    0.7,
-    0.8,
     0.9,
-    0.95,
     0.99,
     0.999,
-    0.9992,
+    0.9991,
+    0.9993,
     0.9995,
     0.9997,
     0.9999,
     0.99993,
     0.99995,
     0.99997,
+    0.99998,
     0.99999,
 ]
 
@@ -144,13 +145,12 @@ for x in (
         cfg_dict=cfg,
         inplace=False,
     )
-    print(model_lr)
     n_params = sum(p.numel() for p in model_lr.parameters())
     model_lr.to(device)
     eval_results = evaluate_vision_model(model_lr, test_loader)
-
     fl = count_model_flops(model_lr, (1, 3, 32, 32))
     s = "Energy ratio" if args.metric == "energy" else "Rank ratio"
     print(
         f"{s}: {x:.8f}, Test Loss: {eval_results['loss']:.4f}, Test Accuracy: {eval_results['accuracy']:.4f}, Ratio of parameters: {n_params / sum(p.numel() for p in model.parameters()):.4f}, Flops: {fl}"
     )
+    torch.save(model_lr, f"resnet20_lr_{x}.pth")
