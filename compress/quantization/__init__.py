@@ -558,3 +558,43 @@ def to_quantized_kmeans(
         )
 
     return model
+
+
+
+def get_activations_transformers(model, dataloader, specs):
+    activations = {}
+    hooks = []
+
+    def save_activation(name):
+        def hook(module, input, output):
+            # Store detached CPU tensor of output activations
+            activations[name].append(output.detach().cpu())
+        return hook
+
+    # Register forward hooks on all linear modules
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear) and name in specs.keys():
+            activations[name] = []
+            handles = module.register_forward_hook(save_activation(name))
+            hooks.append(handles)
+
+    # Run through the calibration dataloader to collect activations
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            # Move inputs to the model's device, skip labels
+            inputs = {k: v.to(next(model.parameters()).device)
+                      for k, v in batch.items() if k != "labels"}
+            print(inputs.keys())
+            _ = model(**inputs)
+
+    # Remove hooks to clean up
+    for handle in hooks:
+        handle.remove()
+
+    # Concatenate activation lists into single tensors per layer
+    for name in activations:
+        activations[name] = torch.cat(activations[name], dim=0)
+
+    return activations
+

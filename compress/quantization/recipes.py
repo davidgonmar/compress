@@ -10,6 +10,8 @@ from compress.quantization.common import (
 import torchvision
 import torch
 from compress.experiments.cifar_resnet import resnet20
+import torch.nn as nn
+
 
 # These are based on the torchvision models
 
@@ -464,3 +466,66 @@ def get_recipe_quant(model_name: str):
         return get_resnet20_recipe_quant
     else:
         raise ValueError(f"Unknown model name: {model_name}")
+
+
+
+def get_generic_recipe_quant(
+    model,
+    bits_activation: int,
+    bits_weight: int,
+    clip_percentile: float,
+    edge_layers: list[str] | None = None,
+    leave_edge_layers_8_bits: bool = False,
+    symmetric: bool = True,
+    conv_weight_grouper=None,
+    conv_activation_grouper=None,
+    linear_weight_grouper=None,
+    linear_activation_grouper=None,
+):
+    edge_layers = edge_layers or []
+    conv_weight_grouper = conv_weight_grouper or ConvWeightsPerOutChannel()
+    conv_activation_grouper = conv_activation_grouper or PerTensor()
+    linear_weight_grouper = linear_weight_grouper or LinearWeightsPerOutChannel()
+    linear_activation_grouper = linear_activation_grouper or PerTensor()
+    mode = (
+        IntAffineQuantizationMode.SYMMETRIC
+        if symmetric
+        else IntAffineQuantizationMode.ASYMMETRIC
+    )
+
+
+    conv_names, linear_names = [], []
+    for name, m in model.named_modules():
+        if isinstance(m, (nn.Conv2d, nn.LazyConv2d)):
+            conv_names.append(name)
+        elif isinstance(m, nn.Linear):
+            linear_names.append(name)
+    first_conv = conv_names[0] if leave_edge_layers_8_bits and conv_names else None
+    last_linear = linear_names[-1] if leave_edge_layers_8_bits and linear_names else None
+
+    specs = {}
+    for name, m in model.named_modules():
+        if isinstance(m, (nn.Conv2d, nn.LazyConv2d, nn.Linear)):
+            is_conv = isinstance(m, (nn.Conv2d, nn.LazyConv2d))
+            # decide bits
+            use_8 = name in edge_layers or name in (first_conv, last_linear)
+            w_bits = 8 if use_8 else bits_weight
+            a_bits = 8 if use_8 else bits_activation
+
+            specs[name] = {
+                "weight": IntAffineQuantizationSpec(
+                    nbits=w_bits,
+                    signed=True,
+                    quant_mode=mode,
+                    percentile=clip_percentile,
+                    grouper=conv_weight_grouper if is_conv else linear_weight_grouper,
+                ),
+                "input": IntAffineQuantizationSpec(
+                    nbits=a_bits,
+                    signed=True,
+                    quant_mode=mode,
+                    percentile=clip_percentile,
+                    grouper=conv_activation_grouper if is_conv else linear_activation_grouper,
+                ),
+            }
+    return specs
