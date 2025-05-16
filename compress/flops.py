@@ -310,7 +310,9 @@ def register_flops_counter(orig_fn):
     return accepts_fn
 
 
-def count_model_flops(model, input_size, formatted=True, backward=False):
+def count_model_flops(
+    model, input_size, dtype=torch.float32, formatted=True, backward=False
+):
     """
     Count the number of FLOPs in a model.
     Args:
@@ -323,7 +325,7 @@ def count_model_flops(model, input_size, formatted=True, backward=False):
     assert backward is False, "Backward pass is not supported yet"
     model.eval()
     start_counting()
-    x = torch.randn(input_size).cuda()
+    x = torch.zeros(input_size).cuda().to(dtype)
     x = FlopTensor(x)
     res = model(x)
     if backward:
