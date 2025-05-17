@@ -470,7 +470,8 @@ class TaylorIntraExpansionPruner:
         self.kwargs = kwargs
         self.approx = approx
         self.n_iters = n_iters
-
+    def dispose(self):
+        self.model = None
     def prune(self):
         grads = defaultdict(
             lambda: torch.tensor(0).to(next(self.model.parameters()).device)
@@ -536,7 +537,7 @@ class TaylorIntraExpansionPruner:
 
         return apply_masks(self.model, masks)
 
-
+    
 class TaylorExpansionInterPruner:
     def __init__(
         self, model, policies, runner, n_iters, approx="fisher_diag", *args, **kwargs
@@ -849,13 +850,17 @@ def merge_pruned_modules(model: nn.Module) -> nn.Module:
     Merge pruned modules into their parent module, replacing the pruned
     module with a normal one.
     """
-    for name, module in model.named_modules():
+    for name, module in list(model.named_modules()):
         if isinstance(module, (PrunedLinear, PrunedConv2d)):
-            parent = getattr(model, name.rsplit(".", 1)[0])
-            new_mod = (
-                module.to_linear()
-                if isinstance(module, PrunedLinear)
-                else module.to_conv2d()
-            )
-            setattr(parent, name.rsplit(".", 1)[-1], new_mod)
+            parts = name.split('.')
+            parent = model
+            for p in parts[:-1]:
+                parent = getattr(parent, p)
+            child_name = parts[-1]
+            if isinstance(module, PrunedLinear):
+                new_mod = module.to_linear()
+            else:
+                new_mod = module.to_conv2d()
+            setattr(parent, child_name, new_mod)
     return model
+
