@@ -1,7 +1,9 @@
+#!/usr/bin/env python
 import os
 import json
 import argparse
 import re
+import statistics as stats
 
 
 def render_latex_table(rows, caption, label):
@@ -16,70 +18,88 @@ def render_latex_table(rows, caption, label):
         r"\midrule",
     ]
     for r in rows:
-        method = r["method"]
-        w = r["w_bits"]
-        a = r["a_bits"]
-        edge = "Yes" if r["leave_edge"] else "No"
-        acc = r["accuracy"]
-        lines.append(f"{method} & {w} & {a} & {edge} & {acc:.2f} \\\\")
+        method, w, a, edge = r["method"], r["w_bits"], r["a_bits"], r["edge"]
+        edge_str = "Yes" if edge else "No"
+        mean, std = r["acc_mean"], r["acc_std"]
+        lines.append(
+            f"{method} & {w} & {a} & {edge_str} & " f"{mean:.2f} $\\pm$ {std:.2f} \\\\"
+        )
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
 
 
+# qat_w4a4_edge8_s3.json -> groups = (qat, 4, 4, edge8, 3)
+PAT = re.compile(r"^(qat|lsq)_w(\d+)a(\d+)_(edge8|noedge)_s(\d+)\.json$")
+
+
 def parse_filename(fn):
-    basename = os.path.basename(fn)
-    m = re.match(r"^(qat|lsq)_w(\d+)a(\d+)_(edge8|noedge)\.json$", basename)
+    m = PAT.match(os.path.basename(fn))
     if not m:
         return None
-    method, w, a, edge = m.groups()
+    method, w, a, edge_flag, seed = m.groups()
     return {
         "method": method,
         "w_bits": int(w),
         "a_bits": int(a),
-        "leave_edge": (edge == "edge8"),
+        "edge": edge_flag == "edge8",
+        "seed": int(seed),
     }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Render LaTeX table from QAT JSON results"
+        description="Render LaTeX table (mean±std over seeds) from QAT JSON results"
     )
     parser.add_argument(
-        "--results_dir", required=True, help="Directory containing QAT JSON files"
+        "--results_dir", required=True, help="Directory containing result JSON files"
     )
     parser.add_argument("--caption", default="QAT results", help="Table caption")
     parser.add_argument("--label", default="tab:qat_results", help="Table label")
     parser.add_argument(
-        "--output_path", help="File to write LaTeX table; stdout if omitted"
+        "--output_path", help="If given, write LaTeX to this file; otherwise stdout"
     )
     args = parser.parse_args()
 
-    rows = []
+    # gather accuracies grouped by hyper‑parameter combo (method, w, a, edge)
+    scores = {}
     for fn in os.listdir(args.results_dir):
-        if fn.endswith(".json"):
-            meta = parse_filename(fn)
-            if meta:
-                path = os.path.join(args.results_dir, fn)
-                with open(path) as f:
-                    data = json.load(f)
-                if data:
-                    last = data[-1]
-                    acc = last.get("accuracy", 0.0)
-                else:
-                    acc = 0.0
-                meta["accuracy"] = acc
-                rows.append(meta)
-    # sort rows for consistent order
-    rows.sort(
-        key=lambda x: (x["method"], x["w_bits"], x["a_bits"], not x["leave_edge"])
-    )
-    table = render_latex_table(rows, args.caption, args.label)
+        if not fn.endswith(".json"):
+            continue
+        meta = parse_filename(fn)
+        if not meta:
+            continue
+        with open(os.path.join(args.results_dir, fn)) as f:
+            data = json.load(f)
+        acc = data[-1].get("accuracy", 0.0) if data else 0.0
+        key = (meta["method"], meta["w_bits"], meta["a_bits"], meta["edge"])
+        scores.setdefault(key, []).append(acc)
+
+    # compute mean & std for each combo
+    rows = []
+    for (method, w, a, edge), accs in scores.items():
+        mean = stats.mean(accs)
+        std = stats.stdev(accs) if len(accs) > 1 else 0.0
+        rows.append(
+            {
+                "method": method,
+                "w_bits": w,
+                "a_bits": a,
+                "edge": edge,
+                "acc_mean": mean,
+                "acc_std": std,
+            }
+        )
+
+    # stable ordering
+    rows.sort(key=lambda r: (r["method"], r["w_bits"], r["a_bits"], not r["edge"]))
+
+    latex = render_latex_table(rows, args.caption, args.label)
 
     if args.output_path:
         with open(args.output_path, "w") as f:
-            f.write(table)
+            f.write(latex)
     else:
-        print(table)
+        print(latex)
 
 
 if __name__ == "__main__":
