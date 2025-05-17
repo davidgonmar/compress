@@ -23,6 +23,8 @@ parser.add_argument("--pretrained_path", type=str, default="resnet20.pth")
 parser.add_argument("--model_name", type=str, default="resnet20")
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
+parser.add_argument("--seed", type=int, default=0)
+
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

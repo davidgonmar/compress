@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from compress.sparsity.pruned_ops import PrunedLinear, PrunedConv2d
-from compress.sparsity.pruning_strats import (
+from compress.sparsity.sparse_ops import PrunedLinear, PrunedConv2d
+from compress.sparsity.groupers import (
     UnstructuredGrouperLinear,
     UnstructuredGrouperConv2d,
 )
