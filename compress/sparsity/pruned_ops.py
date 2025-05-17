@@ -50,9 +50,7 @@ class PrunedLinear(nn.Module):
 
     def to_linear(self):
         linear = nn.Linear(
-            self.in_features,
-            self.out_features,
-            bias=self.bias is not None
+            self.in_features, self.out_features, bias=self.bias is not None
         ).to(self.weight.device)
         pruned_weight = self.weight * self.mask
         linear.weight = nn.Parameter(pruned_weight.clone())
@@ -135,11 +133,10 @@ class PrunedConv2d(nn.Module):
             padding=self.padding,
             dilation=self.dilation,
             groups=self.groups,
-            bias=self.bias is not None
+            bias=self.bias is not None,
         ).to(self.weight.device)
         pruned_weight = self.weight * self.mask
         conv.weight = nn.Parameter(pruned_weight.clone())
         if self.bias is not None:
             conv.bias = nn.Parameter(self.bias.data.clone())
         return conv
-
