@@ -9,9 +9,9 @@ CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p $DIR
 
 METHODS=(qat lsq)
-BITS=(2 4 8)
+BITS=(2 4)
 LEAVE_FLAGS=("--leave_edge_layers_8_bits")
-SEEDS=(0 1 2 3 4)
+SEEDS=(0 1 2)
 
 CMDS=()
 
