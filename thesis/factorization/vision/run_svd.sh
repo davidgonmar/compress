@@ -11,6 +11,7 @@ python -m factorization.vision.svd_global \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
   --metric flops \
+  --keep_edge_layer \
   --output_file "global_flops_results.json"
 
 # -------------------------------
@@ -20,6 +21,7 @@ python -m factorization.vision.svd_manual \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
   --metric flops \
+  --keep_edge_layer \
   --output_path "manual_flops_results.json"
 
 # -------------------------------
@@ -29,4 +31,5 @@ python -m factorization.vision.svd_manual \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
   --metric energy \
+  --keep_edge_layer \
   --output_path "manual_energy_results.json"
