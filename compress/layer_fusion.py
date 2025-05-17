@@ -149,3 +149,40 @@ def fuse_batch_norm_training(
         raise TypeError(f"Expected nn.BatchNorm2d, got {type(bn)}")
 
     return TrainableFusedConv2dBatchNorm2d(conv, bn)
+
+
+resnet20_fuse_pairs = [
+    # stem
+    ("conv1", "bn1"),
+    # layer1 – BasicBlock(0, 1, 2)
+    ("layer1.0.conv1", "layer1.0.bn1"),
+    ("layer1.0.conv2", "layer1.0.bn2"),
+    ("layer1.1.conv1", "layer1.1.bn1"),
+    ("layer1.1.conv2", "layer1.1.bn2"),
+    ("layer1.2.conv1", "layer1.2.bn1"),
+    ("layer1.2.conv2", "layer1.2.bn2"),
+    # layer2 – BasicBlock(0, 1, 2)
+    ("layer2.0.conv1", "layer2.0.bn1"),
+    ("layer2.0.conv2", "layer2.0.bn2"),
+    ("layer2.0.shortcut.0", "layer2.0.shortcut.1"),  # down‑sample path
+    ("layer2.1.conv1", "layer2.1.bn1"),
+    ("layer2.1.conv2", "layer2.1.bn2"),
+    ("layer2.2.conv1", "layer2.2.bn1"),
+    ("layer2.2.conv2", "layer2.2.bn2"),
+    # layer3 – BasicBlock(0, 1, 2)
+    ("layer3.0.conv1", "layer3.0.bn1"),
+    ("layer3.0.conv2", "layer3.0.bn2"),
+    ("layer3.0.shortcut.0", "layer3.0.shortcut.1"),  # down‑sample path
+    ("layer3.1.conv1", "layer3.1.bn1"),
+    ("layer3.1.conv2", "layer3.1.bn2"),
+    ("layer3.2.conv1", "layer3.2.bn1"),
+    ("layer3.2.conv2", "layer3.2.bn2"),
+]
+
+
+def get_fuse_bn_keys(model_name: str):
+    if model_name == "resnet20":
+        return resnet20_fuse_pairs
+    else:
+        print("Model not supported for BN fusion")
+        return []
