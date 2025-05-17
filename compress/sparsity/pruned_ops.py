@@ -48,6 +48,18 @@ class PrunedLinear(nn.Module):
             self.bias.numel() if self.bias is not None else 0
         )
 
+    def to_linear(self):
+        linear = nn.Linear(
+            self.in_features,
+            self.out_features,
+            bias=self.bias is not None
+        ).to(self.weight.device)
+        pruned_weight = self.weight * self.mask
+        linear.weight = nn.Parameter(pruned_weight.clone())
+        if self.bias is not None:
+            linear.bias = nn.Parameter(self.bias.data.clone())
+        return linear
+
 
 class PrunedConv2d(nn.Module):
     def __init__(
@@ -113,3 +125,21 @@ class PrunedConv2d(nn.Module):
         return torch.count_nonzero(multed).item() + (
             self.bias.numel() if self.bias is not None else 0
         )
+
+    def to_conv2d(self):
+        conv = nn.Conv2d(
+            self.in_channels,
+            self.out_channels,
+            self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+            bias=self.bias is not None
+        ).to(self.weight.device)
+        pruned_weight = self.weight * self.mask
+        conv.weight = nn.Parameter(pruned_weight.clone())
+        if self.bias is not None:
+            conv.bias = nn.Parameter(self.bias.data.clone())
+        return conv
+

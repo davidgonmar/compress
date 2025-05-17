@@ -4,6 +4,8 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+mkdir -p "$DIR/results"
+
 MODEL="resnet20"
 PRETRAINED="resnet20.pth"
 NUM_CLASSES=10
@@ -14,11 +16,11 @@ LR=0.001
 MOMENTUM=0.9
 WD=5e-4
 TARGET_SPARSITY=0.01
-N_ITERS=12
+N_ITERS=1
 EPOCHS_PER_ITER=5
 SCHEDULER="linear"
 WANDA_SAMPLES=512
-WANDA_N_ITERS=4
+WANDA_N_ITERS=12
 SEED=0
 
 METHODS=(magnitude wanda taylor)
