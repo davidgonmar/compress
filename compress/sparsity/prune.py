@@ -666,8 +666,8 @@ def make_vision_runner(
     return runner
 
 
-class WandaPruner:
-    # this one needs to store activations
+class ActivationMagnitudeIntraSparsityPruner:
+    # https://arxiv.org/abs/2306.11695
     def __init__(self, model: nn.Module, policies: PolicyDict, runner, n_iters):
         self.model = model
         self.policies = policies
@@ -818,7 +818,7 @@ def get_sparsity_information(model: nn.Module) -> int:
                 total_parameters += module.bias.numel()
         else:
             for param in module.parameters(recurse=False):
-                nonzero_params += param.numel()
+                nonzero_params += param.count_nonzero()
                 total_parameters += param.numel()
 
     pruned_parameters = total_parameters - nonzero_params
