@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/results"
+python -m quantization.vision.render_qat_table \
+  --results_dir "$DIR" \
+  --caption "QAT CIFAR-10 Results (ResNet-20)" \
+  --label "tab:qat_resnet20" \
+  --output_path "$DIR/qat_results.tex"
