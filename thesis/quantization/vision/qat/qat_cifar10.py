@@ -26,7 +26,7 @@ parser.add_argument("--model_name", default="resnet20", type=str)
 parser.add_argument("--pretrained_path", default="resnet20.pth", type=str)
 parser.add_argument("--batch_size", default=256, type=int)
 parser.add_argument("--epochs", default=90, type=int)
-parser.add_argument("--lr", default=0.01, type=float)
+parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--momentum", default=0.9, type=float)
 parser.add_argument("--weight_decay", default=5e-4, type=float)
 parser.add_argument(
@@ -98,7 +98,8 @@ optimizer = optim.SGD(
     momentum=args.momentum,
     weight_decay=args.weight_decay,
 )
-scheduler = StepLR(optimizer, step_size=20, gamma=0.1)
+
+scheduler = StepLR(optimizer, step_size=40, gamma=0.1)
 
 results = []
 for epoch in range(args.epochs):
