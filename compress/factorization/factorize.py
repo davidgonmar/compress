@@ -13,6 +13,7 @@ import copy
 import torch
 from typing import Dict
 import functools
+from dataclasses import dataclass
 
 
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
@@ -208,7 +209,9 @@ def plot_singular_values(model: nn.Module, should_do: Callable = default_should_
     print("Done plotting singular values")
 
 
-def maximize_energy_pulp(cum_energy_vectors, cumulative_cost_vectors, total_cost):
+def maximize_energy_pulp(
+    cum_energy_vectors, cumulative_cost_vectors, total_cost, minimize=False
+):
     import pulp
 
     # We are given N vectors of cumulative energies and of cumulative vectors. We want to, by selecting a (cumulative)
@@ -220,7 +223,11 @@ def maximize_energy_pulp(cum_energy_vectors, cumulative_cost_vectors, total_cost
     # 1. sum_{j} x_{i, j} = 1 for all i
     # 2. sum_{i, j} j * x_{i, j} * cost_vectors[i][j] <= total_cost
 
-    prob = pulp.LpProblem("MaximizeEnergy", pulp.LpMaximize)
+    prob = (
+        pulp.LpProblem("MaximizeEnergy", pulp.LpMaximize)
+        if not minimize
+        else pulp.LpProblem("MinimizeEnergy", pulp.LpMinimize)
+    )
 
     selection_vars = {}
     for vec_idx, vec in enumerate(cum_energy_vectors):
@@ -460,131 +467,201 @@ def to_low_rank_global(
     return model
 
 
-def get_grads(model: torch.nn.Module, dataloader: torch.utils.data.DataLoader):
-    oneitem = next(iter(dataloader))
-    if isinstance(oneitem, dict):
-        # huggingface dataset
-        model.train()
-        model.zero_grad()
-        device = next(model.parameters()).device
-        crit = torch.nn.CrossEntropyLoss()
-        for batch in tqdm(dataloader, desc="Getting grads"):
-            inputs = {key: value.to(device) for key, value in batch.items()}
-            outputs = model(
-                inputs["input_ids"], attention_mask=inputs["attention_mask"]
-            )
-            loss = crit(outputs.logits, inputs["label"])
-            loss.backward()
+@dataclass
+class TaylorEstimationInfo:
+    mean_grads: Dict[str, torch.Tensor]
+    mean_grads_squareds: Dict[str, torch.Tensor]
 
-        with torch.no_grad():
-            mean_grads = {
-                name: param.grad.div_(len(dataloader))
-                for name, param in model.named_parameters()
-            }
 
+def get_taylor_estimation_info(
+    model: nn.Module, dataloader: torch.utils.data.DataLoader
+) -> TaylorEstimationInfo:
+    device = next(model.parameters()).device
+    criterion = nn.CrossEntropyLoss(reduction="sum")
+
+    sum_grads = {
+        n: torch.zeros_like(p, device=device) for n, p in model.named_parameters()
+    }
+    sum_grads_sq = {
+        n: torch.zeros_like(p, device=device) for n, p in model.named_parameters()
+    }
+
+    model.eval()
+    for batch in tqdm(dataloader, desc="Accumulating grads"):
         model.zero_grad()
-        model.eval()
-        return mean_grads
-    else:  # torchvision cifar10
-        model.train()
-        model.zero_grad()
-        device = next(model.parameters()).device
-        crit = torch.nn.CrossEntropyLoss()
-        for batch in tqdm(dataloader, desc="Getting grads"):
+        if isinstance(batch, dict):
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(batch["input_ids"], attention_mask=batch["attention_mask"])
+            loss = criterion(outputs.logits, batch["label"])
+        else:
             inputs, targets = batch
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            loss = crit(outputs, targets)
-            loss.backward()
-
+            loss = criterion(outputs, targets)
+        loss.backward()
         with torch.no_grad():
-            mean_grads = {
-                name: param.grad.div_(len(dataloader))
-                for name, param in model.named_parameters()
-            }
+            for name, param in model.named_parameters():
+                g = param.grad.detach()
+                sum_grads[name] += g
+                sum_grads_sq[name] += g.pow(2)
 
-        model.zero_grad()
-        model.eval()
-        return mean_grads
+    N = len(dataloader)
+    mean_grads = {n: g / N for n, g in sum_grads.items()}
+    mean_grads_squareds = {n: g2 / N for n, g2 in sum_grads_sq.items()}
+
+    model.zero_grad()
+    model.eval()
+
+    return TaylorEstimationInfo(
+        mean_grads=mean_grads, mean_grads_squareds=mean_grads_squareds
+    )
 
 
-# Given a total rank ratio, estimates the rank ratio for each layer
 def to_low_rank_global2(
     model: nn.Module,
     dataloader,
-    should_do: Callable = default_should_do,
-    inplace=True,
+    taylor_estimation_info: TaylorEstimationInfo,
+    keys,
+    sample_input,
+    ratio_to_keep,
+    metric: str = "flops",
+    inplace: bool = True,
     **kwargs,
 ):
+    """
+    Taylor-based global low-rank compression (version 2) with the same cost logic
+    used in `to_low_rank_global`.  *Energy logic is untouched.*
+    """
+    import copy
+    import torch
+    from tqdm import tqdm
 
     if not inplace:
         model = copy.deepcopy(model)
+
+    # --- gather candidate modules -------------------------------------------------
     modules_to_replace = gather_submodules(
         model,
-        should_do=should_do,
+        should_do=keys_passlist_should_do(keys),
     )
-    grads = get_grads(model, dataloader)
+
+    # --- record output shapes needed to estimate FLOPs/params ---------------------
+    sizes, hooks = [], []
+
+    def _hook_fn(module, _inp, output):
+        if isinstance(module, (nn.Conv2d, nn.LazyConv2d, nn.Linear, nn.LazyLinear)):
+            sizes.append(output.shape)
+        else:  # should never happen
+            raise ValueError("Unsupported module type inside _hook_fn")
+
+    for _name, module in modules_to_replace:
+        hooks.append(module.register_forward_hook(_hook_fn))
+
+    rand_inp = sample_input.to(next(model.parameters()).device)
+    with torch.no_grad():
+        model(rand_inp)
+
+    for h in hooks:
+        h.remove()
+
+    assert len(sizes) == len(
+        modules_to_replace
+    ), "`sizes` and `modules_to_replace` length mismatch"
 
     cum_energies = []
+    ws, mods = [], []
+
     for name, module in modules_to_replace:
-        if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
+        # store raw weights for cost estimation later
+        ws.append(module.weight.detach())
+        mods.append(module)
+
+        if isinstance(module, (nn.Linear, nn.LazyLinear)):
             weight = module.weight.detach()
-        elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
-            reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
-            weight = reshaped.detach()
-        else:
-            continue
+        else:  # Conv2d / LazyConv2d
+            weight = _module_to_reshaper[(module.__class__, "weight")](module.weight)
 
         U, S, V = torch.linalg.svd(weight)
         k = min(U.shape[1], V.shape[0])
-        # get k vectors from u and v
-        U = U[:, :k]  # shape (m, k)
-        V = V[:k, :]  # shape (k, n)
-        # get k singular values
-        S = S[:k]  # shape (k,)
+        U, V, S = U[:, :k], V[:k, :], S[:k]
 
-        grad = grads[name + ".weight"]
-        if isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
-            grad = _module_to_reshaper[(module.__class__, "weight")](grad)
+        gradsq = taylor_estimation_info.mean_grads_squareds[name + ".weight"]
+        if isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
+            gradsq = _module_to_reshaper[(module.__class__, "weight")](gradsq)
 
-        uvgrads = torch.einsum("k, mk, kn, mn -> k", S, U, V, grad)  # shape (k,)
-        total = torch.sum(uvgrads)
-        cum_energy = total - torch.cumsum(uvgrads, 0)  # shape (k,)
-        cum_energies.append(cum_energy)
+        # = sigma_i u_i v_i^t
+        # todo -- efficiently compute this
+        sum_sigma_u_v = torch.zeros((k, *gradsq.shape), device=gradsq.device)
+        for i in range(k):
+            sum_sigma_u_v[i] = S[i] * torch.outer(U[:, i], V[i, :])
 
-    n_rank_to_keep = (
-        sum(len(energy) for energy in cum_energies) * kwargs["ratio_to_keep"]
+        cum_sum_sigma_u_v = torch.cumsum(sum_sigma_u_v, dim=0)
+        cum_sum_sigma_u_v_inv = cum_sum_sigma_u_v[-1] - cum_sum_sigma_u_v
+
+        uvgrads = torch.einsum("kmn,mn -> k", cum_sum_sigma_u_v_inv**2, gradsq)
+
+        cum_energies.append(uvgrads)
+
+    if metric == "rank":
+        costs = [torch.cumsum(torch.arange(len(e)), 0) for e in cum_energies]
+    elif metric == "flops":
+        costs = [
+            (
+                generate_cost_flops_linear(w, out_size)
+                if isinstance(m, (nn.Linear, nn.LazyLinear))
+                else generate_cost_flops_conv2d(w, out_size)
+            )
+            / 1_000_000
+            for w, out_size, m in zip(ws, sizes, mods)
+        ]
+    elif metric == "params":
+        costs = [
+            (
+                generate_cost_params_linear(w, out_size)
+                if isinstance(m, (nn.Linear, nn.LazyLinear))
+                else generate_cost_params_conv2d(w, out_size)
+            )
+            for w, out_size, m in zip(ws, sizes, mods)
+        ]
+    else:
+        raise ValueError(f"Unsupported metric: {metric}")
+
+    if metric == "rank":
+        total_budget = sum(len(e) for e in cum_energies) * ratio_to_keep
+    else:
+        total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
+
+    selected_indices = maximize_energy_pulp(
+        cum_energies, costs, total_budget, minimize=True
     )
 
-    selected_indices = maximize_energy_pulp(cum_energies, n_rank_to_keep)
-
-    selected_indices_per_module = {}
-    for i, (name, module) in enumerate(modules_to_replace):
-        selected_idx = selected_indices[i]
-        if selected_idx == -1:
-            selected_indices_per_module[name] = 1.0
-        else:
-            selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
+    selected_indices_per_module = {
+        name: (
+            1.0
+            if selected_indices[i] == -1
+            else selected_indices[i] / len(cum_energies[i])
+        )
+        for i, (name, _module) in enumerate(modules_to_replace)
+    }
 
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
-        *parent_path, attr_name = name.split(".")
+        *parent_path, attr = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
 
-        setattr(
-            parent_module,
-            attr_name,
-            (
-                LowRankLinear.from_linear(
-                    module, ratio_to_keep=selected_indices_per_module[name]
-                )
-                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-                else LowRankConv2d.from_conv2d(
-                    module, ratio_to_keep=selected_indices_per_module[name]
-                )
-            ),
+        keep_ratio = selected_indices_per_module[name]
+
+        replacement = (
+            LowRankLinear.from_linear(
+                module, keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio}
+            )
+            if isinstance(module, (nn.Linear, nn.LazyLinear))
+            else LowRankConv2d.from_conv2d(
+                module, keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio}
+            )
         )
+        setattr(parent_module, attr, replacement)
 
     return model
 
