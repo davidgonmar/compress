@@ -34,6 +34,7 @@ from compress.quantization.common import (
     ConvWeightsPerOutChannel,
     LinearPerColumn,
     LinearPerRow,
+    LinearWeightsPerOutChannel,
 )
 from compress.common import (
     gather_submodules,
@@ -98,43 +99,6 @@ def get_quant_dict(
         }
         for name, module in mods
     }
-
-
-resnet20_fuse_pairs = [
-    # stem
-    ("conv1", "bn1"),
-    # layer1 – BasicBlock(0, 1, 2)
-    ("layer1.0.conv1", "layer1.0.bn1"),
-    ("layer1.0.conv2", "layer1.0.bn2"),
-    ("layer1.1.conv1", "layer1.1.bn1"),
-    ("layer1.1.conv2", "layer1.1.bn2"),
-    ("layer1.2.conv1", "layer1.2.bn1"),
-    ("layer1.2.conv2", "layer1.2.bn2"),
-    # layer2 – BasicBlock(0, 1, 2)
-    ("layer2.0.conv1", "layer2.0.bn1"),
-    ("layer2.0.conv2", "layer2.0.bn2"),
-    ("layer2.0.shortcut.0", "layer2.0.shortcut.1"),  # down‑sample path
-    ("layer2.1.conv1", "layer2.1.bn1"),
-    ("layer2.1.conv2", "layer2.1.bn2"),
-    ("layer2.2.conv1", "layer2.2.bn1"),
-    ("layer2.2.conv2", "layer2.2.bn2"),
-    # layer3 – BasicBlock(0, 1, 2)
-    ("layer3.0.conv1", "layer3.0.bn1"),
-    ("layer3.0.conv2", "layer3.0.bn2"),
-    ("layer3.0.shortcut.0", "layer3.0.shortcut.1"),  # down‑sample path
-    ("layer3.1.conv1", "layer3.1.bn1"),
-    ("layer3.1.conv2", "layer3.1.bn2"),
-    ("layer3.2.conv1", "layer3.2.bn1"),
-    ("layer3.2.conv2", "layer3.2.bn2"),
-]
-
-
-def get_fuse_bn_keys(model_name: str):
-    if model_name == "resnet20":
-        return resnet20_fuse_pairs
-    else:
-        print("Model not supported for BN fusion")
-        return []
 
 
 def to_quantized_online(
@@ -256,7 +220,7 @@ def prepare_for_qat(
             )
         else:
             _model_acts = model
-        activations = get_activations(_model_acts, kwargs["data_batch"], specs)
+        activations = get_activations_vision(_model_acts, kwargs["data_batch"], specs)
     else:
         activations = None
 
@@ -374,13 +338,13 @@ def requantize_lsq(
     return model
 
 
-def get_activations(model, data_loader, spec, move_to_cpu=False):
+def get_activations_vision(model, data_loader, keys, move_to_cpu=False):
     if isinstance(data_loader, torch.Tensor):
         data_loader = [data_loader]
     activations = {}
     hooks = []
     for name, module in gather_submodules(
-        model, should_do=keys_passlist_should_do(spec.keys())
+        model, should_do=keys_passlist_should_do(keys)
     ):
         activations[name] = []
 
@@ -433,7 +397,7 @@ def to_quantized_offline(
         )
     if activations is None:
         # first, estimate the quantization parameters with hooks
-        layer_and_input_acts = get_activations(model, data_loader, specs)
+        layer_and_input_acts = get_activations_vision(model, data_loader, specs)
 
     else:
         layer_and_input_acts = activations
@@ -560,7 +524,6 @@ def to_quantized_kmeans(
     return model
 
 
-
 def get_activations_transformers(model, dataloader, specs):
     activations = {}
     hooks = []
@@ -569,6 +532,7 @@ def get_activations_transformers(model, dataloader, specs):
         def hook(module, input, output):
             # Store detached CPU tensor of output activations
             activations[name].append(output.detach().cpu())
+
         return hook
 
     # Register forward hooks on all linear modules
@@ -583,8 +547,11 @@ def get_activations_transformers(model, dataloader, specs):
     with torch.no_grad():
         for batch in dataloader:
             # Move inputs to the model's device, skip labels
-            inputs = {k: v.to(next(model.parameters()).device)
-                      for k, v in batch.items() if k != "labels"}
+            inputs = {
+                k: v.to(next(model.parameters()).device)
+                for k, v in batch.items()
+                if k != "labels"
+            }
             print(inputs.keys())
             _ = model(**inputs)
 
@@ -597,4 +564,3 @@ def get_activations_transformers(model, dataloader, specs):
         activations[name] = torch.cat(activations[name], dim=0)
 
     return activations
-

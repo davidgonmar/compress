@@ -322,6 +322,11 @@ def get_resnet20_recipe_quant(
     linear_activation_grouper=PerTensor(),
 ):
 
+    def _get_grouper(name, is_w):
+        if "linear" in name:
+            return linear_weight_grouper if is_w else linear_activation_grouper
+        return conv_weight_grouper if is_w else conv_activation_grouper
+
     if symmetric:
         # if is after relu -> use unsigned quantization
         # if is not after relu -> use signed quantization
@@ -345,11 +350,6 @@ def get_resnet20_recipe_quant(
         after_relu.add("linear")
 
         weight_specs = {}
-
-        def _get_grouper(name, is_w):
-            if "linear" in name:
-                return linear_weight_grouper if is_w else linear_activation_grouper
-            return conv_weight_grouper if is_w else conv_activation_grouper
 
         for k in after_relu:
             weight_specs[k] = IntAffineQuantizationSpec(
@@ -424,12 +424,14 @@ def get_resnet20_recipe_quant(
                 signed=True,
                 quant_mode=IntAffineQuantizationMode.ASYMMETRIC,
                 percentile=clip_percentile,
+                grouper=_get_grouper(k, True),
             )
             input_specs[k] = IntAffineQuantizationSpec(
                 nbits=bits_activation,
                 signed=True,
                 quant_mode=IntAffineQuantizationMode.ASYMMETRIC,
                 percentile=clip_percentile,
+                grouper=_get_grouper(k, False),
             )
 
         if leave_edge_layers_8_bits:
@@ -439,12 +441,14 @@ def get_resnet20_recipe_quant(
                     signed=True,
                     quant_mode=IntAffineQuantizationMode.ASYMMETRIC,
                     percentile=clip_percentile,
+                    grouper=_get_grouper(k, False),
                 )
                 weight_specs[k] = IntAffineQuantizationSpec(
                     nbits=8,
                     signed=True,
                     quant_mode=IntAffineQuantizationMode.ASYMMETRIC,
                     percentile=clip_percentile,
+                    grouper=_get_grouper(k, True),
                 )
 
         quant_specs = {}
@@ -467,6 +471,18 @@ def get_recipe_quant(model_name: str):
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
+
+def get_quant_keys(model_name: str):
+    # get recipe then recipe.keys()
+    recp = get_recipe_quant(model_name)(
+        bits_activation=8,
+        bits_weight=8,
+        clip_percentile=0.995,
+        leave_edge_layers_8_bits=False,
+        symmetric=False,
+    )
+
+    return recp.keys()
 
 
 def get_generic_recipe_quant(
@@ -493,7 +509,6 @@ def get_generic_recipe_quant(
         else IntAffineQuantizationMode.ASYMMETRIC
     )
 
-
     conv_names, linear_names = [], []
     for name, m in model.named_modules():
         if isinstance(m, (nn.Conv2d, nn.LazyConv2d)):
@@ -501,7 +516,9 @@ def get_generic_recipe_quant(
         elif isinstance(m, nn.Linear):
             linear_names.append(name)
     first_conv = conv_names[0] if leave_edge_layers_8_bits and conv_names else None
-    last_linear = linear_names[-1] if leave_edge_layers_8_bits and linear_names else None
+    last_linear = (
+        linear_names[-1] if leave_edge_layers_8_bits and linear_names else None
+    )
 
     specs = {}
     for name, m in model.named_modules():
@@ -525,7 +542,11 @@ def get_generic_recipe_quant(
                     signed=True,
                     quant_mode=mode,
                     percentile=clip_percentile,
-                    grouper=conv_activation_grouper if is_conv else linear_activation_grouper,
+                    grouper=(
+                        conv_activation_grouper
+                        if is_conv
+                        else linear_activation_grouper
+                    ),
                 ),
             }
     return specs

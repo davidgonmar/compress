@@ -4,7 +4,11 @@ import random
 
 import torch
 from torch.utils.data import DataLoader, Subset
-from transformers import BertForSequenceClassification, BertTokenizerFast, DataCollatorWithPadding
+from transformers import (
+    BertForSequenceClassification,
+    BertTokenizerFast,
+    DataCollatorWithPadding,
+)
 from datasets import load_dataset
 import evaluate
 
@@ -12,6 +16,8 @@ from compress.quantization import to_quantized_offline, get_activations_transfor
 from compress.quantization.recipes import get_generic_recipe_quant
 
 args = None
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Offline quantize BERT on GLUE and evaluate across bit-widths"
@@ -40,14 +46,22 @@ def parse_args():
         help="Force first/last layers to 8-bit",
     )
     parser.add_argument(
-        "--batch_size", type=int, default=32, help="Batch size for evaluation and calibration"
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Batch size for evaluation and calibration",
     )
     parser.add_argument(
-        "--calibration_batches", type=int, default=4, help="Number of batches for calibration"
+        "--calibration_batches",
+        type=int,
+        default=4,
+        help="Number of batches for calibration",
     )
     parser.add_argument(
-        "--output_file", type=str, default="quantization_results.json",
-        help="Output JSON file for results"
+        "--output_file",
+        type=str,
+        default="quantization_results.json",
+        help="Output JSON file for results",
     )
     return parser.parse_args()
 
@@ -84,7 +98,9 @@ def prepare_dataloaders(task_name, tokenizer, batch_size, calibration_batches):
         encoded["labels"] = example["label"]
         return encoded
 
-    tokenized = raw.map(preprocess, batched=True, remove_columns=raw["train"].column_names)
+    tokenized = raw.map(
+        preprocess, batched=True, remove_columns=raw["train"].column_names
+    )
 
     # calibration subset
     train_dataset = tokenized["train"]
@@ -93,16 +109,20 @@ def prepare_dataloaders(task_name, tokenizer, batch_size, calibration_batches):
     indices = random.sample(range(len(train_dataset)), total)
     calib_subset = Subset(train_dataset, indices)
     calib_loader = DataLoader(
-        calib_subset, batch_size=batch_size, shuffle=False,
-        collate_fn=lambda b: collate_fn(b, tokenizer)
+        calib_subset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=lambda b: collate_fn(b, tokenizer),
     )
 
     # eval dataset
     eval_split = "validation_matched" if task_name == "mnli" else "validation"
     eval_dataset = tokenized[eval_split]
     eval_loader = DataLoader(
-        eval_dataset, batch_size=batch_size, shuffle=False,
-        collate_fn=lambda b: collate_fn(b, tokenizer)
+        eval_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=lambda b: collate_fn(b, tokenizer),
     )
     return calib_loader, eval_loader
 
@@ -133,8 +153,14 @@ def main():
     tokenizer = BertTokenizerFast.from_pretrained(args.model_name)
     model = BertForSequenceClassification.from_pretrained(
         args.model_name if args.pretrained_path is None else args.pretrained_path,
-        num_labels=(1 if args.task_name == "stsb" else load_dataset("glue", args.task_name)["train"].features["label"].num_classes),
-        finetuning_task=args.task_name
+        num_labels=(
+            1
+            if args.task_name == "stsb"
+            else load_dataset("glue", args.task_name)["train"]
+            .features["label"]
+            .num_classes
+        ),
+        finetuning_task=args.task_name,
     )
     model.to(device)
 
@@ -149,15 +175,16 @@ def main():
 
     # calibration activations
     activations = get_activations_transformers(
-        model, calib_loader,
+        model,
+        calib_loader,
         specs=get_generic_recipe_quant(
             model,
             bits_activation=8,
             bits_weight=8,
             clip_percentile=0.995,
             leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
-            symmetric=False
-        )
+            symmetric=False,
+        ),
     )
 
     bit_widths = [2, 4, 8, 16]
@@ -169,7 +196,7 @@ def main():
                 bits_weight=w_bits,
                 clip_percentile=0.995,
                 leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
-                symmetric=False
+                symmetric=False,
             )
             quanted = to_quantized_offline(
                 model, spec, activations=activations, inplace=False
@@ -178,11 +205,13 @@ def main():
             quanted.to(device)
             res = evaluate_model(quanted, eval_loader, device, is_regression)
             print(f"W{w_bits}A{act_bits}: {res}")
-            results.append({
-                "type": f"W{w_bits}A{act_bits}",
-                "leave_edge_layers_8_bits": args.leave_edge_layers_8_bits,
-                **res
-            })
+            results.append(
+                {
+                    "type": f"W{w_bits}A{act_bits}",
+                    "leave_edge_layers_8_bits": args.leave_edge_layers_8_bits,
+                    **res,
+                }
+            )
 
     # Write results
     with open(args.output_file, "w") as f:

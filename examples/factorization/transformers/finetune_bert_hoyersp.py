@@ -43,12 +43,14 @@ KEY_MAPPING = {
     "wnli": ("sentence1", "sentence2"),
 }
 
+
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -117,6 +119,7 @@ def parse_args():
     )
     return parser.parse_args()
 
+
 def weight_schedule(epoch, start, end, T_0, T_mult):
     T_i = T_0
     ep_i = epoch
@@ -124,6 +127,7 @@ def weight_schedule(epoch, start, end, T_0, T_mult):
         ep_i -= T_i
         T_i *= T_mult
     return end + 0.5 * (start - end) * (1 + math.cos(math.pi * ep_i / T_i))
+
 
 def main():
     args = parse_args()
@@ -164,6 +168,7 @@ def main():
 
     # Preprocessing
     sentence1_key, sentence2_key = KEY_MAPPING[args.task_name]
+
     def preprocess_function(examples):
         if sentence2_key is None:
             tokens = tokenizer(
@@ -212,13 +217,17 @@ def main():
     optimizer_grouped_parameters = [
         {
             "params": [
-                p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)
+                p
+                for n, p in model.named_parameters()
+                if not any(nd in n for nd in no_decay)
             ],
             "weight_decay": 0.01,
         },
         {
             "params": [
-                p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)
+                p
+                for n, p in model.named_parameters()
+                if any(nd in n for nd in no_decay)
             ],
             "weight_decay": 0.0,
         },
@@ -262,7 +271,9 @@ def main():
             avg_reg = total_reg / step
             train_pbar.set_postfix(loss=f"{avg_loss:.4f}", reg=f"{avg_reg:.4f}")
 
-        logger.info(f"Epoch {epoch} finished. Avg loss {avg_loss:.4f} Avg reg {avg_reg:.4f}")
+        logger.info(
+            f"Epoch {epoch} finished. Avg loss {avg_loss:.4f} Avg reg {avg_reg:.4f}"
+        )
 
         # Evaluation
         model.eval()
@@ -294,7 +305,9 @@ def main():
                 )
         results = metric.compute()
         logger.info(f"Validation results for epoch {epoch}: {results}")
-        history.append({"epoch": epoch, "train_loss": avg_loss, "train_reg": avg_reg, **results})
+        history.append(
+            {"epoch": epoch, "train_loss": avg_loss, "train_reg": avg_reg, **results}
+        )
 
     # Save model, tokenizer, and history
     os.makedirs(args.output_dir, exist_ok=True)
@@ -304,6 +317,7 @@ def main():
         json.dump({"history": history}, f, indent=2)
 
     logger.info(f"Saved model, tokenizer, and history to {args.output_dir}")
+
 
 if __name__ == "__main__":
     main()
