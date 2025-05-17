@@ -21,6 +21,7 @@ from compress.sparsity.prune import merge_pruned_modules
 from tqdm import tqdm
 import json
 
+
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
@@ -33,6 +34,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         optimizer.step()
         running_loss += loss.item() * images.size(0)
     return running_loss / len(dataloader.dataset)
+
 
 def main():
     import argparse
@@ -127,7 +129,9 @@ def main():
 
     print("Evaluating baseline...")
     baseline = evaluate_vision_model(model, testloader)
-    print(f"Baseline -> Accuracy: {baseline['accuracy']:.4f}, Loss: {baseline['loss']:.4f}")
+    print(
+        f"Baseline -> Accuracy: {baseline['accuracy']:.4f}, Loss: {baseline['loss']:.4f}"
+    )
     stats_log["baseline"] = {
         "accuracy": baseline["accuracy"],
         "loss": baseline["loss"],
@@ -138,7 +142,9 @@ def main():
         iter_record = {"iteration": it}
         print(f"\nIteration {it}: evaluating before prune...")
         before_prune = evaluate_vision_model(model, testloader)
-        print(f"Iteration {it} before prune -> Accuracy: {before_prune['accuracy']:.4f}, Loss: {before_prune['loss']:.4f}")
+        print(
+            f"Iteration {it} before prune -> Accuracy: {before_prune['accuracy']:.4f}, Loss: {before_prune['loss']:.4f}"
+        )
         iter_record["before_prune"] = {
             "accuracy": before_prune["accuracy"],
             "loss": before_prune["loss"],
@@ -201,7 +207,9 @@ def main():
 
         print("Evaluating immediately after prune (before finetuning)...")
         post_prune = evaluate_vision_model(model, testloader)
-        print(f"Iteration {it} after prune -> Accuracy: {post_prune['accuracy']:.4f}, Loss: {post_prune['loss']:.4f}, Sparsity: {sparsity_str}")
+        print(
+            f"Iteration {it} after prune -> Accuracy: {post_prune['accuracy']:.4f}, Loss: {post_prune['loss']:.4f}, Sparsity: {sparsity_str}"
+        )
         iter_record["after_prune_before_ft"] = {
             "accuracy": post_prune["accuracy"],
             "loss": post_prune["loss"],
@@ -216,7 +224,9 @@ def main():
         ):
             loss = train_one_epoch(model, trainloader, criterion, optimizer, device)
             stats = evaluate_vision_model(model, testloader)
-            print(f"Iteration {it} Epoch {epoch} -> Train Loss: {loss:.4f}, Val Acc: {stats['accuracy']:.4f}, Val Loss: {stats['loss']:.4f}")
+            print(
+                f"Iteration {it} Epoch {epoch} -> Train Loss: {loss:.4f}, Val Acc: {stats['accuracy']:.4f}, Val Loss: {stats['loss']:.4f}"
+            )
             epochs_stats.append(
                 {
                     "epoch": epoch,
@@ -238,4 +248,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
