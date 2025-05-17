@@ -63,8 +63,8 @@ def main():
         default="wanda",
         help="Pruning method to use: 'magnitude', 'wanda', or 'taylor'",
     )
-    parser.add_argument("--wanda_samples", type=int, default=512)
-    parser.add_argument("--wanda_n_iters", type=int, default=4)
+    parser.add_argument("--calibration_samples", type=int, default=512)
+    parser.add_argument("--calibration_bs", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--stats_file", type=str, required=True, help="Path to output JSON stats file"
@@ -166,7 +166,9 @@ def main():
                     DataLoader(
                         torch.utils.data.Subset(
                             trainset,
-                            torch.randint(0, len(trainset), (args.wanda_samples,)),
+                            torch.randint(
+                                0, len(trainset), (args.calibration_samples,)
+                            ),
                         ),
                         batch_size=args.batch_size,
                         shuffle=True,
@@ -174,7 +176,7 @@ def main():
                     criterion,
                     device,
                 ),
-                n_iters=args.wanda_n_iters,
+                n_iters=int(args.calibration_samples // args.calibration_bs),
             )
         elif args.method == "taylor":
             pruner = TaylorIntraExpansionPruner(
@@ -185,7 +187,9 @@ def main():
                     DataLoader(
                         torch.utils.data.Subset(
                             trainset,
-                            torch.randint(0, len(trainset), (args.wanda_samples,)),
+                            torch.randint(
+                                0, len(trainset), (args.calibration_samples,)
+                            ),
                         ),
                         batch_size=args.batch_size,
                         shuffle=True,
@@ -193,7 +197,7 @@ def main():
                     criterion,
                     device,
                 ),
-                n_iters=args.wanda_n_iters,
+                n_iters=int(args.calibration_samples // args.calibration_bs),
                 approx="fisher",
             )
         else:
