@@ -16,7 +16,7 @@ from compress.experiments import (
 from compress.quantization.recipes import get_recipe_quant
 import json
 
-torch.manual_seed(0)
+
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
 parser.add_argument("--method", default="qat", type=str, choices=["qat", "lsq"])
 parser.add_argument("--nbits_activations", default=2, type=int)
@@ -32,7 +32,14 @@ parser.add_argument("--weight_decay", default=5e-4, type=float)
 parser.add_argument(
     "--output_path", default=None, type=str, help="Where to save the JSON results"
 )
+parser.add_argument(
+    "--seed",
+    default=0
+)
 args = parser.parse_args()
+
+torch.manual_seed(args.seed)
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(
