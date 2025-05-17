@@ -539,7 +539,7 @@ class TaylorIntraExpansionPruner:
 
 class TaylorExpansionInterPruner:
     def __init__(
-        self, model, policies, runner, n_iters, approx="fisher", *args, **kwargs
+        self, model, policies, runner, n_iters, approx="fisher_diag", *args, **kwargs
     ):
         # runner runs one batch of data through the model
 
@@ -552,68 +552,86 @@ class TaylorExpansionInterPruner:
         self.n_iters = n_iters
 
     def prune(self):
-        grads = defaultdict(
-            lambda: torch.tensor(0).to(next(self.model.parameters()).device)
-        )
-        fisher_hessian = defaultdict(
-            lambda: torch.tensor(0).to(next(self.model.parameters()).device)
-        )
-        for i in range(self.n_iters):
-            loss = self.runner()
-            self.model.zero_grad()
-            loss.backward()
-            for name, mod in self.model.named_modules():
-                if name in self.policies.keys():
-                    assert isinstance(
-                        mod, (nn.Conv2d, nn.Linear)
-                    ), f"Module {name} is not a Linear or Conv2d"
-                    grads[name] = (
-                        grads[name] + (mod.weight.grad.data / self.n_iters).detach()
-                    )
-                    fisher_hessian[name] = (
-                        fisher_hessian[name]
-                        + (mod.weight.grad.data**2 / self.n_iters).detach()
-                    )
 
         with torch.no_grad():
-            # now we have the gradients for each layer
-            assert self.approx == "fisher"
 
-            # now we have the fisher information for each layer
+            assert self.approx == "fisher_sum_of_individual_contribs"
+            if self.approx == "fisher_sum_of_individual_contribs":
+                grads = defaultdict(
+                    lambda: torch.tensor(0).to(next(self.model.parameters()).device)
+                )
+                fisher_hessian = defaultdict(
+                    lambda: torch.tensor(0).to(next(self.model.parameters()).device)
+                )
+                for i in range(self.n_iters):
+                    loss = self.runner()
+                    self.model.zero_grad()
+                    loss.backward()
+                    for name, mod in self.model.named_modules():
+                        if name in self.policies.keys():
+                            assert isinstance(
+                                mod, (nn.Conv2d, nn.Linear)
+                            ), f"Module {name} is not a Linear or Conv2d"
+                            grads[name] = (
+                                grads[name]
+                                + (mod.weight.grad.data / self.n_iters).detach()
+                            )
+                            fisher_hessian[name] = (
+                                fisher_hessian[name]
+                                + (mod.weight.grad.data**2 / self.n_iters).detach()
+                            )
+                        # now we have the gradients for each layer
 
-            # perturbation = grad + 1/2 * fisher * (param ** 2)
-            saliencies = {}
+                # now we have the fisher information for each layer
 
-            for name, mod in self.model.named_modules():
-                if name in self.policies.keys():
-                    saliencies[name] = (
-                        +1 / 2 * fisher_hessian[name] * (mod.weight.data**2)
-                    )
+                # perturbation = grad + 1/2 * fisher * (param ** 2)
+                saliencies = {}
 
-            # now we have the saliencies for each layer
-            # we can use the saliencies to prune the model
-            masks = dict()
-            for name, policy in self.policies.items():
-                module = dict(self.model.named_modules())[name]
-                assert isinstance(
-                    module, (nn.Conv2d, nn.Linear)
-                ), f"Module {name} is not a Linear or Conv2d"
-                reshaped = policy.grouper.transform(module.weight)
-                saliency_reshaped = policy.grouper.transform(saliencies[name])
-                # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
-                inter = policy.inter_group_metric["value"]
+                for name, mod in self.model.named_modules():
+                    if name in self.policies.keys():
+                        saliencies[name] = (
+                            +1 / 2 * fisher_hessian[name] * (mod.weight.data**2)
+                        )
 
-                assert policy.inter_group_metric["name"] == "sparsity_ratio"
-                ranked_elements = torch.topk(
-                    saliency_reshaped,
-                    k=int(inter * reshaped.shape[0]),
-                    dim=0,
-                ).indices
-                mask = torch.zeros_like(reshaped, dtype=torch.bool)
-                mask.scatter_(0, ranked_elements, 1)
-                # now we need to untransform the mask
-                mask = policy.grouper.untransform(mask, module.weight)
-                masks[name] = mask
+                # now we have the saliencies for each layer
+                # we can use the saliencies to prune the model
+                masks = dict()
+                for name, policy in self.policies.items():
+                    module = dict(self.model.named_modules())[name]
+                    assert isinstance(
+                        module, (nn.Conv2d, nn.Linear)
+                    ), f"Module {name} is not a Linear or Conv2d"
+                    reshaped = policy.grouper.transform(module.weight)
+                    saliency_reshaped = policy.grouper.transform(
+                        saliencies[name]
+                    )  # shape [n_groups, m_elements_per_group]
+                    # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
+                    inter = policy.inter_group_metric["value"]
+
+                    assert policy.inter_group_metric["name"] == "sparsity_ratio"
+                    ranked_elements = torch.topk(
+                        saliency_reshaped,
+                        k=int(inter * reshaped.shape[0]),
+                        dim=0,
+                    ).indices
+                    mask = torch.zeros_like(reshaped, dtype=torch.bool)
+                    mask.scatter_(0, ranked_elements, 1)
+                    # now we need to untransform the mask
+                    mask = policy.grouper.untransform(mask, module.weight)
+                    masks[name] = mask
+            elif self.approx == "fisher_whole":
+                # now we have the gradients for each layer
+                # now we have the fisher information for each layer
+
+                # perturbation = grad + 1/2 * fisher * (param ** 2)
+                saliencies = {}
+
+                for name, mod in self.model.named_modules():
+                    if name in self.policies.keys():
+                        saliencies[name] = (
+                            +1 / 2 * fisher_hessian[name] * (mod.weight.data**2)
+                        )
+
         return apply_masks(self.model, masks)
 
 
