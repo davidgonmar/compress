@@ -12,6 +12,7 @@ import torch
 from typing import Dict
 import torchvision
 from collections import defaultdict
+from compress.experiments.cifar_resnet import resnet20
 
 _module_to_pruned = {
     nn.Linear: PrunedLinear.from_linear,
@@ -108,6 +109,71 @@ def prune_channels_resnet18_policies(metric) -> PolicyDict:
     linear_keys = {}
     with torch.device("meta"):
         model = torchvision.models.resnet18(weights=None)
+        keys = model.named_modules()
+        for name, module in keys:
+            if isinstance(module, nn.Conv2d):
+                conv_keys[name] = PruningPolicy(
+                    grouper=OutChannelGroupingGrouperConv2d(),
+                    inter_group_metric=metric,
+                    intra_group_metric=None,
+                )
+            elif isinstance(module, nn.Linear):
+                linear_keys[name] = module
+                linear_keys[name] = PruningPolicy(
+                    grouper=OutChannelGroupingGrouperLinear(),
+                    inter_group_metric=metric,
+                    intra_group_metric=None,
+                )
+
+    return {
+        **conv_keys,
+        **linear_keys,
+    }
+
+
+def unstructured_resnet20_policies(metric, normalize_non_prunable=False) -> PolicyDict:
+    # example policy for resnet20
+    conv_keys = {}
+    linear_keys = {}
+    if metric["name"] != "sparsity_ratio" and normalize_non_prunable:
+        raise ValueError(
+            "normalize_non_prunable is only supported for sparsity_ratio metric"
+        )
+
+    prunable_params = 0
+    with torch.device("meta"):
+        total_params = sum(
+            p.numel() for name, p in resnet20().named_parameters() if "mask" not in name
+        )
+        model = resnet20()
+        keys = model.named_modules()
+        for name, module in keys:
+            if isinstance(module, (nn.Conv2d, nn.LazyConv2d, PrunedConv2d)):
+                conv_keys[name] = PruningPolicy(
+                    grouper=UnstructuredGrouperConv2d(),
+                    inter_group_metric=None,
+                    intra_group_metric=metric,
+                )
+                prunable_params += module.weight.numel()
+            elif isinstance(module, (nn.Linear, nn.LazyLinear, PrunedLinear)):
+                linear_keys[name] = module
+                linear_keys[name] = PruningPolicy(
+                    grouper=UnstructuredGrouperLinear(),
+                    inter_group_metric=None,
+                    intra_group_metric=metric,
+                )
+                prunable_params += module.weight.numel()
+    return {
+        **conv_keys,
+        **linear_keys,
+    }
+
+
+def prune_channels_resnet20_policies(metric) -> PolicyDict:
+    conv_keys = {}
+    linear_keys = {}
+    with torch.device("meta"):
+        model = resnet20()
         keys = model.named_modules()
         for name, module in keys:
             if isinstance(module, nn.Conv2d):
@@ -391,7 +457,7 @@ class GroupedActivationPruner:
         return apply_masks(self.model, masks)
 
 
-class TaylorExpansionPruner:
+class TaylorIntraExpansionPruner:
     def __init__(
         self, model, policies, runner, n_iters, approx="fisher", *args, **kwargs
     ):
@@ -409,6 +475,9 @@ class TaylorExpansionPruner:
         grads = defaultdict(
             lambda: torch.tensor(0).to(next(self.model.parameters()).device)
         )
+        fisher_hessian = defaultdict(
+            lambda: torch.tensor(0).to(next(self.model.parameters()).device)
+        )
         for i in range(self.n_iters):
             loss = self.runner()
             self.model.zero_grad()
@@ -418,15 +487,17 @@ class TaylorExpansionPruner:
                     assert isinstance(
                         mod, (nn.Conv2d, nn.Linear)
                     ), f"Module {name} is not a Linear or Conv2d"
-                    grads[name] = grads[name] + mod.weight.grad.data / self.n_iters
+                    grads[name] = (
+                        grads[name] + (mod.weight.grad.data / self.n_iters).detach()
+                    )
+                    fisher_hessian[name] = (
+                        fisher_hessian[name]
+                        + (mod.weight.grad.data**2 / self.n_iters).detach()
+                    )
 
         with torch.no_grad():
             # now we have the gradients for each layer
             assert self.approx == "fisher"
-            hess = {}
-            for name, mod in self.model.named_modules():
-                if name in self.policies.keys():
-                    hess[name] = -mod.weight.grad.data**2
 
             # now we have the fisher information for each layer
 
@@ -436,8 +507,7 @@ class TaylorExpansionPruner:
             for name, mod in self.model.named_modules():
                 if name in self.policies.keys():
                     saliencies[name] = (
-                        -mod.weight.grad.data * mod.weight.data
-                        + 1 / 2 * hess[name] * (mod.weight.data**2)
+                        +1 / 2 * fisher_hessian[name] * (mod.weight.data**2)
                     )
 
             # now we have the saliencies for each layer
@@ -454,7 +524,7 @@ class TaylorExpansionPruner:
                 intra = policy.intra_group_metric["value"]
                 assert policy.intra_group_metric["name"] == "sparsity_ratio"
                 ranked_elements = torch.topk(
-                    saliency_reshaped.abs(),
+                    saliency_reshaped,
                     k=int(intra * reshaped.shape[1]),
                     dim=1,
                 ).indices
@@ -464,6 +534,86 @@ class TaylorExpansionPruner:
                 mask = policy.grouper.untransform(mask, module.weight)
                 masks[name] = mask
 
+        return apply_masks(self.model, masks)
+
+
+class TaylorExpansionInterPruner:
+    def __init__(
+        self, model, policies, runner, n_iters, approx="fisher", *args, **kwargs
+    ):
+        # runner runs one batch of data through the model
+
+        self.model = model
+        self.policies = policies
+        self.runner = runner
+        self.args = args
+        self.kwargs = kwargs
+        self.approx = approx
+        self.n_iters = n_iters
+
+    def prune(self):
+        grads = defaultdict(
+            lambda: torch.tensor(0).to(next(self.model.parameters()).device)
+        )
+        fisher_hessian = defaultdict(
+            lambda: torch.tensor(0).to(next(self.model.parameters()).device)
+        )
+        for i in range(self.n_iters):
+            loss = self.runner()
+            self.model.zero_grad()
+            loss.backward()
+            for name, mod in self.model.named_modules():
+                if name in self.policies.keys():
+                    assert isinstance(
+                        mod, (nn.Conv2d, nn.Linear)
+                    ), f"Module {name} is not a Linear or Conv2d"
+                    grads[name] = (
+                        grads[name] + (mod.weight.grad.data / self.n_iters).detach()
+                    )
+                    fisher_hessian[name] = (
+                        fisher_hessian[name]
+                        + (mod.weight.grad.data**2 / self.n_iters).detach()
+                    )
+
+        with torch.no_grad():
+            # now we have the gradients for each layer
+            assert self.approx == "fisher"
+
+            # now we have the fisher information for each layer
+
+            # perturbation = grad + 1/2 * fisher * (param ** 2)
+            saliencies = {}
+
+            for name, mod in self.model.named_modules():
+                if name in self.policies.keys():
+                    saliencies[name] = (
+                        +1 / 2 * fisher_hessian[name] * (mod.weight.data**2)
+                    )
+
+            # now we have the saliencies for each layer
+            # we can use the saliencies to prune the model
+            masks = dict()
+            for name, policy in self.policies.items():
+                module = dict(self.model.named_modules())[name]
+                assert isinstance(
+                    module, (nn.Conv2d, nn.Linear)
+                ), f"Module {name} is not a Linear or Conv2d"
+                reshaped = policy.grouper.transform(module.weight)
+                saliency_reshaped = policy.grouper.transform(saliencies[name])
+                # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
+                inter = policy.inter_group_metric["value"]
+
+                assert policy.inter_group_metric["name"] == "sparsity_ratio"
+                ranked_elements = torch.topk(
+                    saliency_reshaped,
+                    k=int(inter * reshaped.shape[0]),
+                    dim=0,
+                ).indices
+                mask = torch.zeros_like(reshaped, dtype=torch.bool)
+                mask.scatter_(0, ranked_elements, 1)
+                # now we need to untransform the mask
+                mask = policy.grouper.untransform(mask, module.weight)
+                masks[name] = mask
         return apply_masks(self.model, masks)
 
 
