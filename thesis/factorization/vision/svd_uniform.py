@@ -24,6 +24,8 @@ parser.add_argument("--model_name", type=str, default="resnet20")
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
 parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--values", type=float, nargs="+", default=None)
+parser.add_argument("--output_path", type=str, default=None)
 
 args = parser.parse_args()
 
@@ -116,6 +118,12 @@ params_ratio = [
     0.8,
     0.9,
 ]
+
+if args.values is not None:
+    energies = args.values
+    ratios = args.values
+    params_ratio = args.values
+
 for x in (
     energies
     if args.metric == "energy"
@@ -173,6 +181,10 @@ for x in (
         }
     )
 
-filename = f"factorization_results_{args.model_name}_{args.metric}.json"
+filename = (
+    args.output_path
+    if args.output_path is not None
+    else f"factorization_results_{args.model_name}_{args.metric}.json"
+)
 with open(filename, "w") as f:
     json.dump(results, f, indent=4)
