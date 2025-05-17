@@ -16,11 +16,11 @@ LR=0.001
 MOMENTUM=0.9
 WD=5e-4
 TARGET_SPARSITY=0.01
-N_ITERS=1
+N_ITERS=12
 EPOCHS_PER_ITER=5
 SCHEDULER="linear"
-WANDA_SAMPLES=512
-WANDA_N_ITERS=12
+CALIBRATION_SAMPLES=512
+CALIBRATION_BS=4
 SEED=0
 
 METHODS=(magnitude wanda taylor)
@@ -43,8 +43,8 @@ for m in "${METHODS[@]}"; do
     --epochs_per_iter "$EPOCHS_PER_ITER" \
     --scheduler "$SCHEDULER" \
     --method "$m" \
-    --wanda_samples "$WANDA_SAMPLES" \
-    --wanda_n_iters "$WANDA_N_ITERS" \
+    --calibration_samples "$CALIBRATION_SAMPLES" \
+    --calibration_bs "$CALIBRATION_BS" \
     --seed "$SEED" \
     --stats_file "${DIR}/results/${m}_stats.json"
 done
