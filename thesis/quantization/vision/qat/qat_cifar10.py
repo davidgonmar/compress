@@ -32,10 +32,7 @@ parser.add_argument("--weight_decay", default=5e-4, type=float)
 parser.add_argument(
     "--output_path", default=None, type=str, help="Where to save the JSON results"
 )
-parser.add_argument(
-    "--seed",
-    default=0
-)
+parser.add_argument("--seed", default=0)
 args = parser.parse_args()
 
 torch.manual_seed(args.seed)

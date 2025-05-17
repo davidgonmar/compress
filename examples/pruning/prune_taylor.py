@@ -5,11 +5,13 @@ from compress.experiments import (
     load_vision_model,
     get_cifar10_modifier,
     evaluate_vision_model,
+    cifar10_mean,
+    cifar10_std,
 )
 from compress.sparsity.prune import (
-    unstructured_resnet18_policies,
-    measure_nonzero_params,
-    TaylorExpansionPruner,
+    unstructured_resnet20_policies,
+    get_sparsity_information_str,
+    TaylorExpansionIntraPruner,
 )
 
 
@@ -17,9 +19,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     transform = transforms.Compose(
         [
-            transforms.Resize((32, 32)),
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            transforms.Normalize(cifar10_mean, cifar10_std),
         ]
     )
     testset = datasets.CIFAR10(
@@ -27,18 +28,23 @@ def main():
     )
     dataloader = DataLoader(testset, batch_size=32, shuffle=False)
     model = load_vision_model(
-        "resnet18",
-        pretrained_path="resnet18.pth",
+        "resnet20",
+        pretrained_path="resnet20.pth",
         strict=True,
-        modifier_before_load=get_cifar10_modifier("resnet18"),
+        modifier_before_load=get_cifar10_modifier("resnet20"),
         model_args={"num_classes": 10},
     ).to(device)
     nparams = sum(p.numel() for p in model.parameters())
     ret = evaluate_vision_model(model, dataloader)
     print(f"Accuracy before pruning: {ret['accuracy']:.2f}%")
     print(f"Loss before pruning: {ret['loss']:.4f}")
-    sparsity = 0.3
-    policies = unstructured_resnet18_policies(sparsity)
+    sparsity = 0.4
+    policies = unstructured_resnet20_policies(
+        {
+            "name": "sparsity_ratio",
+            "value": sparsity,
+        }
+    )
 
     data_iter = iter(dataloader)
 
@@ -53,14 +59,12 @@ def main():
         outputs = model(inputs)
         return torch.nn.functional.cross_entropy(outputs, targets)
 
-    pruner = TaylorExpansionPruner(model, policies, runner, n_iters=200)
+    pruner = TaylorExpansionIntraPruner(model, policies, runner, n_iters=1000)
     model = pruner.prune()
     ret = evaluate_vision_model(model, dataloader)
     print(f"Accuracy after pruning: {ret['accuracy']:.2f}%")
     print(f"Loss after pruning: {ret['loss']:.4f}")
-    print(
-        f"Percent of non-zero parameters after pruning: {measure_nonzero_params(model) / nparams:.2%}"
-    )
+    print(f"Sparsity information: {get_sparsity_information_str(model)}")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from compress.sparsity.prune import (
 )
 from compress.sparsity.schedulers import get_scheduler
 
+
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
@@ -29,6 +30,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         optimizer.step()
         running_loss += loss.item() * images.size(0)
     return running_loss / len(dataloader.dataset)
+
 
 def main():
     import argparse
@@ -54,7 +56,7 @@ def main():
         type=str,
         choices=["magnitude", "wanda"],
         default="wanda",
-        help="Pruning method to use: 'magnitude' or 'wanda'"
+        help="Pruning method to use: 'magnitude' or 'wanda'",
     )
     parser.add_argument("--wanda_samples", type=int, default=512)
     parser.add_argument("--wanda_n_iters", type=int, default=4)
@@ -62,7 +64,7 @@ def main():
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
-    
+
     scheduler = get_scheduler(args.scheduler)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -88,10 +90,16 @@ def main():
         root=args.data_root, train=False, download=True, transform=transform_test
     )
     trainloader = DataLoader(
-        trainset, batch_size=args.batch_size, shuffle=True, num_workers=args.train_workers
+        trainset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.train_workers,
     )
     testloader = DataLoader(
-        testset, batch_size=args.test_batch_size, shuffle=False, num_workers=args.test_workers
+        testset,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        num_workers=args.test_workers,
     )
 
     model = load_vision_model(
@@ -104,7 +112,10 @@ def main():
 
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
-        model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay
+        model.parameters(),
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
     )
 
     for it in range(1, args.n_iters + 1):
@@ -128,7 +139,7 @@ def main():
                     DataLoader(
                         torch.utils.data.Subset(
                             trainset,
-                            torch.randint(0, len(trainset), (args.wanda_samples,))
+                            torch.randint(0, len(trainset), (args.wanda_samples,)),
                         ),
                         batch_size=args.batch_size,
                         shuffle=True,
@@ -160,6 +171,7 @@ def main():
             )
 
     print(get_sparsity_information_str(model))
+
 
 if __name__ == "__main__":
     main()
