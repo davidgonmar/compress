@@ -107,15 +107,20 @@ ratios = [
     0.9,
 ]
 
+# or flops
 params_ratio = [
     0.1,
     0.2,
     0.3,
     0.4,
     0.5,
+    0.55,
     0.6,
+    0.65,
     0.7,
+    0.75,
     0.8,
+    0.85,
     0.9,
 ]
 
@@ -149,7 +154,7 @@ for x in (
     )
     if args.keep_edge_layer:
         del cfg["conv1"]
-        del cfg["fc"]
+        del cfg["linear"]
     model_lr = to_low_rank_manual(
         model,
         cfg_dict=cfg,
@@ -169,6 +174,7 @@ for x in (
         "rank": "Rank ratio",
         "energy": "Energy ratio",
         "params_ratio": "Parameters ratio",
+        "flops": "FLOPs ratio",
     }
     results.append(
         {

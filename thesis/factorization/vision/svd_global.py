@@ -79,6 +79,10 @@ from compress.utils import get_all_convs_and_linears
 
 keys = get_all_convs_and_linears(model)
 
+if args.keep_edge_layer:
+    keys.remove("conv1")
+    keys.remove("linear")
+
 ratios = [
     0.1,
     0.15,
@@ -107,7 +111,7 @@ if args.values is not None:
 for ratio in ratios:
     model_lr = to_low_rank_global(
         model,
-        input_shape=(1, 3, 32, 32),
+        sample_input=torch.randn(1, 3, 32, 32).float().cuda(),
         ratio_to_keep=ratio,
         inplace=False,
         keys=keys,

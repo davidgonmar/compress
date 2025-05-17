@@ -5,16 +5,35 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
+def _to_number(v):
+    """Return a single numeric FLOPs value from whatever is stored."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, dict):
+        # prefer a key literally called "total"; otherwise first numeric entry
+        if "total" in v:
+            return float(v["total"])
+        # pick the first numeric inside the dict
+        for x in v.values():
+            if isinstance(x, (int, float)):
+                return float(x)
+    raise ValueError(f"Cannot interpret flops value: {v}")
+
+
 def load_curve(json_path):
     with Path(json_path).open() as f:
         data = json.load(f)
 
-    pts = [
-        (item["flops"], item["accuracy"])
-        for item in data
-        if item.get("type") != "original"
-    ]
-    pts.sort()  # sort by FLOPs
+    pts = []
+    for item in data:
+        if item.get("type") == "original":
+            continue
+        flops_val = _to_number(item["flops"])
+        acc_val = float(item["accuracy"])
+        pts.append((flops_val, acc_val))
+
+    # sort by FLOPs
+    pts.sort(key=lambda t: t[0])
     xs, ys = zip(*pts)
     return list(xs), list(ys)
 
@@ -54,3 +73,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
