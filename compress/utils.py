@@ -41,5 +41,4 @@ def get_all_convs_and_linears(model):
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
             res.append(name)
-
     return res

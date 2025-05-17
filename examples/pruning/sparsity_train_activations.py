@@ -9,7 +9,7 @@ from compress.sparsity.regularizers import (
     get_regularizer_for_all_layers,
     L1L2ActivationInterRegularizer,
 )
-from compress.sparsity.pruning_strats import (
+from compress.sparsity.groupers import (
     OutChannelGroupingGrouperConv2d,
     OutChannelGroupingGrouperLinear,
 )

@@ -1,35 +1,20 @@
 import torch
 from compress.common.functional import (
     hoyer_sparsity,
-    squared_hoyer_sparsity,
     scad,
 )
 from typing import Dict, Any
-from compress.sparsity.pruning_strats import (
+from compress.sparsity.groupers import (
     OutChannelGroupingGrouperConv2d,
     OutChannelGroupingGrouperLinear,
 )
 
 
-# METRICS APPLIED TO A SINGLE GROUP
-_params_metrics = {
-    "hoyer_sparsity": lambda **kwargs: (
-        lambda x, **kwargs: hoyer_sparsity(x, **kwargs),
-        -1.0,
-    ),
-    "scad": lambda **kwargs: (lambda x, **kwargs: scad(x, **kwargs), -1.0),
-    "squared_hoyer_sparsity": lambda **kwargs: (
-        lambda x, **kwargs: squared_hoyer_sparsity(x, **kwargs),
-        -1.0,
-    ),
-    "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
-}
-
 _vmapped_hoyer_sparsity = torch.vmap(
     hoyer_sparsity,
     in_dims=0,  # batch over dimension 0 of the input
     out_dims=0,  # collect the scalar outputs into dim 0 of a vector
-)
+)  # (n_groups, m_elements_per_group) -> (n_groups,)
 
 _vmapped_scad = torch.vmap(
     scad, in_dims=(0, None, None, None), out_dims=0
@@ -43,10 +28,10 @@ class L1L2IntraRatioRegularizer:
 
 
 class SCADIntraRegularizer:
-    def __call__(self, param, grouper):
+    def __call__(self, param, grouper, **kwargs):
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
         return _vmapped_scad(
-            grouped, 0.1, 3.7, reduction="none"
+            grouped, **kwargs, reduction="none"
         )  # (n_groups, m_elements_per_group)
 
 
