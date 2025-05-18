@@ -9,15 +9,25 @@ from compress.experiments import (
     evaluate_vision_model,
 )
 from compress.sparsity.prune import (
-    unstructured_resnet20_policies,
-    MagnitudePruner,
-    ActivationMagnitudeIntraSparsityPruner,
-    TaylorIntraExpansionPruner,
+    WeightMagnitudeIntraGroupPruner,
+    ActivationMagnitudeIntraGroupPruner,
+    TaylorExpansionInterGroupPruner,
     get_sparsity_information_str,
-    make_vision_runner,
+    get_sparsity_information,
+    fuse_bn_conv_sparse_train
+)
+from compress.sparsity.recipes import (
+    unstructured_resnet20_policy_dict,
 )
 from compress.sparsity.schedulers import get_scheduler
-from compress.sparsity.prune import merge_pruned_modules
+from compress.sparsity.policy import Metric
+from compress.layer_fusion import (
+    fuse_conv_bn,
+    resnet20_fuse_pairs,
+)
+from compress.sparsity.runner import (
+    VisionClassificationModelRunner,
+)
 from tqdm import tqdm
 import json
 
@@ -59,9 +69,9 @@ def main():
     parser.add_argument(
         "--method",
         type=str,
-        choices=["magnitude", "wanda", "taylor"],
-        default="wanda",
-        help="Pruning method to use: 'magnitude', 'wanda', or 'taylor'",
+        choices=["magnitude_weights", "magnitude_activations", "taylor"],
+        default="magnitude_weight",
+        help="Pruning method to use: 'magnitude_weight', 'magnitude_activations', or 'taylor'",
     )
     parser.add_argument("--calibration_samples", type=int, default=512)
     parser.add_argument("--calibration_bs", type=int, default=128)
@@ -114,8 +124,8 @@ def main():
         strict=True,
         modifier_before_load=get_cifar10_modifier(args.model),
         model_args={"num_classes": args.num_classes},
-    ).to(device)
-
+    )
+    model = fuse_conv_bn(model, resnet20_fuse_pairs, fuse_impl=fuse_bn_conv_sparse_train).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -135,7 +145,7 @@ def main():
     stats_log["baseline"] = {
         "accuracy": baseline["accuracy"],
         "loss": baseline["loss"],
-        "sparsity": get_sparsity_information_str(model),
+        "sparsity": get_sparsity_information_str(get_sparsity_information(model)),
     }
 
     for it in tqdm(range(1, args.n_iters + 1), desc="Pruning Iterations"):
@@ -150,18 +160,21 @@ def main():
             "loss": before_prune["loss"],
         }
 
-        ratio = scheduler(it, args.n_iters, args.target_sparsity)
-        policies = unstructured_resnet20_policies(
-            {"name": "sparsity_ratio", "value": ratio}, normalize_non_prunable=True
+        ratio = 1 - scheduler(it, args.n_iters, args.target_sparsity)
+        policies = unstructured_resnet20_policy_dict(
+            intra_metric=Metric(name="sparsity_ratio", value=ratio),
         )
 
-        if args.method == "magnitude":
-            pruner = MagnitudePruner(model, policies)
-        elif args.method == "wanda":
-            pruner = ActivationMagnitudeIntraSparsityPruner(
+        if args.method == "magnitude_weights":
+            pruner = WeightMagnitudeIntraGroupPruner(
                 model,
                 policies,
-                make_vision_runner(
+            )
+        elif args.method == "magnitude_activations":
+            pruner = ActivationMagnitudeIntraGroupPruner(
+                model,
+                policies,
+                VisionClassificationModelRunner(
                     model,
                     DataLoader(
                         torch.utils.data.Subset(
@@ -173,16 +186,13 @@ def main():
                         batch_size=args.batch_size,
                         shuffle=True,
                     ),
-                    criterion,
-                    device,
                 ),
-                n_iters=int(args.calibration_samples // args.calibration_bs),
             )
         elif args.method == "taylor":
-            pruner = TaylorIntraExpansionPruner(
+            pruner = TaylorExpansionInterGroupPruner(
                 model,
                 policies,
-                make_vision_runner(
+                VisionClassificationModelRunner(
                     model,
                     DataLoader(
                         torch.utils.data.Subset(
@@ -191,23 +201,18 @@ def main():
                                 0, len(trainset), (args.calibration_samples,)
                             ),
                         ),
-                        batch_size=args.batch_size,
+                        batch_size=args.calibration_bs,
                         shuffle=True,
                     ),
-                    criterion,
-                    device,
                 ),
-                n_iters=int(args.calibration_samples // args.calibration_bs),
-                approx="fisher",
+                approx="fisher_diag",
             )
         else:
             raise ValueError("Unknown pruning method: {}".format(args.method))
 
         print(f"Pruning iteration {it} at ratio {ratio:.4f}...")
         model = pruner.prune()
-        model = merge_pruned_modules(model)
-        sparsity_str = get_sparsity_information_str(model)
-        pruner.dispose()
+        sparsity_str = get_sparsity_information_str(get_sparsity_information(model))
 
         print("Evaluating immediately after prune (before finetuning)...")
         post_prune = evaluate_vision_model(model, testloader)
@@ -217,7 +222,7 @@ def main():
         iter_record["after_prune_before_ft"] = {
             "accuracy": post_prune["accuracy"],
             "loss": post_prune["loss"],
-            "sparsity": sparsity_str,
+            "sparsity": get_sparsity_information(model),
         }
 
         epochs_stats = []
@@ -243,7 +248,9 @@ def main():
 
         stats_log["iterations"].append(iter_record)
 
-    stats_log["final_sparsity"] = get_sparsity_information_str(model)
+    stats_log["final_sparsity"] = get_sparsity_information(model)
+
+    print("\nFinal evaluation after all iterations...")
 
     with open(args.stats_file, "w") as f:
         json.dump(stats_log, f, indent=4)

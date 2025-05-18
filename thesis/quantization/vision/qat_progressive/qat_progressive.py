@@ -134,6 +134,8 @@ optimizer = optim.SGD(
     momentum=args.momentum,
     weight_decay=args.weight_decay,
 )
+
+
 scheduler = StepLR(optimizer, step_size=120, gamma=0.1)
 
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list[1:]))
