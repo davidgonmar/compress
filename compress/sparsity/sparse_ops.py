@@ -11,8 +11,14 @@ class SparseLinear(nn.Module):
         super(SparseLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = nn.Parameter(torch.randn((out_features, in_features), dtype=torch.float32))
-        self.bias = nn.Parameter(torch.randn((out_features), dtype=torch.float32)) if bias else None
+        self.weight = nn.Parameter(
+            torch.randn((out_features, in_features), dtype=torch.float32)
+        )
+        self.bias = (
+            nn.Parameter(torch.randn((out_features), dtype=torch.float32))
+            if bias
+            else None
+        )
         self.register_buffer("weight_mask", torch.ones_like(self.weight))
         if self.bias is not None:
             self.register_buffer("bias_mask", torch.ones_like(self.bias))
@@ -39,9 +45,7 @@ class SparseLinear(nn.Module):
         if linear.bias is not None:
             pruned_linear.bias.data = linear.bias.data.clone()
             if bias_mask is not None:
-                pruned_linear.bias_mask.data = bias_mask.to(
-                    linear.bias.dtype
-                )
+                pruned_linear.bias_mask.data = bias_mask.to(linear.bias.dtype)
         return pruned_linear
 
     def to_sparse_semi_structured(self):
@@ -114,7 +118,11 @@ class SparseConv2d(nn.Module):
                 dtype=torch.float32,
             )
         )
-        self.bias = nn.Parameter(torch.randn((out_channels), dtype=torch.float32)) if bias else None
+        self.bias = (
+            nn.Parameter(torch.randn((out_channels), dtype=torch.float32))
+            if bias
+            else None
+        )
         self.register_buffer("weight_mask", torch.ones_like(self.weight))
         if self.bias is not None:
             self.register_buffer("bias_mask", torch.ones_like(self.bias))
@@ -191,13 +199,9 @@ class SparseConv2d(nn.Module):
         return self.bias * self.bias_mask if self.bias is not None else None
 
     def total_params(self):
-        return (
-            self.in_channels
-            * self.out_channels
-            * self.kernel_size[0]
-            * self.kernel_size[1]
-            + (self.out_channels if self.bias is not None else 0)
-        )
+        return self.in_channels * self.out_channels * self.kernel_size[
+            0
+        ] * self.kernel_size[1] + (self.out_channels if self.bias is not None else 0)
 
 
 class SparseFusedConv2dBatchNorm2d(nn.Module):
@@ -224,11 +228,10 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
             track_running_stats=True,
         )
 
-
         self.register_buffer("weight_mask", torch.ones_like(self.conv.weight))
         self.register_buffer(
             "bias_mask",
-            torch.ones(self.conv.out_channels, dtype=self.conv.weight.dtype)
+            torch.ones(self.conv.out_channels, dtype=self.conv.weight.dtype),
         )
 
         self.conv_params = {
@@ -237,7 +240,6 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
             "dilation": conv_params["dilation"],
             "groups": conv_params["groups"],
         }
-
 
     @classmethod
     def from_conv_bn(
@@ -275,7 +277,7 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         obj.bn.running_mean.data.copy_(bn.running_mean.data)
         obj.bn.running_var.data.copy_(bn.running_var.data)
         obj.bn.num_batches_tracked.data.copy_(bn.num_batches_tracked.data)
-  
+
         if weight_mask is not None:
             obj.weight_mask.data.copy_(weight_mask.to(obj.weight_mask.dtype))
         if bias_mask is not None:
@@ -284,7 +286,7 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         return obj
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w_fused, b_fused = get_new_params(self.conv, self.bn) 
+        w_fused, b_fused = get_new_params(self.conv, self.bn)
         w_pruned = w_fused * self.weight_mask
         b_pruned = b_fused * self.bias_mask
 
@@ -311,14 +313,16 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         return self.get_weight()
 
     @property
-    def bias(self) -> torch.Tensor: 
+    def bias(self) -> torch.Tensor:
         return self.get_bias()
 
     # ------------------------------------------------------------------------- #
     def nonzero_params(self) -> int:
         """Number of *stored* parameters that are still non‑zero after pruning."""
-        return int(torch.count_nonzero(self.get_weight()) +
-                   torch.count_nonzero(self.get_bias()))
+        return int(
+            torch.count_nonzero(self.get_weight())
+            + torch.count_nonzero(self.get_bias())
+        )
 
     def total_params(self) -> int:
         """Total parameters before pruning (Conv + BN)."""
