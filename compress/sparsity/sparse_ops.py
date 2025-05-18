@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.sparse import to_sparse_semi_structured
+from torch.nn.modules.utils import _pair
 from compress.layer_fusion import get_new_params
 
 
@@ -10,8 +11,8 @@ class SparseLinear(nn.Module):
         super(SparseLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = nn.Parameter(torch.randn(out_features, in_features))
-        self.bias = nn.Parameter(torch.randn(out_features)) if bias else None
+        self.weight = nn.Parameter(torch.randn((out_features, in_features), dtype=torch.float32))
+        self.bias = nn.Parameter(torch.randn((out_features), dtype=torch.float32)) if bias else None
         self.register_buffer("weight_mask", torch.ones_like(self.weight))
         if self.bias is not None:
             self.register_buffer("bias_mask", torch.ones_like(self.bias))
@@ -40,7 +41,7 @@ class SparseLinear(nn.Module):
             if bias_mask is not None:
                 pruned_linear.bias_mask.data = bias_mask.to(
                     linear.bias.dtype
-                )  # else, it will be all 1s
+                )
         return pruned_linear
 
     def to_sparse_semi_structured(self):
@@ -85,31 +86,35 @@ class SparseLinear(nn.Module):
         return self.in_features * self.out_features + (
             self.out_features if self.bias is not None else 0
         )
-    
+
+
 class SparseConv2d(nn.Module):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
-        dilation: int = 1,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int] = 1,
+        padding: int | tuple[int, int] = 0,
+        dilation: int | tuple[int, int] = 1,
         groups: int = 1,
         bias: bool = True,
     ):
         super(SparseConv2d, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
+        self.kernel_size = _pair(kernel_size)
+        self.stride = _pair(stride)
+        self.padding = _pair(padding)
+        self.dilation = _pair(dilation)
         self.groups = groups
         self.weight = nn.Parameter(
-            torch.randn(out_channels, in_channels, kernel_size, kernel_size)
+            torch.randn(
+                (out_channels, in_channels, self.kernel_size[0], self.kernel_size[1]),
+                dtype=torch.float32,
+            )
         )
-        self.bias = nn.Parameter(torch.randn(out_channels)) if bias else None
+        self.bias = nn.Parameter(torch.randn((out_channels), dtype=torch.float32)) if bias else None
         self.register_buffer("weight_mask", torch.ones_like(self.weight))
         if self.bias is not None:
             self.register_buffer("bias_mask", torch.ones_like(self.bias))
@@ -189,18 +194,17 @@ class SparseConv2d(nn.Module):
         return (
             self.in_channels
             * self.out_channels
-            * self.kernel_size
-            * self.kernel_size
+            * self.kernel_size[0]
+            * self.kernel_size[1]
             + (self.out_channels if self.bias is not None else 0)
         )
 
+
 class SparseFusedConv2dBatchNorm2d(nn.Module):
-    def __init__(
-        self,
-        conv_params: dict,
-        bn_params: dict,
-    ):
-        super(SparseFusedConv2dBatchNorm2d, self).__init__()
+
+    def __init__(self, conv_params: dict, bn_params: dict):
+        super().__init__()
+
         self.conv = nn.Conv2d(
             in_channels=conv_params["in_channels"],
             out_channels=conv_params["out_channels"],
@@ -220,25 +224,32 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
             track_running_stats=True,
         )
 
+
         self.register_buffer("weight_mask", torch.ones_like(self.conv.weight))
         self.register_buffer(
             "bias_mask",
-            torch.ones(self.conv.weight.shape[0])
-            .to(self.conv.weight.device)
-            .to(self.conv.weight.dtype),
+            torch.ones(self.conv.out_channels, dtype=self.conv.weight.dtype)
         )
-        self.conv_params = conv_params
-        self.bn_params = bn_params
 
-    @staticmethod
+        self.conv_params = {
+            "stride": conv_params["stride"],
+            "padding": conv_params["padding"],
+            "dilation": conv_params["dilation"],
+            "groups": conv_params["groups"],
+        }
+
+
+    @classmethod
     def from_conv_bn(
+        cls,
         conv: nn.Conv2d,
         bn: nn.BatchNorm2d,
         weight_mask: torch.Tensor | None = None,
         bias_mask: torch.Tensor | None = None,
-    ):
-        pruned_conv = SparseFusedConv2dBatchNorm2d(
-            {
+    ) -> "SparseFusedConv2dBatchNorm2d":
+        """Build a sparse‑aware block that behaves exactly like `conv+bn`."""
+        obj = cls(
+            conv_params={
                 "in_channels": conv.in_channels,
                 "out_channels": conv.out_channels,
                 "kernel_size": conv.kernel_size,
@@ -247,85 +258,89 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
                 "dilation": conv.dilation,
                 "groups": conv.groups,
             },
-            {
+            bn_params={
                 "eps": bn.eps,
                 "momentum": bn.momentum,
             },
         )
-        pruned_conv.conv.weight.data = conv.weight.data.clone()
-        pruned_conv.bn.weight.data = bn.weight.data.clone()
-        pruned_conv.bn.bias.data = bn.bias.data.clone()
+
+        obj.conv.weight.data.copy_(conv.weight.data)
+        if conv.bias is not None:
+            obj.conv.bias.data.copy_(conv.bias.data)
+        else:
+            obj.conv.bias = None
+
+        obj.bn.weight.data.copy_(bn.weight.data)
+        obj.bn.bias.data.copy_(bn.bias.data)
+        obj.bn.running_mean.data.copy_(bn.running_mean.data)
+        obj.bn.running_var.data.copy_(bn.running_var.data)
+        obj.bn.num_batches_tracked.data.copy_(bn.num_batches_tracked.data)
+  
         if weight_mask is not None:
-            pruned_conv.weight_mask.data = weight_mask.to(conv.weight.dtype).to(
-                conv.weight.device)
+            obj.weight_mask.data.copy_(weight_mask.to(obj.weight_mask.dtype))
         if bias_mask is not None:
-            pruned_conv.bias_mask.data = bias_mask.to(conv.weight.dtype).to(
-                conv.weight.device
-            )
-        return pruned_conv
+            obj.bias_mask.data.copy_(bias_mask.to(obj.bias_mask.dtype))
 
-    def forward(self, x):
-        w, b = get_new_params(self.conv, self.bn)
-        pruned_weight = w * self.weight_mask
-        pruned_bias = b * self.bias_mask
+        return obj
 
-        x = F.conv2d(
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w_fused, b_fused = get_new_params(self.conv, self.bn) 
+        w_pruned = w_fused * self.weight_mask
+        b_pruned = b_fused * self.bias_mask
+
+        return F.conv2d(
             x,
-            pruned_weight,
-            pruned_bias,
-            self.conv_params["stride"],
-            self.conv_params["padding"],
-            self.conv_params["dilation"],
-            self.conv_params["groups"],
-        )
-
-        return x
-
-    def nonzero_params(self):
-        w, b = get_new_params(self.conv, self.bn)
-
-        weight_multed = w * self.weight_mask
-        bias_multed = b * self.bias_mask
-
-        return (
-            torch.count_nonzero(weight_multed).item()
-            + torch.count_nonzero(bias_multed).item()
-        )
-
-    def to_conv2d(self):
-        conv = nn.Conv2d(
-            self.conv_params["in_channels"],
-            self.conv_params["out_channels"],
-            self.conv_params["kernel_size"],
+            w_pruned,
+            b_pruned,
             stride=self.conv_params["stride"],
             padding=self.conv_params["padding"],
             dilation=self.conv_params["dilation"],
             groups=self.conv_params["groups"],
-            bias=True,
-        ).to(self.conv.weight.device)
-        w, b = get_new_params(self.conv, self.bn)
-        pruned_weight = w * self.weight_mask
-        pruned_bias = b * self.bias_mask
-        conv.weight = nn.Parameter(pruned_weight.clone())
-        conv.bias = nn.Parameter(pruned_bias.data.clone())
-        return conv
+        )
 
-    def get_weight(self):
+    def get_weight(self) -> torch.Tensor:
         w, _ = get_new_params(self.conv, self.bn)
         return w * self.weight_mask
 
-    def get_bias(self):
+    def get_bias(self) -> torch.Tensor:
         _, b = get_new_params(self.conv, self.bn)
         return b * self.bias_mask
 
-    def total_params(self):
-        return self.conv.weight.numel() + self.bn.bias.numel()
-    
     @property
-    def weight(self):
+    def weight(self) -> torch.Tensor:
         return self.get_weight()
-    
+
     @property
-    def bias(self):
+    def bias(self) -> torch.Tensor: 
         return self.get_bias()
-    
+
+    # ------------------------------------------------------------------------- #
+    def nonzero_params(self) -> int:
+        """Number of *stored* parameters that are still non‑zero after pruning."""
+        return int(torch.count_nonzero(self.get_weight()) +
+                   torch.count_nonzero(self.get_bias()))
+
+    def total_params(self) -> int:
+        """Total parameters before pruning (Conv + BN)."""
+        return self.conv.weight.numel() + self.bn.bias.numel()
+
+    # ------------------------------------------------------------------------- #
+    def to_conv2d(self) -> nn.Conv2d:
+        """Export a plain Conv2d containing the fused, pruned weights & bias."""
+        fused_w, fused_b = self.get_weight(), self.get_bias()
+
+        conv = nn.Conv2d(
+            in_channels=self.conv.in_channels,
+            out_channels=self.conv.out_channels,
+            kernel_size=self.conv.kernel_size,
+            stride=self.conv.stride,
+            padding=self.conv.padding,
+            dilation=self.conv.dilation,
+            groups=self.conv.groups,
+            bias=True,
+            device=fused_w.device,
+            dtype=fused_w.dtype,
+        )
+        conv.weight.data.copy_(fused_w)
+        conv.bias.data.copy_(fused_b)
+        return conv
