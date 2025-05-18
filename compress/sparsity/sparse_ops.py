@@ -348,3 +348,49 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         conv.weight.data.copy_(fused_w)
         conv.bias.data.copy_(fused_b)
         return conv
+
+    # conv
+    @property
+    def kernel_size(self):
+        return self.conv.kernel_size
+
+    @property
+    def in_channels(self):
+        return self.conv.in_channels
+
+    @property
+    def out_channels(self):
+        return self.conv.out_channels
+
+    @property
+    def groups(self):
+        return self.conv.groups
+
+    @property
+    def stride(self):
+        return self.conv.stride
+
+    @property
+    def padding(self):
+        return self.conv.padding
+
+    @property
+    def dilation(self):
+        return self.conv.dilation
+
+    # bn
+    @property
+    def eps(self):
+        return self.bn.eps
+
+    @property
+    def momentum(self):
+        return self.bn.momentum
+
+    @property
+    def affine(self):
+        return self.bn.affine
+
+    @property
+    def track_running_stats(self):
+        return self.bn.track_running_stats

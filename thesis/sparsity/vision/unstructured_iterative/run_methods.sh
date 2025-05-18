@@ -12,7 +12,7 @@ NUM_CLASSES=10
 BATCH_SIZE=128
 TEST_BATCH=512
 WORKERS=4
-LR=0.001
+LR=0.005
 MOMENTUM=0.9
 WD=5e-4
 TARGET_SPARSITY=0.01
@@ -23,7 +23,7 @@ CALIBRATION_SAMPLES=512
 CALIBRATION_BS=4
 SEED=0
 
-METHODS=(magnitude_weights magnitude_activations taylor)
+METHODS=(magnitude_activations magnitude_weights taylor)
 
 for m in "${METHODS[@]}"; do
   echo "=== Running method: $m ==="
