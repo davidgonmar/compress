@@ -287,6 +287,10 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w_fused, b_fused = get_new_params(self.conv, self.bn)
+        w_fused.retain_grad()
+        b_fused.retain_grad()
+        self._cached_weight = w_fused
+        self._cached_bias = b_fused
         w_pruned = w_fused * self.weight_mask
         b_pruned = b_fused * self.bias_mask
 

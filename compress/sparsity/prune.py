@@ -389,9 +389,13 @@ class TaylorExpansionIntraGroupPruner:
                         assert isinstance(
                             mod, (nn.Conv2d, nn.Linear, *_sparse_layers)
                         ), f"Module {name} is not a Linear or Conv2d"
+                        if hasattr(mod, "_cached_weight"):
+                            grad = mod._cached_weight.grad.data
+                        else:
+                            grad = mod.weight.grad.data
                         fisher_hessian_diag[name] = (
                             fisher_hessian_diag[name]
-                            + (mod.weight.grad.data**2).detach()
+                            + (grad**2).detach()
                         )
 
             except StopIteration:
@@ -476,10 +480,14 @@ class TaylorExpansionInterGroupPruner:
                 for name, mod in self.model.named_modules():
                     if name in self.policies.keys():
                         assert isinstance(
-                            mod, (nn.Conv2d, nn.Linear)
+                            mod, (nn.Conv2d, nn.Linear, *_sparse_layers)
                         ), f"Module {name} is not a Linear or Conv2d"
+                        if hasattr(mod, "_cached_weight"):
+                            grad = mod._cached_weight.grad.data
+                        else:
+                            grad = mod.weight.grad.data
                         fisher_hessian[name] = (
-                            fisher_hessian[name] + (mod.weight.grad.data**2).detach()
+                            fisher_hessian[name] + (grad**2).detach()
                         )
 
             except StopIteration:
