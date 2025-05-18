@@ -13,13 +13,13 @@ from compress.experiments import (
 from compress.layer_fusion import fuse_conv_bn, resnet20_fuse_pairs
 from compress.sparsity.policy import Metric
 from compress.sparsity.prune import (
-    ActivationNormInterGroupPruner,
-    TaylorExpansionInterGroupPruner,
-    WeightNormInterGroupPruner,
+    TaylorExpansionIntraGroupPruner,
+    WeightMagnitudeIntraGroupPruner,
+    ActivationMagnitudeIntraGroupPruner,
     fuse_bn_conv_sparse_train,
     get_sparsity_information,
 )
-from compress.sparsity.recipes import per_output_channel_resnet20_policy_dict
+from compress.sparsity.recipes import unstructured_resnet20_policy_dict
 from compress.sparsity.runner import VisionClassificationModelRunner
 
 
@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--target_sparsity", type=float, default=0.5)
     parser.add_argument(
         "--method",
-        choices=["norm_weights", "norm_activations", "taylor_no_bias", "taylor_bias"],
+        choices=["magnitude_weights", "magnitude_activations", "taylor"],
         default="norm_weights",
     )
     parser.add_argument("--calibration_samples", type=int, default=512)
@@ -68,12 +68,12 @@ def main():
 
     baseline = evaluate_vision_model(model, testloader)
 
-    policies = per_output_channel_resnet20_policy_dict(
-        inter_metric=Metric(name="sparsity_ratio", value=args.target_sparsity),
+    policies = unstructured_resnet20_policy_dict(
+        intra_metric=Metric(name="sparsity_ratio", value=args.target_sparsity),
     )
 
-    if args.method == "norm_weights":
-        pruner = WeightNormInterGroupPruner(model, policies)
+    if args.method == "magnitude_weights":
+        pruner = WeightMagnitudeIntraGroupPruner(model, policies)
     else:
         calib_subset = torch.utils.data.Subset(
             datasets.CIFAR10("./data", train=True, download=True, transform=transform),
@@ -81,15 +81,18 @@ def main():
         )
         calib_loader = DataLoader(calib_subset, batch_size=args.calibration_bs)
         runner = VisionClassificationModelRunner(model, calib_loader)
-        if args.method == "norm_activations":
-            pruner = ActivationNormInterGroupPruner(model, policies, runner)
+        if args.method == "magnitude_activations":
+            pruner = ActivationMagnitudeIntraGroupPruner(
+                model,
+                policies,
+                runner,
+            )
         else:
-            pruner = TaylorExpansionInterGroupPruner(
+            pruner = TaylorExpansionIntraGroupPruner(
                 model,
                 policies,
                 runner,
                 approx="fisher_diag",
-                use_bias=args.method == "taylor_bias",
             )
 
     model = pruner.prune()
