@@ -70,7 +70,7 @@ def main():
             continue
         with open(os.path.join(args.results_dir, fn)) as f:
             data = json.load(f)
-        acc = data[-1].get("accuracy", 0.0) if data else 0.0
+        acc = max(d.get("accuracy", 0.0) for d in data) if data else 0.0
         key = (meta["method"], meta["w_bits"], meta["a_bits"], meta["edge"])
         scores.setdefault(key, []).append(acc)
 
