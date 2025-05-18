@@ -1,9 +1,9 @@
 import torch
 
 
-# PruningGrouper is a base class for all pruning groupers.
+# AbstractGrouper is a base class for all pruning groupers.
 # A PronningGrouper is responsible for transforming a tensor into a 2D tensor of the form (n_groups, group_size)
-class PruningGrouper:
+class AbstractGrouper:
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -13,7 +13,7 @@ class PruningGrouper:
         raise NotImplementedError
 
 
-class UnstructuredGrouperLinear(PruningGrouper):
+class UnstructuredGrouperLinear(AbstractGrouper):
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.reshape(1, -1)
@@ -23,7 +23,7 @@ class UnstructuredGrouperLinear(PruningGrouper):
         return tensor.reshape(orig_tensor.shape)
 
 
-class UnstructuredGrouperConv2d(PruningGrouper):
+class UnstructuredGrouperConv2d(AbstractGrouper):
 
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
@@ -34,7 +34,7 @@ class UnstructuredGrouperConv2d(PruningGrouper):
         return tensor.reshape(orig_tensor.shape)
 
 
-class OutChannelGroupingGrouperLinear(PruningGrouper):
+class OutChannelGroupingGrouperLinear(AbstractGrouper):
 
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
@@ -46,7 +46,7 @@ class OutChannelGroupingGrouperLinear(PruningGrouper):
         return tensor
 
 
-class OutChannelGroupingGrouperConv2d(PruningGrouper):
+class OutChannelGroupingGrouperConv2d(AbstractGrouper):
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         # shape is (out_channels, in_channels, kernel_size, kernel_size), so we want each out channel to be a group
@@ -57,7 +57,7 @@ class OutChannelGroupingGrouperConv2d(PruningGrouper):
         return tensor.reshape(orig_tensor.shape)
 
 
-class GroupsOf4(PruningGrouper):
+class GroupsOf4(AbstractGrouper):
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.reshape(-1, 4)
