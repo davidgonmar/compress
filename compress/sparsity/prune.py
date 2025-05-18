@@ -174,8 +174,6 @@ class WeightNormInterGroupPruner(AbstractPruner):
                     policy.grouper is OutChannelGroupingGrouperConv2d
                     or policy.grouper is OutChannelGroupingGrouperLinear
                 ):
-                    # if the module is pruned, we need to use the mask
-                    assert mask.shape == module.bias_mask.shape
                     masks[name] = {**masks[name], "bias": mask}
 
             elif metric.name == "threshold":
@@ -192,11 +190,14 @@ class WeightNormInterGroupPruner(AbstractPruner):
                 ):
                     # if the module is pruned, we need to use the previous mask also
                     assert weight_mask.shape == module.weight_mask.shape
-                    masks[name] = weight_mask * module.weight_mask
+                    masks[name] = weight_mask * policy.grouper.transform(
+                        module.weight_mask
+                    )
                 masks[name] = {"weight": masks[name]}
                 if (
                     policy.grouper is OutChannelGroupingGrouperConv2d
                     or policy.grouper is OutChannelGroupingGrouperLinear
+                    and isinstance(module, _sparse_layers)
                 ):
                     # if the module is pruned, we need to use the mask
                     assert mask.shape == module.bias_mask.shape
@@ -271,6 +272,11 @@ class ActivationNormInterGroupPruner:
                     out_score = torch.norm(reshaped_acts, dim=1)  # shape [O]
                     # now we have the saliencies for this layer
                     saliencies = out_score
+                    if isinstance(module, (SparseConv2d, SparseFusedConv2dBatchNorm2d)):
+                        saliencies = (
+                            saliencies
+                            * policy.grouper.transform(module.weight_mask)[:, 0]
+                        )  # assumes mask is broadcasted [O, 1, 1, 1]
                     if policy.inter_group_metric.name == "sparsity_ratio":
                         density_ratio = 1 - policy.inter_group_metric.value
                         # we do not need to multiply by existing masks, as activations will be 0 if the corresponding mask is 0
@@ -319,6 +325,11 @@ class ActivationNormInterGroupPruner:
                     acts = acts.reshape(-1, acts.shape[-1])
                     norm = torch.norm(acts, dim=0, keepdim=False)  # shape [0]
                     saliencies = norm
+                    if isinstance(module, SparseLinear):
+                        saliencies = (
+                            saliencies
+                            * policy.grouper.transform(module.weight_mask)[:, 0]
+                        )
                     if policy.inter_group_metric.name == "sparsity_ratio":
                         density = 1 - policy.inter_group_metric.value
                         # shape [O]
@@ -394,8 +405,7 @@ class TaylorExpansionIntraGroupPruner:
                         else:
                             grad = mod.weight.grad.data
                         fisher_hessian_diag[name] = (
-                            fisher_hessian_diag[name]
-                            + (grad**2).detach()
+                            fisher_hessian_diag[name] + (grad**2).detach()
                         )
 
             except StopIteration:
@@ -457,6 +467,7 @@ class TaylorExpansionInterGroupPruner:
         policies: PolicyDict,
         runner: Runner,
         approx="fisher_diag",
+        use_bias=True,
     ):
         # runner runs one batch of data through the model
 
@@ -464,9 +475,13 @@ class TaylorExpansionInterGroupPruner:
         self.policies = policies
         self.runner = runner
         self.approx = approx
+        self.use_bias = use_bias
 
     def prune(self):
         fisher_hessian = defaultdict(
+            lambda: torch.tensor(0).to(next(self.model.parameters()).device)
+        )
+        fisher_hessian_biases = defaultdict(
             lambda: torch.tensor(0).to(next(self.model.parameters()).device)
         )
         total_examples = 0
@@ -486,9 +501,15 @@ class TaylorExpansionInterGroupPruner:
                             grad = mod._cached_weight.grad.data
                         else:
                             grad = mod.weight.grad.data
-                        fisher_hessian[name] = (
-                            fisher_hessian[name] + (grad**2).detach()
-                        )
+                        fisher_hessian[name] = fisher_hessian[name] + (grad**2).detach()
+                        if self.use_bias:
+                            if hasattr(mod, "_cached_bias"):
+                                grad = mod._cached_bias.grad.data
+                            else:
+                                grad = mod.bias.grad.data
+                            fisher_hessian_biases[name] = (
+                                fisher_hessian_biases[name] + (grad**2).detach()
+                            )
 
             except StopIteration:
                 break
@@ -497,33 +518,58 @@ class TaylorExpansionInterGroupPruner:
             # now we have the fisher information for each layer
             # perturbation = grad + 1/2 * fisher * (param ** 2)
             saliencies = {}
-
+            saliencies_biases = {}
             for name, mod in self.model.named_modules():
                 if name in self.policies.keys():
-                    saliencies[name] = (
+                    saliencies[name] = self.policies[name].grouper.transform(
                         +1
                         / 2
                         * fisher_hessian[name]
                         * (mod.weight.data**2)
                         / total_examples
                     )
+                    if self.use_bias:
+                        assert (
+                            self.policies[name].grouper
+                            is OutChannelGroupingGrouperConv2d
+                            or self.policies[name].grouper
+                            is OutChannelGroupingGrouperLinear
+                        )
+                        sal = (
+                            1
+                            / 2
+                            * fisher_hessian_biases[name]
+                            * (mod.bias.data**2)
+                            / total_examples
+                        )  # shape [O]
+                        saliencies_biases[name] = sal
             masks = dict()
             # now we have the saliencies for each layer
             for name, mod in self.model.named_modules():
+                if name not in self.policies.keys():
+                    continue
                 policy = self.policies[name]
                 assert policy.inter_group_metric.name == "sparsity_ratio"
                 assert isinstance(
                     mod, (nn.Conv2d, nn.Linear, *_sparse_layers)
                 ), f"Module {name} is not a Linear or Conv2d"
-                saliencies_reshaped = policy.grouper.transform(saliencies[name])
-                if isinstance(mod, (SparseConv2d, SparseLinear)):
-                    saliencies_reshaped = saliencies_reshaped * mod.weight_mask
+                saliencies_reshaped = saliencies[name]
+                if isinstance(
+                    mod, (SparseConv2d, SparseLinear, SparseFusedConv2dBatchNorm2d)
+                ):
+                    saliencies_reshaped = (
+                        saliencies_reshaped * policy.grouper.transform(mod.weight_mask)
+                    )
 
                 # saliencies_reshaped have shape [n_groups, m_elements_per_group]
                 # we need to prune individual groups (inter-group sparsity)
                 per_group_saliencies = saliencies_reshaped.sum(
                     dim=1
                 )  # shape [n_groups]
+                if self.use_bias:
+                    per_group_saliencies = (
+                        per_group_saliencies + saliencies_biases[name]
+                    )
                 # now we have the saliencies for this layer
                 # we can use the saliencies to prune the model
 
@@ -551,10 +597,9 @@ class TaylorExpansionInterGroupPruner:
                     or policy.grouper is OutChannelGroupingGrouperLinear
                 ):
                     # if the module is pruned, we need to use the mask
-                    assert mask.shape == mod.bias_mask.shape
-                    bias_mask = mask.reshape(mod.bias_mask.shape)
+                    assert mask.shape == mod.bias.shape
+                    bias_mask = mask
                     masks[name] = {"weight": weight_mask, "bias": bias_mask}
-
                 else:
                     masks[name] = {"weight": weight_mask}
         return apply_masks(self.model, masks)
