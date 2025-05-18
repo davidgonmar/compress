@@ -13,14 +13,14 @@ CALIBRATION_SAMPLES=512
 CALIBRATION_BS=4
 SEED=0
 
-METHODS=(taylor_no_bias taylor_bias norm_weights norm_activations)
-TARGETS=(0.00 0.025 0.05 0.075 0.1 0.125 0.15)
+METHODS=(taylor magnitude_activations magnitude_weights)
+TARGETS=(0.6 0.55 0.5 0.45 0.4 0.35 0.3 0.25 0.2 0.15 0.1 0.05 0.00)
 
 for m in "${METHODS[@]}"; do
   for t in "${TARGETS[@]}"; do
     tag="${m}_$(printf '%.2f' "$t")"
     echo "=== $m | target $t ==="
-    python -m sparsity.vision.one_shot_structured.one_shot_structured_pruning_cifar10 \
+    python -m sparsity.vision.one_shot_unstructured.one_shot_unstructured_pruning_cifar10 \
       --model "$MODEL" \
       --pretrained_path "$PRETRAINED" \
       --num_classes "$NUM_CLASSES" \
