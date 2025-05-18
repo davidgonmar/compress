@@ -30,7 +30,7 @@ from compress.experiments import (
     cifar10_mean,
     cifar10_std,
 )
-from compress.quantization import prepare_for_qat, requantize_lsq
+from compress.quantization import prepare_for_qat, requantize_qat
 from compress.quantization.recipes import get_recipe_quant
 from compress.layer_fusion import get_fuse_bn_keys
 
@@ -61,7 +61,7 @@ parser.add_argument(
 parser.add_argument("--model_name", default="resnet20")
 parser.add_argument("--pretrained_path", default="resnet20.pth")
 parser.add_argument("--batch_size", default=256, type=int)
-parser.add_argument("--epochs", default=90, type=int)
+parser.add_argument("--epochs", default=200, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--momentum", default=0.9, type=float)
 parser.add_argument("--weight_decay", default=5e-4, type=float)
@@ -134,7 +134,9 @@ optimizer = optim.SGD(
     momentum=args.momentum,
     weight_decay=args.weight_decay,
 )
-scheduler = StepLR(optimizer, step_size=40, gamma=0.1)
+
+
+scheduler = StepLR(optimizer, step_size=120, gamma=0.1)
 
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list[1:]))
 bits_schedule.sort()
@@ -150,7 +152,7 @@ for epoch in range(args.epochs):
             clip_percentile=0.995,
             symmetric=True,
         )
-        requantize_lsq(model, specs=specs)
+        requantize_qat(model, specs=specs)
         print(f"\n[Epoch {epoch}] ➜ switched to {current_bits}-bit\n")
         schedule_ptr += 1
 
