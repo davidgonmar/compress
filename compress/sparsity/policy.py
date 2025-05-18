@@ -1,4 +1,5 @@
-from .groupers import PruningGrouper
+from .groupers import AbstractGrouper
+from typing import Type
 from typing import Dict
 import dataclasses
 
@@ -11,7 +12,7 @@ class Metric:
 
 @dataclasses.dataclass
 class PruningPolicy:
-    grouper: PruningGrouper
+    grouper: Type[AbstractGrouper]
     inter_group_metric: Metric
     intra_group_metric: Metric
 
