@@ -239,7 +239,7 @@ class ActivationNormInterGroupPruner:
             try:
                 loss = self.runner.iteration()
                 self.model.zero_grad()
-                loss.backward()
+                loss["loss"].backward()
             except StopIteration:
                 break
 
@@ -254,7 +254,7 @@ class ActivationNormInterGroupPruner:
         for name, module in self.model.named_modules():
             if name in self.policies.keys():
                 assert isinstance(
-                    module, (nn.Conv2d, nn.Linear)
+                    module, (nn.Conv2d, nn.Linear, *_sparse_layers)
                 ), f"Module {name} is not a Linear or Conv2d"
                 # if conv -> weight shape [O, I, H_k, W_k]
                 # if linear -> weight shape [O, I]
