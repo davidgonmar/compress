@@ -291,7 +291,7 @@ def prepare_for_qat(
     return model
 
 
-def requantize_lsq(
+def requantize_qat(
     model: nn.Module,
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     inplace=True,
@@ -311,7 +311,17 @@ def requantize_lsq(
         for part in parent_path:
             parent_module = getattr(parent_module, part)
 
-        if not isinstance(module, (LSQConv2d, LSQLinear, FusedLSQConv2dBatchNorm2d)):
+        if not isinstance(
+            module,
+            (
+                LSQConv2d,
+                LSQLinear,
+                FusedLSQConv2dBatchNorm2d,
+                QATConv2d,
+                QATLinear,
+                FusedQATConv2dBatchNorm2d,
+            ),
+        ):
             continue
 
         nbits_acts = module.weight_spec.nbits
@@ -320,18 +330,21 @@ def requantize_lsq(
         new_nbits_acts = specs[name]["input"].nbits
         new_nbits_weights = specs[name]["weight"].nbits
 
-        scale_weights = module.weight_info.scale
-        scale_acts = module.input_info.scale
+        if isinstance(module, (LSQConv2d, LSQLinear, FusedLSQConv2dBatchNorm2d)):
+            scale_weights = module.weight_info.scale
+            scale_acts = module.input_info.scale
 
-        reduce_ratio_weights = float(new_nbits_weights) / float(nbits_weights)
-        reduce_ratio_acts = float(new_nbits_acts) / float(nbits_acts)
+            reduce_ratio_weights = float(new_nbits_weights) / float(nbits_weights)
+            reduce_ratio_acts = float(new_nbits_acts) / float(nbits_acts)
 
-        new_scale_weights = scale_weights * reduce_ratio_weights
-        new_scale_acts = scale_acts * reduce_ratio_acts
+            new_scale_weights = scale_weights * reduce_ratio_weights
+            new_scale_acts = scale_acts * reduce_ratio_acts
 
-        # modify inplace
-        module.weight_info.scale = nn.Parameter(new_scale_weights, requires_grad=True)
-        module.input_info.scale = nn.Parameter(new_scale_acts, requires_grad=True)
+            # modify inplace
+            module.weight_info.scale = nn.Parameter(
+                new_scale_weights, requires_grad=True
+            )
+            module.input_info.scale = nn.Parameter(new_scale_acts, requires_grad=True)
         module.weight_spec = specs[name]["weight"]
         module.input_spec = specs[name]["input"]
 
