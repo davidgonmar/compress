@@ -445,7 +445,7 @@ class TaylorExpansionIntraGroupPruner:
                 mask.scatter_(1, ranked_elements, 1)
                 # now we need to untransform the mask
                 mask = policy.grouper.untransform(mask, module.weight)
-                masks[name] = mask
+                masks[name] = {"weight": mask}
 
         return apply_masks(self.model, masks)
 
