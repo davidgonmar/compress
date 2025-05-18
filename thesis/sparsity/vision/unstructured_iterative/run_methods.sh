@@ -23,7 +23,7 @@ CALIBRATION_SAMPLES=512
 CALIBRATION_BS=4
 SEED=0
 
-METHODS=(magnitude_activations magnitude_weights taylor)
+METHODS=(taylor magnitude_activations magnitude_weights)
 
 for m in "${METHODS[@]}"; do
   echo "=== Running method: $m ==="

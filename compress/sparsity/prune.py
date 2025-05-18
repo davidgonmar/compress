@@ -387,7 +387,7 @@ class TaylorExpansionIntraGroupPruner:
                 for name, mod in self.model.named_modules():
                     if name in self.policies.keys():
                         assert isinstance(
-                            mod, (nn.Conv2d, nn.Linear)
+                            mod, (nn.Conv2d, nn.Linear, *_sparse_layers)
                         ), f"Module {name} is not a Linear or Conv2d"
                         fisher_hessian_diag[name] = (
                             fisher_hessian_diag[name]
