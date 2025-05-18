@@ -11,10 +11,10 @@ from compress.experiments import (
 from compress.sparsity.prune import (
     WeightMagnitudeIntraGroupPruner,
     ActivationMagnitudeIntraGroupPruner,
-    TaylorExpansionInterGroupPruner,
+    TaylorExpansionIntraGroupPruner,
     get_sparsity_information_str,
     get_sparsity_information,
-    fuse_bn_conv_sparse_train
+    fuse_bn_conv_sparse_train,
 )
 from compress.sparsity.recipes import (
     unstructured_resnet20_policy_dict,
@@ -125,7 +125,9 @@ def main():
         modifier_before_load=get_cifar10_modifier(args.model),
         model_args={"num_classes": args.num_classes},
     )
-    model = fuse_conv_bn(model, resnet20_fuse_pairs, fuse_impl=fuse_bn_conv_sparse_train).to(device)
+    model = fuse_conv_bn(
+        model, resnet20_fuse_pairs, fuse_impl=fuse_bn_conv_sparse_train
+    ).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -189,7 +191,7 @@ def main():
                 ),
             )
         elif args.method == "taylor":
-            pruner = TaylorExpansionInterGroupPruner(
+            pruner = TaylorExpansionIntraGroupPruner(
                 model,
                 policies,
                 VisionClassificationModelRunner(
