@@ -13,7 +13,7 @@ class Runner:
 class VisionClassificationModelRunner(Runner):
     def __init__(self, model: nn.Module, dataloader: torch.utils.data.DataLoader):
         self.model = model
-        self.device = model.device
+        self.device = next(model.parameters()).device
         self.dataloader_iter = iter(dataloader)
         self.criterion = nn.CrossEntropyLoss()
 

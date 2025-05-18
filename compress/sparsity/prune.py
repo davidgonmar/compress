@@ -624,7 +624,9 @@ class ActivationMagnitudeIntraGroupPruner:
                 acts = activations[name]
                 acts = acts / total_acts
                 # assert acts.ndim == 3, f"Activations for {name} are not 4D, got {acts.ndim} for layer {name}"
-                if isinstance(module, (nn.Conv2d, SparseConv2d)):
+                if isinstance(
+                    module, (nn.Conv2d, SparseConv2d, SparseFusedConv2dBatchNorm2d)
+                ):
                     # IM2COL
                     acts = torch.nn.functional.unfold(
                         acts,
@@ -633,9 +635,9 @@ class ActivationMagnitudeIntraGroupPruner:
                         padding=module.padding,
                     )  # shape [I * H_k * W_k, H_out * W_out]
                     w = weight  # shape [O, I, H_k, W_k]
-                    if isinstance(module, SparseConv2d):
+                    if isinstance(module, (SparseConv2d, SparseFusedConv2dBatchNorm2d)):
                         assert w.shape == module.weight.shape
-                        w = w * module.mask
+                        w = w * module.weight_mask
 
                     # print(acts.shape, w.shape)
                     o, i, hk, wk = w.shape
@@ -655,8 +657,8 @@ class ActivationMagnitudeIntraGroupPruner:
                     # weight of shape [O, I]
                     w = weight.T  # shape [I, O]
                     if isinstance(module, SparseLinear):
-                        assert w.shape == module.weight.shape
-                        w = w * module.mask.T
+                        assert w.shape == module.weight.T.shape
+                        w = w * module.weight_mask.T
                     acts = acts.reshape(*acts.shape, 1)  # shape [..., I, 1]
                     extra_dims = acts.shape[:-2]
                     vnorm = lambda x: torch.sqrt(
