@@ -24,7 +24,6 @@ from compress.sparsity.runner import VisionClassificationModelRunner
 from compress import seed_everything
 
 
-
 def main():
     parser = argparse.ArgumentParser("One‑shot pruning")
     parser.add_argument("--model", default="resnet20")
