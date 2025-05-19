@@ -30,6 +30,7 @@ from compress.sparsity.runner import (
 )
 from tqdm import tqdm
 import json
+from compress import seed_everything
 
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
@@ -81,7 +82,7 @@ def main():
     )
     args = parser.parse_args()
 
-    torch.manual_seed(args.seed)
+    seed_everything(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     transform_train = transforms.Compose(

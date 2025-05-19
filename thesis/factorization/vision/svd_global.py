@@ -12,6 +12,7 @@ from compress.experiments import (
 )
 import argparse
 import json
+from compress import seed_everything
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--keep_edge_layer", action="store_true")
@@ -25,7 +26,10 @@ parser.add_argument(
 )
 parser.add_argument("--values", type=float, nargs="+", default=None)
 parser.add_argument("--metric", type=str, default="flops")
+parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
+
+seed_everything(args.seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

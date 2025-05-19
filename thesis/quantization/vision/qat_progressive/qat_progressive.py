@@ -1,18 +1,4 @@
 #!/usr/bin/env python
-# progressive_qat.py
-"""
-Progressive-quantization experiment for CIFAR-10 that mimics the CLI and result
-format of your regular-QAT script, but gradually lowers the bit-width during
-training (8 → 4 → 2 by default).
-
-Example:
-    python progressive_qat.py \
-        --bits_list 8 4 2 \
-        --epoch_milestones 25 55 \
-        --method lsq \
-        --model_name resnet20 \
-        --pretrained_path resnet20.pth
-"""
 import argparse
 import json
 from pathlib import Path
@@ -33,10 +19,9 @@ from compress.experiments import (
 from compress.quantization import prepare_for_qat, requantize_qat
 from compress.quantization.recipes import get_recipe_quant
 from compress.layer_fusion import get_fuse_bn_keys
+from compress import seed_everything
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
+
 parser = argparse.ArgumentParser(description="Progressive QAT for CIFAR-10")
 parser.add_argument("--method", default="qat", choices=["qat", "lsq"])
 parser.add_argument(
@@ -74,7 +59,7 @@ parser.add_argument("--seed", default=0, type=int)
 args = parser.parse_args()
 
 
-torch.manual_seed(args.seed)
+seed_everything(args.seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 train_tf = transforms.Compose(

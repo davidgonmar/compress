@@ -21,6 +21,8 @@ from compress.sparsity.prune import (
 )
 from compress.sparsity.recipes import per_output_channel_resnet20_policy_dict
 from compress.sparsity.runner import VisionClassificationModelRunner
+from compress import seed_everything
+
 
 
 def main():
@@ -42,7 +44,7 @@ def main():
     parser.add_argument("--stats_file", required=True)
     args = parser.parse_args()
 
-    torch.manual_seed(args.seed)
+    seed_everything(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     transform = transforms.Compose(

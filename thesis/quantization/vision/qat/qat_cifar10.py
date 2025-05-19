@@ -15,6 +15,8 @@ from compress.experiments import (
 )
 from compress.quantization.recipes import get_recipe_quant
 import json
+from compress import seed_everything
+
 
 
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
@@ -35,8 +37,7 @@ parser.add_argument(
 parser.add_argument("--seed", default=0)
 args = parser.parse_args()
 
-torch.manual_seed(args.seed)
-
+seed_everything(args.seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_transform = transforms.Compose(

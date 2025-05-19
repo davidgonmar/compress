@@ -44,8 +44,11 @@ test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
-
-train_loader = DataLoader(train_set, batch_size=100, shuffle=True)
+# subset
+train_set = torch.utils.data.Subset(
+    train_set, torch.randint(0, len(train_set), (5000,))
+)
+train_loader = DataLoader(train_set, batch_size=1, shuffle=True)
 
 criterion = torch.nn.CrossEntropyLoss()
 eval_results = evaluate_vision_model(model, test_loader)
