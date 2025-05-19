@@ -5,7 +5,7 @@ from torchvision import datasets, transforms
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
-from compress.quantization import prepare_for_qat, get_fuse_bn_keys
+from compress.quantization import prepare_for_qat
 from compress.experiments import (
     load_vision_model,
     get_cifar10_modifier,
@@ -13,7 +13,7 @@ from compress.experiments import (
     cifar10_std,
 )
 from compress.quantization.recipes import get_recipe_quant
-
+from compress.layer_fusion import resnet20_fuse_pairs
 
 def attach_feature_hooks(model, layer_names, store):
     hooks = []
@@ -151,7 +151,7 @@ quant_specs = get_recipe_quant(args.model_name)(
     bits_activation=2,
     bits_weight=args.nbits,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
-    clip_percentile=0.99,
+    clip_percentile=0.995,
     symmetric=True,
 )
 student = prepare_for_qat(
@@ -160,7 +160,7 @@ student = prepare_for_qat(
     use_lsq=True,
     data_batch=next(iter(train_loader))[0][:100].to(device),
     method_args={"online": False},
-    fuse_bn_keys=get_fuse_bn_keys(args.model_name),
+    fuse_bn_keys=resnet20_fuse_pairs,
 ).to(device)
 
 writer = SummaryWriter()
