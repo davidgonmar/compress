@@ -19,6 +19,7 @@ from compress.layer_fusion import get_fuse_bn_keys
 import argparse
 from itertools import product
 import json
+from compress import seed_everything
 
 
 parser = argparse.ArgumentParser()
@@ -27,10 +28,12 @@ parser.add_argument("--pretrained_path", type=str, default=None)
 parser.add_argument("--batch_size", type=int, default=128)
 parser.add_argument("--calibration_batches", type=int, default=10)
 parser.add_argument("--output_path", type=str, default="quantization_results.json")
+parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
+seed_everything(args.seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.manual_seed(0)
+
 
 model = load_vision_model(
     args.model_name,
