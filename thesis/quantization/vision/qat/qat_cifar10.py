@@ -18,7 +18,6 @@ import json
 from compress import seed_everything
 
 
-
 parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
 parser.add_argument("--method", default="qat", type=str, choices=["qat", "lsq"])
 parser.add_argument("--nbits_activations", default=2, type=int)

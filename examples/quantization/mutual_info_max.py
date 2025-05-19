@@ -15,6 +15,7 @@ from compress.experiments import (
 from compress.quantization.recipes import get_recipe_quant
 from compress.layer_fusion import resnet20_fuse_pairs
 
+
 def attach_feature_hooks(model, layer_names, store):
     hooks = []
     for name, module in model.named_modules():

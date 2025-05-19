@@ -33,7 +33,6 @@ import json
 from compress import seed_everything
 
 
-
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
