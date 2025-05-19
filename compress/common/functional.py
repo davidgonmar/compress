@@ -11,7 +11,9 @@ def hoyer_sparsity(input: torch.Tensor, normalize=DEFAULT_NORMALIZE) -> torch.Te
     n = input.numel()
     input = input.flatten()
     l1_norm = torch.sum(torch.abs(input))
-    l2_norm = torch.norm(input, p=2) + 1e-12
+    l2_norm = torch.norm(input, p=2)
+    if l2_norm < 1e-6:
+        return torch.tensor(0.0, device=input.device)
     return (
         (math.sqrt(n) - (l1_norm / l2_norm)) / (math.sqrt(n) - 1)
         if normalize

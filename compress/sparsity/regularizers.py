@@ -73,23 +73,32 @@ def get_regularizer_for_all_layers(
     conv_grouper: Type[AbstractGrouper],
     linear_grouper: Type[AbstractGrouper],
 ) -> Dict[str, Dict[str, Any]]:
-    res = {}
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Linear, SparseLinear)):
-            grouper = linear_grouper
-        elif isinstance(
-            module, (nn.Conv2d, SparseConv2d, SparseFusedConv2dBatchNorm2d)
-        ):
-            grouper = conv_grouper
-        else:
-            continue
+    res: Dict[str, Dict[str, Any]] = {}
 
+    def _add(name: str, module: nn.Module, grouper_cls: Type[AbstractGrouper]):
         res[name] = {
-            "grouper": grouper,
+            "grouper": grouper_cls,
             "regularizer": regfn,
             "weight": 1.0,
             "module": module,
         }
+
+    def _walk(module: nn.Module, prefix: str = ""):
+        for child_name, child in module.named_children():
+            full_name = child_name if prefix == "" else f"{prefix}.{child_name}"
+
+            if isinstance(child, SparseFusedConv2dBatchNorm2d):
+                _add(full_name, child, conv_grouper)
+                continue
+
+            if isinstance(child, (nn.Linear, SparseLinear)):
+                _add(full_name, child, linear_grouper)
+            elif isinstance(child, (nn.Conv2d, SparseConv2d)):
+                _add(full_name, child, conv_grouper)
+
+            _walk(child, full_name)
+
+    _walk(model)
     return res
 
 
@@ -146,6 +155,14 @@ class SparsityParamRegularizer:
 
 
 class L1L2ActivationInterRegularizer:
+    def __init__(self, metric: str = "l2"):
+        if metric == "l2":
+            self.metric = lambda x, dim: torch.sqrt(torch.sum(x**2, dim=dim))
+        elif metric == "l1":
+            self.metric = lambda x, dim: torch.sum(x.abs(), dim=dim)
+        elif metric == "avgabs":
+            self.metric = lambda x, dim: torch.mean(x.abs(), dim=dim)
+
     def __call__(
         self, activation: torch.Tensor, grouper: Type[AbstractGrouper]
     ) -> torch.Tensor:
@@ -160,17 +177,18 @@ class L1L2ActivationInterRegularizer:
             activation = activation.view(
                 activation.size(0), activation.size(1), -1
             )  # (B, O, H*W)
-            norm = torch.norm(activation, p=2, dim=2)  # (B, O)
+            norm = self.metric(activation, dim=(0, 2))  # (O)
             batch_axes = 0
         elif grouper is OutChannelGroupingGrouperLinear:
             # act shape = (..., O)
-            norm = activation
-            batch_axes = activation.shape[:-1]
-            assert (
-                len(batch_axes) == 1
-            ), "For Linear layers, the activation should have only one batch axis"
-
-        return _vmapped_hoyer_sparsity(norm, normalize=False)  # (B, O) -> (B)
+            batch_axes = list(range(len(activation.shape[:-1])))
+            norm = self.metric(activation, dim=batch_axes)  # (O)
+            assert batch_axes == [
+                0
+            ], "For Linear layers, the activation should have only one batch axis, got {}".format(
+                batch_axes
+            )
+        return hoyer_sparsity(norm, normalize=False)  # scalar
 
 
 class SparsityActivationRegularizer:
@@ -249,7 +267,11 @@ class SparsityActivationRegularizer:
             reg_fn = spec["regularizer"]
             w = spec["weight"]
             activation = self.activations[name]
-            total_loss = total_loss + w * reg_fn(activation, grp, **self.kwargs).mean()
-        for name in self.activations.keys():
-            self.activations[name] = None
+
+            total_loss = total_loss + w * reg_fn(activation, grp, **self.kwargs).sum()
+        self.activations = {}
         return total_loss
+
+    def __del__(self):
+        for hook in self.hooks.values():
+            hook.remove()

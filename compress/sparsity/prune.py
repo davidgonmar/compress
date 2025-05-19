@@ -131,9 +131,18 @@ class WeightMagnitudeIntraGroupPruner(AbstractPruner):
 
 
 class WeightNormInterGroupPruner(AbstractPruner):
-    def __init__(self, model: nn.Module, policies: PolicyDict):
+    def __init__(self, model: nn.Module, policies: PolicyDict, metric="l2"):
         self.model = model
         self.policies = policies
+
+        if metric == "l2":
+            self.metric = lambda x: torch.norm(x, dim=1)
+        elif metric == "l1":
+            self.metric = lambda x: torch.sum(x.abs(), dim=1)
+        elif metric == "avg":
+            self.metric = lambda x: torch.mean(x, dim=1)
+        else:
+            raise ValueError(f"Unknown metric {metric}")
 
     def prune(self):
         # iterate over policies and apply pruning
@@ -157,7 +166,7 @@ class WeightNormInterGroupPruner(AbstractPruner):
                         module.weight_mask
                     )  # if mask is 0, the norm is 0 so it will not be selected
                 ranked_elements = torch.topk(
-                    reshaped.norm(dim=1),  # shape [n_groups]
+                    self.metric(reshaped),  # shape [n_groups]
                     k=int(density * reshaped.shape[0]),
                     dim=0,
                 ).indices
@@ -178,7 +187,7 @@ class WeightNormInterGroupPruner(AbstractPruner):
 
             elif metric.name == "threshold":
                 threshold = metric.value
-                keep = reshaped.norm(dim=1) > threshold
+                keep = self.metric(reshaped) > threshold
                 mask = keep.to(reshaped.device)
                 # now we need to untransform the mask
                 # expand the mask
@@ -214,15 +223,18 @@ class ActivationNormInterGroupPruner:
     def prune(self):
         activations = {}
         hooks = {}
+        number_passes = 0
 
         def get_hook(name):
             nonlocal activations
 
             def hook(module, input, output):
                 if name not in activations:
-                    activations[name] = output.detach().mean(dim=0).unsqueeze(0)
+                    activations[name] = output.detach().mean(dim=0)
                 else:
-                    activations[name] += output.detach().mean(dim=0).unsqueeze(0)
+                    activations[name] += output.detach().mean(dim=0)
+                nonlocal number_passes
+                number_passes += 1
 
             return hook
 
@@ -258,7 +270,7 @@ class ActivationNormInterGroupPruner:
                 ), f"Module {name} is not a Linear or Conv2d"
                 # if conv -> weight shape [O, I, H_k, W_k]
                 # if linear -> weight shape [O, I]
-                acts = activations[name].mean(0)
+                acts = activations[name] / number_passes
                 policy = self.policies[name]
                 if isinstance(
                     module, (nn.Conv2d, SparseFusedConv2dBatchNorm2d, SparseConv2d)
@@ -269,7 +281,8 @@ class ActivationNormInterGroupPruner:
                     reshaped_acts = acts.reshape(
                         acts.shape[0], -1
                     )  # shape [O, H_out * W_out]
-                    out_score = torch.norm(reshaped_acts, dim=1)  # shape [O]
+                    out_score = torch.mean(reshaped_acts.abs(), dim=1)  # shape [O]
+                    # print(out_score)
                     # now we have the saliencies for this layer
                     saliencies = out_score
                     if isinstance(module, (SparseConv2d, SparseFusedConv2dBatchNorm2d)):
@@ -302,7 +315,7 @@ class ActivationNormInterGroupPruner:
 
                     elif policy.inter_group_metric.name == "threshold":
                         threshold = policy.inter_group_metric.value
-                        keep = saliencies > threshold
+                        keep = saliencies > threshold * saliencies.abs().mean()
                         mask = keep.to(saliencies.device)
                         # broadcast mask back to original shape
                         o, i, hk, wk = module.weight.shape
@@ -322,8 +335,8 @@ class ActivationNormInterGroupPruner:
                     # acts of shape [..., I]
                     # weight of shape [O, I]
                     # reshape acts to [combine(...), O]
-                    acts = acts.reshape(-1, acts.shape[-1])
-                    norm = torch.norm(acts, dim=0, keepdim=False)  # shape [0]
+                    acts = acts.reshape(-1, acts.shape[-1]) / number_passes
+                    norm = torch.mean(acts.abs(), dim=0)  # shape [O]
                     saliencies = norm
                     if isinstance(module, SparseLinear):
                         saliencies = (
@@ -351,7 +364,8 @@ class ActivationNormInterGroupPruner:
                         }
                     elif policy.inter_group_metric.name == "threshold":
                         threshold = policy.inter_group_metric.value
-                        keep = saliencies > threshold
+                        mean_saliency = torch.mean(saliencies.abs())
+                        keep = saliencies > (threshold * mean_saliency)
                         mask = keep.to(saliencies.device)
                         # broadcast mask back to original shape
                         o = module.weight.shape[0]
