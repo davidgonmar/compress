@@ -229,10 +229,13 @@ def prepare_for_qat(
             fuse_conv_bn(
                 model,
                 fuse_bn_keys,
-                fuse_impl=functools.partial(
-                    fuse_conv_bn_lsq,
+                fuse_impl=lambda conv, bn, conv_name, bn_name: fuse_conv_bn_lsq(
+                    conv=conv,
+                    bn=bn,
+                    conv_name=conv_name,
+                    bn_name=bn_name,
                     specs=specs,
-                    data_batch=kwargs["data_batch"],
+                    data_batch=activations[conv_name],
                     online=method_args.get("online", False),
                 ),
             )
