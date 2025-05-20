@@ -96,7 +96,7 @@ model = prepare_for_qat(
                 shuffle=False,
             )
         )
-    ),
+    )[0],
     fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 ).to(device)
 
