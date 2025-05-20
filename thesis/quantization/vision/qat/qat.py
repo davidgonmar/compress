@@ -81,16 +81,21 @@ specs = get_recipe_quant(args.model_name)(
     symmetric=True,
 )
 
+# gather 1024 samples for calibration
 model = prepare_for_qat(
     model,
     specs=specs,
     use_lsq=(args.method == "lsq"),
-    data_batch=torch.utils.data.DataLoader(
-        torch.utils.data.Subset(
-            train_dataset, torch.randperm(len(train_dataset))[:1024]
-        ),
-        batch_size=args.batch_size,
-        shuffle=True,
+    data_batch=next(
+        iter(
+            torch.utils.data.DataLoader(
+                torch.utils.data.Subset(
+                    train_dataset, torch.randperm(len(train_dataset))[:1024]
+                ),
+                batch_size=1024,
+                shuffle=False,
+            )
+        )
     ),
     fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 ).to(device)
