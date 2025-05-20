@@ -20,7 +20,7 @@ from compress.factorization.utils import matrix_approx_rank
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Finetune ResNet on CIFAR-10 with Hoyer regularization and configurable hyperparameters"
+        description="Finetune ResNet on CIFAR-10 with constant regularization and dynamic adjustment"
     )
 
     parser.add_argument(
@@ -53,28 +53,22 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--start_reg",
+        "--reg_weight",
         type=float,
-        default=0.005,
-        help="initial regularization weight (cosine schedule start)",
+        default=0.003,
+        help="constant regularization weight",
     )
     parser.add_argument(
-        "--end_reg",
+        "--acc_threshold",
         type=float,
-        default=0.002,
-        help="final regularization weight (cosine schedule end)",
+        default=0.90,
+        help="accuracy threshold to trigger regularization adjustment",
     )
     parser.add_argument(
-        "--T0",
-        type=int,
-        default=15,
-        help="number of epochs for the first regularization annealing cycle",
-    )
-    parser.add_argument(
-        "--T_mult",
-        type=int,
-        default=1,
-        help="multiplicative factor for subsequent cycles in regularization annealing",
+        "--reg_divisor",
+        type=float,
+        default=10000.0,
+        help="divisor to reduce regularization weight by when below threshold",
     )
 
     parser.add_argument(
@@ -94,25 +88,6 @@ def parse_args():
     )
 
     return parser.parse_args()
-
-
-def weight_schedule(epoch, start, end, T_0, T_mult):
-    T_i = T_0
-    ep_i = epoch
-    while ep_i >= T_i:
-        ep_i -= T_i
-        T_i *= T_mult
-    return end + 0.5 * (start - end) * (1 + math.cos(math.pi * ep_i / T_i))
-
-
-def weight_schedule_inverted_warp(epoch, start, end, T_0, T_mult, alpha=5.0):
-    cycle_pos = epoch % T_0
-    t = cycle_pos / T_0
-    warped_t = 1 - (1 - t) ** alpha
-    return end + 0.5 * (start - end) * (1 + math.cos(math.pi * warped_t))
-
-
-weight_schedule = weight_schedule_inverted_warp
 
 
 def main():
@@ -142,7 +117,6 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = load_vision_model(
@@ -157,7 +131,7 @@ def main():
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         model.parameters(),
-        lr=0.01,
+        lr=args.lr,
         weight_decay=args.weight_decay,
         momentum=args.momentum,
     )
@@ -165,7 +139,6 @@ def main():
         optimizer, step_size=args.step_size, gamma=args.gamma
     )
 
-    # Regularizer
     params_and_reshapers = extract_weights_and_reshapers(
         model,
         cls_list=(torch.nn.Conv2d,),
@@ -178,6 +151,10 @@ def main():
         normalize=False,
     )
 
+    base_reg_weight = args.reg_weight
+    reg_weight = base_reg_weight
+    reg_reduced = False
+
     for epoch in range(args.epochs):
         model.train()
         train_loss, reg_loss = 0.0, 0.0
@@ -188,11 +165,8 @@ def main():
 
             y_hat = model(x)
             loss = criterion(y_hat, y)
-            reg_w = weight_schedule(
-                epoch, args.start_reg, args.end_reg, args.T0, args.T_mult
-            )
             reg = regularizer()
-            total_loss = loss + reg_w * reg
+            total_loss = loss + reg_weight * reg
 
             total_loss.backward()
             optimizer.step()
@@ -211,9 +185,7 @@ def main():
         print(
             f"Learning Rate after epoch {epoch+1}: {optimizer.param_groups[0]['lr']:.5f}"
         )
-        print(
-            f"reg_w after epoch {epoch+1}: {weight_schedule(epoch, args.start_reg, args.end_reg, args.T0, args.T_mult)}"
-        )
+        print(f"reg_weight after epoch {epoch+1}: {reg_weight:.6f}")
 
         print("Approximate ranks per layer:")
 
@@ -244,6 +216,21 @@ def main():
         val_loss /= len(val_loader.dataset)
         acc = correct / len(val_loader.dataset)
         print(f"Validation Loss: {val_loss:.4f}, Accuracy: {acc:.4f}")
+
+        if acc < args.acc_threshold and not reg_reduced:
+            reg_weight /= args.reg_divisor
+            reg_reduced = True
+            print(
+                f"Accuracy below {args.acc_threshold:.2f}, "
+                f"reducing reg_weight by factor {args.reg_divisor}: now {reg_weight:.6f}"
+            )
+        elif acc >= args.acc_threshold and reg_reduced:
+            reg_weight = base_reg_weight
+            reg_reduced = False
+            print(
+                f"Accuracy recovered above {args.acc_threshold:.2f}, "
+                f"restoring reg_weight to {reg_weight:.6f}"
+            )
 
         torch.save(model, args.save_path)
 

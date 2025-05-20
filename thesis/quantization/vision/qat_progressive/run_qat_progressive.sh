@@ -5,7 +5,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/results_prog"
 CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$DIR"
 
-METHODS=(qat lsq)
+METHODS=(lsq qat)
 BITS_LISTS=("8 4" "8 4 2")
 MILESTONES_LISTS=("40" "25 50")
 LEAVE_FLAGS=("--leave_edge_layers_8_bits")
