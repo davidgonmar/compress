@@ -19,7 +19,9 @@ import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--load_from", type=str, default="cifar10_resnet20_hoyer_finetuned.pth")
+parser.add_argument(
+    "--load_from", type=str, default="cifar10_resnet20_hoyer_finetuned.pth"
+)
 parser.add_argument("--vision-model", type=str, default="resnet20")
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
@@ -141,7 +143,7 @@ for x in (
     )
     n_params = sum(p.numel() for p in model_lr.parameters())
     model_lr.to(device)
-    #print(model_lr)
+    # print(model_lr)
     eval_results = evaluate_vision_model(model_lr, test_loader)
 
     fl = count_model_flops(model_lr, (1, 3, 32, 32))

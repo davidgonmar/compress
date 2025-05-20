@@ -228,11 +228,13 @@ scheduler_matchers = torch.optim.lr_scheduler.StepLR(
     optimizer_matchers, step_size=80, gamma=0.1
 )
 
+
 def criterion_mse(a, b):
-    a_hat = (a - a.mean((2,3), keepdim=True)) / (a.std((2,3), keepdim=True) + 1e-5)
-    b_hat = (b - b.mean((2,3), keepdim=True)) / (b.std((2,3), keepdim=True) + 1e-5)
+    a_hat = (a - a.mean((2, 3), keepdim=True)) / (a.std((2, 3), keepdim=True) + 1e-5)
+    b_hat = (b - b.mean((2, 3), keepdim=True)) / (b.std((2, 3), keepdim=True) + 1e-5)
     return cm(a_hat, b_hat)
-    
+
+
 print("Starting training…")
 for epoch in range(1, args.epochs + 1):
     student.train()
@@ -264,7 +266,7 @@ for epoch in range(1, args.epochs + 1):
         ]
         kd_loss = torch.stack(kd_losses).mean()
         # Decide which set of parameters to update this batch
-        if (batch_idx % cycle_len):
+        if batch_idx % cycle_len:
             # Student update phase
             loss = args.alpha * ce_loss + (1.0 - args.alpha) * kd_loss
             optimizer_student.zero_grad(set_to_none=True)
@@ -311,4 +313,3 @@ for epoch in range(1, args.epochs + 1):
 # Clean up hooks
 for h in teacher_hooks + student_hooks:
     h.remove()
-

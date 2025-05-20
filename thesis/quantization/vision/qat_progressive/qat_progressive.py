@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import argparse
 import json
 from pathlib import Path
@@ -6,7 +5,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import MultiStepLR
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
@@ -28,36 +27,29 @@ parser.add_argument(
     "--bits_list",
     nargs="+",
     type=int,
-    default=[8, 4, 2],
     help="Sequence of bit-widths to walk through.",
+    required=True,
 )
 parser.add_argument(
     "--epoch_milestones",
     nargs="+",
     type=int,
-    default=[15, 50],
     help="Epochs at which to switch to the *next* entry in bits_list.",
-)
-parser.add_argument(
-    "--leave_edge_layers_8_bits",
-    action="store_true",
-    help="Keep first/last Conv + FC at 8-bit throughout.",
+    required=True,
 )
 parser.add_argument("--model_name", default="resnet20")
 parser.add_argument("--pretrained_path", default="resnet20.pth")
 parser.add_argument("--batch_size", default=128, type=int)
-parser.add_argument("--epochs", default=150, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--momentum", default=0.9, type=float)
 parser.add_argument("--weight_decay", default=5e-4, type=float)
 parser.add_argument(
     "--output_path",
     type=str,
-    help="Where to save JSON results. " "Defaults to qat_prog_<bits>.json",
+    help="Where to save JSON results. Defaults to qat_prog_<bits>.json",
 )
 parser.add_argument("--seed", default=0, type=int)
 args = parser.parse_args()
-
 
 seed_everything(args.seed)
 
@@ -76,13 +68,21 @@ val_tf = transforms.Compose(
         transforms.Normalize(cifar10_mean, cifar10_std),
     ]
 )
+train_dataset = datasets.CIFAR10(
+    root="./data", train=True, download=True, transform=train_tf
+)
 train_loader = torch.utils.data.DataLoader(
-    datasets.CIFAR10("./data", train=True, download=True, transform=train_tf),
+    train_dataset,
     batch_size=args.batch_size,
     shuffle=True,
 )
+
+val_dataset = datasets.CIFAR10(
+    root="./data", train=False, download=True, transform=val_tf
+)
+
 val_loader = torch.utils.data.DataLoader(
-    datasets.CIFAR10("./data", train=False, download=True, transform=val_tf),
+    val_dataset,
     batch_size=512,
     shuffle=False,
 )
@@ -100,7 +100,7 @@ current_bits = args.bits_list[0]
 specs = get_recipe_quant(args.model_name)(
     bits_activation=current_bits,
     bits_weight=current_bits,
-    leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
+    leave_edge_layers_8_bits=True,
     clip_percentile=0.995,
     symmetric=True,
 )
@@ -108,7 +108,13 @@ model = prepare_for_qat(
     model,
     specs=specs,
     use_lsq=(args.method == "lsq"),
-    data_batch=next(iter(train_loader))[0][:1024].to(device),
+    data_batch=torch.utils.data.DataLoader(
+        torch.utils.data.Subset(
+            train_dataset, torch.randperm(len(train_dataset))[:1024]
+        ),
+        batch_size=args.batch_size,
+        shuffle=True,
+    ),
     fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 ).to(device)
 
@@ -120,20 +126,22 @@ optimizer = optim.SGD(
     weight_decay=args.weight_decay,
 )
 
+# basically, we want to train for 100 epochs pre-conditioning on the optimal weights at the previous bit-width
+epochs = max(args.epoch_milestones) + 100
 
-scheduler = StepLR(optimizer, step_size=100, gamma=0.1)
+scheduler = MultiStepLR(optimizer, [140, 180], gamma=0.1)
 
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list[1:]))
 bits_schedule.sort()
 schedule_ptr = 0
 results = []
-for epoch in range(args.epochs):
+for epoch in range(epochs):
     if schedule_ptr < len(bits_schedule) and epoch == bits_schedule[schedule_ptr][0]:
         current_bits = bits_schedule[schedule_ptr][1]
         specs = get_recipe_quant(args.model_name)(
             bits_activation=current_bits,
             bits_weight=current_bits,
-            leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
+            leave_edge_layers_8_bits=True,
             clip_percentile=0.995,
             symmetric=True,
         )
@@ -144,10 +152,10 @@ for epoch in range(args.epochs):
     model.train()
     running_loss = 0.0
     for imgs, lbls in tqdm(
-        train_loader, desc=f"Epoch {epoch+1}/{args.epochs} • Train", leave=False
+        train_loader, desc=f"Epoch {epoch+1}/{epochs} • Train", leave=False
     ):
         imgs, lbls = imgs.to(device), lbls.to(device)
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad()
         loss = criterion(model(imgs), lbls)
         loss.backward()
         optimizer.step()
@@ -158,7 +166,7 @@ for epoch in range(args.epochs):
     correct = total = 0
     with torch.no_grad():
         for imgs, lbls in tqdm(
-            val_loader, desc=f"Epoch {epoch+1}/{args.epochs} • Val", leave=False
+            val_loader, desc=f"Epoch {epoch+1}/{epochs} • Val", leave=False
         ):
             preds = model(imgs.to(device)).argmax(1)
             total += lbls.size(0)
