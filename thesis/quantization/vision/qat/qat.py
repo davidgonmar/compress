@@ -86,17 +86,13 @@ model = prepare_for_qat(
     model,
     specs=specs,
     use_lsq=(args.method == "lsq"),
-    data_batch=next(
-        iter(
-            torch.utils.data.DataLoader(
-                torch.utils.data.Subset(
-                    train_dataset, torch.randperm(len(train_dataset))[:1024]
-                ),
-                batch_size=1024,
-                shuffle=False,
-            )
-        )
-    )[0],
+    data_batch=torch.utils.data.DataLoader(
+        torch.utils.data.Subset(
+            train_dataset, torch.randperm(len(train_dataset))[:1024]
+        ),
+        batch_size=128,
+        shuffle=False,
+    ),
     fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 ).to(device)
 
