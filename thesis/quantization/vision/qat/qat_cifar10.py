@@ -22,10 +22,9 @@ parser = argparse.ArgumentParser(description="PyTorch CIFAR10 QAT Training")
 parser.add_argument("--method", default="qat", type=str, choices=["qat", "lsq"])
 parser.add_argument("--nbits_activations", default=2, type=int)
 parser.add_argument("--nbits_weights", default=2, type=int)
-parser.add_argument("--leave_edge_layers_8_bits", action="store_true")
 parser.add_argument("--model_name", default="resnet20", type=str)
 parser.add_argument("--pretrained_path", default="resnet20.pth", type=str)
-parser.add_argument("--batch_size", default=256, type=int)
+parser.add_argument("--batch_size", default=128, type=int)
 parser.add_argument("--epochs", default=90, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--momentum", default=0.9, type=float)
@@ -78,7 +77,7 @@ model = load_vision_model(
 specs = get_recipe_quant(args.model_name)(
     bits_activation=args.nbits_activations,
     bits_weight=args.nbits_weights,
-    leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
+    leave_edge_layers_8_bits=True,
     clip_percentile=0.995,
     symmetric=True,
 )
