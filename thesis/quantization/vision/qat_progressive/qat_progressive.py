@@ -35,7 +35,7 @@ parser.add_argument(
     "--epoch_milestones",
     nargs="+",
     type=int,
-    default=[25, 55],
+    default=[15, 50],
     help="Epochs at which to switch to the *next* entry in bits_list.",
 )
 parser.add_argument(
@@ -45,8 +45,8 @@ parser.add_argument(
 )
 parser.add_argument("--model_name", default="resnet20")
 parser.add_argument("--pretrained_path", default="resnet20.pth")
-parser.add_argument("--batch_size", default=256, type=int)
-parser.add_argument("--epochs", default=200, type=int)
+parser.add_argument("--batch_size", default=128, type=int)
+parser.add_argument("--epochs", default=150, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--momentum", default=0.9, type=float)
 parser.add_argument("--weight_decay", default=5e-4, type=float)
@@ -108,7 +108,7 @@ model = prepare_for_qat(
     model,
     specs=specs,
     use_lsq=(args.method == "lsq"),
-    data_batch=next(iter(train_loader))[0][:100].to(device),
+    data_batch=next(iter(train_loader))[0][:1024].to(device),
     fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 ).to(device)
 
@@ -121,7 +121,7 @@ optimizer = optim.SGD(
 )
 
 
-scheduler = StepLR(optimizer, step_size=120, gamma=0.1)
+scheduler = StepLR(optimizer, step_size=100, gamma=0.1)
 
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list[1:]))
 bits_schedule.sort()
@@ -138,7 +138,7 @@ for epoch in range(args.epochs):
             symmetric=True,
         )
         requantize_qat(model, specs=specs)
-        print(f"\n[Epoch {epoch}] ➜ switched to {current_bits}-bit\n")
+        print(f"\n[Epoch {epoch}] ': switched to {current_bits}-bit\n")
         schedule_ptr += 1
 
     model.train()

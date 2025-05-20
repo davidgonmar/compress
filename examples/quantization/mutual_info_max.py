@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
 
 from compress.quantization import prepare_for_qat
 from compress.experiments import (
@@ -75,7 +74,7 @@ parser.add_argument(
 parser.add_argument(
     "--alpha", default=0.5, type=float, help="weight for CE vs feature-KD loss (0-1)"
 )
-parser.add_argument("--epochs", default=90, type=int)
+parser.add_argument("--epochs", default=180, type=int)
 parser.add_argument("--batch_size", default=256, type=int)
 parser.add_argument("--val_batch_size", default=512, type=int)
 parser.add_argument("--model_name", type=str, default="resnet20")
@@ -86,12 +85,17 @@ parser.add_argument(
     help="path to pretrained model",
 )
 parser.add_argument(
-    "--matcher_steps",
+    "--student_each",
     default=1,
     type=int,
-    help="number of matcher updates per student update",
+    help="number of consecutive batches to update the student network",
 )
-
+parser.add_argument(
+    "--matchers_each",
+    default=1,
+    type=int,
+    help="number of consecutive batches to update the matcher adapters",
+)
 parser.add_argument(
     "--complex_adapter",
     action="store_true",
@@ -149,7 +153,7 @@ stu_raw = load_vision_model(
     model_args={"num_classes": 10},
 )
 quant_specs = get_recipe_quant(args.model_name)(
-    bits_activation=2,
+    bits_activation=args.nbits,
     bits_weight=args.nbits,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
     clip_percentile=0.995,
@@ -163,8 +167,6 @@ student = prepare_for_qat(
     method_args={"online": False},
     fuse_bn_keys=resnet20_fuse_pairs,
 ).to(device)
-
-writer = SummaryWriter()
 
 print(student)
 layer_names = (
@@ -202,14 +204,13 @@ teacher_feats.clear()
 student_feats.clear()
 
 criterion_ce = nn.CrossEntropyLoss()
-criterion_mse = nn.MSELoss()
+cm = nn.MSELoss()
 
 optimizer_student = torch.optim.SGD(
     student.parameters(),
     lr=0.001,
     momentum=0.9,
     weight_decay=5e-4,
-    nesterov=True,
 )
 
 optimizer_matchers = torch.optim.SGD(
@@ -217,17 +218,21 @@ optimizer_matchers = torch.optim.SGD(
     lr=0.01,
     momentum=0.9,
     weight_decay=5e-4,
-    nesterov=True,
 )
 
-scheduler_student = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer_student, T_max=args.epochs
+scheduler_student = torch.optim.lr_scheduler.StepLR(
+    optimizer_student, step_size=80, gamma=0.1
 )
 
-scheduler_matchers = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer_matchers, T_max=args.epochs
+scheduler_matchers = torch.optim.lr_scheduler.StepLR(
+    optimizer_matchers, step_size=80, gamma=0.1
 )
 
+def criterion_mse(a, b):
+    a_hat = (a - a.mean((2,3), keepdim=True)) / (a.std((2,3), keepdim=True) + 1e-5)
+    b_hat = (b - b.mean((2,3), keepdim=True)) / (b.std((2,3), keepdim=True) + 1e-5)
+    return cm(a_hat, b_hat)
+    
 print("Starting training…")
 for epoch in range(1, args.epochs + 1):
     student.train()
@@ -235,10 +240,10 @@ for epoch in range(1, args.epochs + 1):
         est.train()
     running_loss = 0.0
 
+    cycle_len = args.student_each + args.matchers_each
     for batch_idx, (images, labels) in enumerate(
         tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
     ):
-        global_step = (epoch - 1) * len(train_loader) + batch_idx
         images, labels = images.to(device, non_blocking=True), labels.to(
             device, non_blocking=True
         )
@@ -252,60 +257,39 @@ for epoch in range(1, args.epochs + 1):
         ce_loss = criterion_ce(logits_s, labels)
         kd_losses = [
             criterion_mse(
-                estimators[n](student_feats[n]).reshape(-1),
-                teacher_feats[n].detach().reshape(-1),
+                estimators[n](student_feats[n]),
+                teacher_feats[n].detach(),
             )
             for n in layer_names
         ]
         kd_loss = torch.stack(kd_losses).mean()
-        loss = args.alpha * ce_loss + (1.0 - args.alpha) * kd_loss
-
-        optimizer_student.zero_grad(set_to_none=True)
-        loss.backward(retain_graph=args.matcher_steps > 1)
-
-        # log per-layer weight gradient norms
-        for name, param in student.named_parameters():
-            if "weight" in name and param.grad is not None:
-                writer.add_scalar(
-                    f"grad_student/{name.replace('.', '/')}",
-                    param.grad.norm().item(),
-                    global_step,
-                )
-
-        writer.add_scalar("train/ce_loss", ce_loss.item(), global_step)
-        writer.add_scalar("train/kd_loss", kd_loss.item(), global_step)
-        writer.add_scalar("train/loss", loss.item(), global_step)
-        optimizer_student.step()
-
-        for i in range(args.matcher_steps):
+        # Decide which set of parameters to update this batch
+        if (batch_idx % cycle_len):
+            # Student update phase
+            loss = args.alpha * ce_loss + (1.0 - args.alpha) * kd_loss
+            optimizer_student.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer_student.step()
+            running_loss += loss.item() * images.size(0)
+        else:
+            # Matcher update phase (student frozen)
             optimizer_matchers.zero_grad(set_to_none=True)
-            kd_losses = [
+            kd_losses_detached = [
                 criterion_mse(
-                    estimators[n](student_feats[n].detach()).reshape(-1),
-                    teacher_feats[n].detach().reshape(-1),
+                    estimators[n](student_feats[n].detach()),
+                    teacher_feats[n].detach(),
                 )
                 for n in layer_names
             ]
-            kd_loss = torch.stack(kd_losses).mean()
-            kd_loss.backward()
-            if i == 0:
-                grad_norm_matcher = torch.sqrt(
-                    sum(
-                        p.grad.norm() ** 2
-                        for m in estimators.values()
-                        for p in m.parameters()
-                        if p.grad is not None
-                    )
-                )
-                writer.add_scalar("grad/matcher", grad_norm_matcher, global_step)
+            kd_loss_detached = torch.stack(kd_losses_detached).mean()
+            kd_loss_detached.backward()
             optimizer_matchers.step()
-
-        running_loss += loss.item() * images.size(0)
 
     scheduler_student.step()
     scheduler_matchers.step()
     avg_loss = running_loss / len(train_loader.dataset)
 
+    # Validation (student network only)
     student.eval()
     for est in estimators.values():
         est.eval()
@@ -321,12 +305,10 @@ for epoch in range(1, args.epochs + 1):
     acc = 100.0 * correct / total
 
     print(
-        f"Epoch {epoch:3d} | Loss {avg_loss:.4f} | Val Acc {acc:.2f}% | KD {kd_loss.item():.4f}"
+        f"Epoch {epoch:3d} | Avg Loss {avg_loss:.4f} | Val Acc {acc:.2f}% | KD {kd_loss.item():.4f}"
     )
-    writer.add_scalar("train/avg_loss", avg_loss, epoch)
-    writer.add_scalar("val/accuracy", acc, epoch)
 
+# Clean up hooks
 for h in teacher_hooks + student_hooks:
     h.remove()
 
-writer.close()

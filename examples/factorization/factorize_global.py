@@ -80,7 +80,7 @@ ratios = [
 for ratio in ratios:
     model_lr = to_low_rank_global(
         model,
-        input_shape=(1, 3, 32, 32),
+        sample_input=torch.randn((1, 3, 32, 32)).to(torch.float32).cuda(),
         ratio_to_keep=ratio,
         inplace=False,
         keys=keys,

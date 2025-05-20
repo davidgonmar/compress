@@ -5,65 +5,95 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-def _accuracy_curve(stats_path: Path):
-    """Return a list: [baseline_acc, acc_iter1, acc_iter2, …]."""
+def _load_curve(stats_path: Path):
+    """
+    From one stats.json, return:
+      - baseline_acc: float
+      - prune_pcts:   [pct_pruned1, pct_pruned2, …]
+      - prune_accs:   [acc_after_prune1, acc_after_prune2, …]
+      - ft_accs:      [acc_after_ft1,   acc_after_ft2,   …]
+    """
     with stats_path.open() as f:
         data = json.load(f)
 
-    curve = [data["baseline"]["accuracy"]]
+    baseline_acc = data["baseline"]["accuracy"]
+    prune_pcts   = []
+    prune_accs   = []
+    ft_accs      = []
 
     for it in data["iterations"]:
-        # use accuracy from the **last** finetune epoch;
-        # fall back to the ‘after_prune_before_ft’ accuracy if none recorded
-        if it.get("finetune_epochs"):
-            curve.append(it["finetune_epochs"][-1]["val_accuracy"])
-        else:
-            curve.append(it["after_prune_before_ft"]["accuracy"])
+        s = it["after_prune_before_ft"]["sparsity"]
+        pct = s["sparsity_ratio_wrt_prunable"] * 100
+        prune_pcts.append(pct)
+        prune_accs.append(it["after_prune_before_ft"]["accuracy"])
 
-    return curve
+        ftes = it.get("finetune_epochs", [])
+        if ftes:
+            ft_accs.append(ftes[-1]["val_accuracy"])
+        else:
+            # if no fine‐tune happened, repeat prune‐accuracy
+            ft_accs.append(prune_accs[-1])
+
+    return baseline_acc, prune_pcts, prune_accs, ft_accs
 
 
 def main():
     p = argparse.ArgumentParser(
-        description="Plot pruning-iteration curves and save to PDF"
+        description="Plot prune→fine‐tune with sparsity labels"
     )
     p.add_argument(
-        "results_dir",
-        type=Path,
-        help="Directory containing *_stats.json files (taylor, norm_weights, …)",
+        "results_dir", type=Path,
+        help="Dir containing *_stats.json"
     )
-    p.add_argument("output_pdf", type=Path, help="Filename for the PDF plot")
+    p.add_argument(
+        "output_pdf", type=Path,
+        help="Path to save the PDF"
+    )
     args = p.parse_args()
 
-    methods = ["taylor", "norm_weights", "norm_activations"]
-    style = {
-        "taylor": {"marker": "o"},
-        "norm_weights": {"marker": "s"},
-        "norm_activations": {"marker": "^"},
-    }
+    methods = ["taylor", "magnitude_weights", "magnitude_activations"]
+    markers = {"taylor":"o", "magnitude_weights":"s", "magnitude_activations":"^"}
 
-    plt.figure(figsize=(8, 5))
-    max_x = 0
+    # --- build the x-axis labels once, from the first method ---
+    first = args.results_dir / f"{methods[0]}_stats.json"
+    if not first.exists():
+        print(f"[ERROR] {first} not found")
+        return
 
+    baseline, prune_pcts, prune_accs, ft_accs = _load_curve(first)
+
+    # flattened y-axis positions (just indices)
+    x = list(range(1 + 2*len(prune_pcts)))
+    # build labels: [baseline, pX%, ftX%, pY%, ftY%, …]
+    labels = ["baseline"]
+    for pct in prune_pcts:
+        labels += [f"p {pct:.1f}%", f"ft {pct:.1f}%"]
+
+    # --- now plot each method ---
+    plt.figure(figsize=(10,5))
     for m in methods:
         f = args.results_dir / f"{m}_stats.json"
         if not f.exists():
-            print(f"[plot_pruning_results] Warning: {f} not found – skipping")
+            print(f"[Warning] {f} missing, skipping {m}")
             continue
-        y = _accuracy_curve(f)
-        x = range(len(y))
-        max_x = max(max_x, x[-1])
-        plt.plot(x, y, label=m, **style[m])
 
-    plt.xlabel("Pruning iteration")
-    plt.ylabel("Validation Accuracy")
-    plt.xlim(0, max_x)
-    plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+        b, pcts, pr_accs, ft_accs = _load_curve(f)
+        y = [b]
+        for pr, ft in zip(pr_accs, ft_accs):
+            y += [pr, ft]
+
+        plt.plot(x, y, label=m, marker=markers[m])
+
+    plt.xticks(x, labels, rotation=45, ha="right")
+    plt.xlabel("Cycle steps (prune → fine‐tune)")
+    plt.ylabel("Validation Accuracy (%)")
+    plt.grid(linestyle="--", linewidth=0.5, alpha=0.7)
     plt.legend()
     plt.tight_layout()
     plt.savefig(args.output_pdf, format="pdf", bbox_inches="tight")
-    print(f"[plot_pruning_results] Saved → {args.output_pdf}")
+    print(f"Saved → {args.output_pdf}")
 
 
 if __name__ == "__main__":
     main()
+
