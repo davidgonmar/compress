@@ -355,7 +355,7 @@ def requantize_qat(
 
 
 def get_activations_vision(model, data_loader, keys, move_to_cpu=False):
-    if isinstance(data_loader, torch.Tensor):
+    if isinstance(data_loader, (torch.Tensor, tuple)):
         data_loader = [data_loader]
     activations = {}
     hooks = []
