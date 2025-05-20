@@ -31,7 +31,7 @@ def evaluate_vision_model(
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
 
-    accuracy = 100 * correct / total
+    accuracy = correct / total
     loss = loss / total
     model.train(prev_state)
     return {"accuracy": accuracy, "loss": loss}
