@@ -17,9 +17,9 @@ def _load_curve(stats_path: Path):
         data = json.load(f)
 
     baseline_acc = data["baseline"]["accuracy"]
-    prune_pcts   = []
-    prune_accs   = []
-    ft_accs      = []
+    prune_pcts = []
+    prune_accs = []
+    ft_accs = []
 
     for it in data["iterations"]:
         s = it["after_prune_before_ft"]["sparsity"]
@@ -38,21 +38,13 @@ def _load_curve(stats_path: Path):
 
 
 def main():
-    p = argparse.ArgumentParser(
-        description="Plot prune→fine‐tune with sparsity labels"
-    )
-    p.add_argument(
-        "results_dir", type=Path,
-        help="Dir containing *_stats.json"
-    )
-    p.add_argument(
-        "output_pdf", type=Path,
-        help="Path to save the PDF"
-    )
+    p = argparse.ArgumentParser(description="Plot prune→fine‐tune with sparsity labels")
+    p.add_argument("results_dir", type=Path, help="Dir containing *_stats.json")
+    p.add_argument("output_pdf", type=Path, help="Path to save the PDF")
     args = p.parse_args()
 
     methods = ["taylor", "magnitude_weights", "magnitude_activations"]
-    markers = {"taylor":"o", "magnitude_weights":"s", "magnitude_activations":"^"}
+    markers = {"taylor": "o", "magnitude_weights": "s", "magnitude_activations": "^"}
 
     # --- build the x-axis labels once, from the first method ---
     first = args.results_dir / f"{methods[0]}_stats.json"
@@ -63,14 +55,14 @@ def main():
     baseline, prune_pcts, prune_accs, ft_accs = _load_curve(first)
 
     # flattened y-axis positions (just indices)
-    x = list(range(1 + 2*len(prune_pcts)))
+    x = list(range(1 + 2 * len(prune_pcts)))
     # build labels: [baseline, pX%, ftX%, pY%, ftY%, …]
     labels = ["baseline"]
     for pct in prune_pcts:
         labels += [f"p {pct:.1f}%", f"ft {pct:.1f}%"]
 
     # --- now plot each method ---
-    plt.figure(figsize=(10,5))
+    plt.figure(figsize=(10, 5))
     for m in methods:
         f = args.results_dir / f"{m}_stats.json"
         if not f.exists():
@@ -96,4 +88,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

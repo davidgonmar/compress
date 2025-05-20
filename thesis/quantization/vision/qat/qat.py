@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import MultiStepLR
 from tqdm import tqdm
 from compress.quantization import prepare_for_qat
 from compress.layer_fusion import get_fuse_bn_keys
@@ -25,14 +25,13 @@ parser.add_argument("--nbits_weights", default=2, type=int)
 parser.add_argument("--model_name", default="resnet20", type=str)
 parser.add_argument("--pretrained_path", default="resnet20.pth", type=str)
 parser.add_argument("--batch_size", default=128, type=int)
-parser.add_argument("--epochs", default=90, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--momentum", default=0.9, type=float)
 parser.add_argument("--weight_decay", default=5e-4, type=float)
 parser.add_argument(
     "--output_path", default=None, type=str, help="Where to save the JSON results"
 )
-parser.add_argument("--seed", default=0)
+parser.add_argument("--seed", default=0, type=int)
 args = parser.parse_args()
 
 seed_everything(args.seed)
@@ -86,7 +85,13 @@ model = prepare_for_qat(
     model,
     specs=specs,
     use_lsq=(args.method == "lsq"),
-    data_batch=next(iter(train_loader))[0][:100].to(device),
+    data_batch=torch.utils.data.DataLoader(
+        torch.utils.data.Subset(
+            train_dataset, torch.randperm(len(train_dataset))[:1024]
+        ),
+        batch_size=args.batch_size,
+        shuffle=True,
+    ),
     fuse_bn_keys=get_fuse_bn_keys(args.model_name),
 ).to(device)
 
@@ -98,10 +103,15 @@ optimizer = optim.SGD(
     weight_decay=args.weight_decay,
 )
 
-scheduler = StepLR(optimizer, step_size=40, gamma=0.1)
+epochs = 100
+scheduler = MultiStepLR(
+    optimizer,
+    milestones=[40, 80],
+    gamma=0.1,
+)
 
 results = []
-for epoch in range(args.epochs):
+for epoch in range(epochs):
     model.train()
     running_loss = 0.0
     for images, labels in tqdm(

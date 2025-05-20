@@ -7,7 +7,7 @@ CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$DIR"
 
-METHODS=(qat lsq)
+METHODS=(lsq qat)
 BITS=(2 4)
 SEEDS=(0 1 2 3 4)
 
@@ -19,7 +19,7 @@ for method in "${METHODS[@]}"; do
       for seed in "${SEEDS[@]}"; do
         tag="${method}_w${w}a${a}_s${seed}"
         out="${DIR}/${tag}.json"
-        CMDS+=("python \"$CURDIR/qat_cifar10.py\" \
+        CMDS+=("python \"$CURDIR/qat.py\" \
 --method \"$method\" --nbits_activations \"$a\" --nbits_weights \"$w\" \
 --seed \"$seed\" --output_path \"$out\"")
       done
