@@ -165,7 +165,9 @@ def calibrate(
     percentile = spec.mode_args.get("percentile", 1.0)
     assert (
         0 < percentile <= 1
-    ), "percentile should be a float between 0 and 1. Default is 1.0 (max value)."
+    ), "percentile should be a float between 0 and 1. Default is 1.0 (max value), got {}".format(
+        percentile
+    )
 
     if spec.quant_mode == IntAffineQuantizationMode.ASYMMETRIC:
         xm = spec.grouper.group(x)
