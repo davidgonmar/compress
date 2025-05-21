@@ -326,8 +326,15 @@ def requantize_qat(
             ),
         ):
             continue
-        module.weight_spec = specs[name]["weight"]
-        module.input_spec = specs[name]["input"]
+
+        if hasattr(module, "input_spec"):
+            module.input_spec = specs[name]["input"]
+        if hasattr(module, "weight_spec"):
+            module.weight_spec = specs[name]["weight"]
+        if hasattr(module, "weight_info"):
+            module.weight_info.spec = specs[name]["weight"]
+        if hasattr(module, "input_info"):
+            module.input_info.spec = specs[name]["input"]
 
     return model
 
