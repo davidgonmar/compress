@@ -27,7 +27,6 @@ parser.add_argument("--metric", type=str, default="energy")
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--values", type=float, nargs="+", default=None)
 parser.add_argument("--output_path", type=str, default=None)
-parser.add_argument("--seed", type=int, default=0)
 
 args = parser.parse_args()
 seed_everything(args.seed)
@@ -82,8 +81,17 @@ results.append(
 )
 
 energies = [
+    0.3,
+    0.35,
+    0.45,
+    0.5,
+    0.55,
+    0.6,
+    0.65,
     0.7,
+    0.75,
     0.8,
+    0.85,
     0.9,
     0.95,
     0.99,
