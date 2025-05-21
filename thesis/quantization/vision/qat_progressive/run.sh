@@ -6,8 +6,8 @@ CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$DIR"
 
 METHODS=(lsq qat)
-BITS_LISTS=("8 4" "8 4 2")
-MILESTONES_LISTS=("25" "25 50")
+BITS_LISTS=("8 4 2" "8 4")
+MILESTONES_LISTS=("25 50" "25")
 SEEDS=(0 1 2 3 4)
 
 CMDS=()
