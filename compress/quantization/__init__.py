@@ -337,8 +337,8 @@ def requantize_qat(
             scale_weights = module.weight_info.scale
             scale_acts = module.input_info.scale
 
-            reduce_ratio_weights = (2 ** nbits_weights - 1) / (2 ** new_nbits_weights - 1)
-            reduce_ratio_acts = (2 ** nbits_acts - 1) / (2 ** new_nbits_acts - 1)
+            reduce_ratio_weights = (2 ** new_nbits_weights - 1) / (2 ** nbits_weights - 1)
+            reduce_ratio_acts = (2 ** new_nbits_acts - 1) / (2 ** nbits_acts - 1) 
             new_scale_weights = scale_weights * reduce_ratio_weights
             new_scale_acts = scale_acts * reduce_ratio_acts
 
