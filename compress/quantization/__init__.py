@@ -326,17 +326,6 @@ def requantize_qat(
             ),
         ):
             continue
-
-        nbits_acts = module.weight_spec.nbits
-        nbits_weights = module.input_spec.nbits
-
-        new_nbits_acts = specs[name]["input"].nbits
-        new_nbits_weights = specs[name]["weight"].nbits
-
-        if isinstance(module, (LSQConv2d, LSQLinear, FusedLSQConv2dBatchNorm2d)):
-            scale_weights = module.weight_info.scale
-            scale_acts = module.input_info.scale
-
         module.weight_spec = specs[name]["weight"]
         module.input_spec = specs[name]["input"]
 
