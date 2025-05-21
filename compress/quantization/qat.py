@@ -254,6 +254,10 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
         nn.Conv2d,
     )
 
+    @property
+    def weight(self):
+        return _get_bn_and_conv_weight(self.conv, self.bn)[0]
+
     def __repr__(self):
         return (
             f"FusedQATConv2dBatchNorm(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
