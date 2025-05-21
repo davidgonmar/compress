@@ -332,8 +332,22 @@ def requantize_qat(
         if hasattr(module, "weight_spec"):
             module.weight_spec = specs[name]["weight"]
         if hasattr(module, "weight_info"):
+            # re-scale
+            old_nbits = module.weight_info.spec.nbits
+            new_nbits = specs[name]["weight"].nbits
+            ratio = (2**new_nbits - 1) / (2**old_nbits - 1)
+            module.weight_info.scale = nn.Parameter(
+                module.weight_info.scale * ratio
+            ).requires_grad_(True)
             module.weight_info.spec = specs[name]["weight"]
         if hasattr(module, "input_info"):
+            # re-scale
+            old_nbits = module.input_info.spec.nbits
+            new_nbits = specs[name]["input"].nbits
+            ratio = (2**new_nbits - 1) / (2**old_nbits - 1)
+            module.input_info.scale = nn.Parameter(
+                module.input_info.scale * ratio
+            ).requires_grad_(True)
             module.input_info.spec = specs[name]["input"]
 
     return model

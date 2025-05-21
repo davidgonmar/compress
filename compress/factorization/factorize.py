@@ -491,10 +491,12 @@ def get_taylor_estimation_info(
         model.zero_grad()
         if isinstance(batch, dict):
             batch = {k: v.to(device) for k, v in batch.items()}
+            assert batch["input_ids"].shape[0] == 1, "Batch size should be 1 for Fisher estimation"
             outputs = model(batch["input_ids"], attention_mask=batch["attention_mask"])
             loss = criterion(outputs.logits, batch["label"])
         else:
             inputs, targets = batch
+            assert inputs.shape[0] == 1, "Batch size should be 1 for Fisher estimation"
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, targets)
