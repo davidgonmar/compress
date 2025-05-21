@@ -383,7 +383,7 @@ def to_low_rank_global(
             return None
 
         vals = torch.linalg.svdvals(weight)
-        return torch.cumsum(vals**2, 0)
+        return torch.cumsum(vals**2, 0) / torch.sum(vals**2)  # range [0, 1]
 
     cum_energies = [
         _get_cumulative_energies(module) for _, module in modules_to_replace
