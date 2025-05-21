@@ -145,7 +145,22 @@ for epoch in range(epochs):
             clip_percentile=0.995,
             symmetric=True,
         )
-        requantize_qat(model, specs=specs)
+        # if lsq, pass data_batch
+        if args.method == "lsq":
+            data_batch = torch.utils.data.DataLoader(
+                torch.utils.data.Subset(
+                    train_dataset, torch.randperm(len(train_dataset))[:1024]
+                ),
+                batch_size=128,
+                shuffle=False,
+            )
+            model = requantize_qat(
+                model,
+                specs=specs,
+                data_batch=data_batch,
+            )
+        else:
+            requantize_qat(model, specs=specs)
         print(f"\n[Epoch {epoch}] ': switched to {current_bits}-bit\n")
         schedule_ptr += 1
 
