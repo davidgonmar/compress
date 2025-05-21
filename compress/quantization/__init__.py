@@ -309,6 +309,13 @@ def requantize_qat(
             specs.keys(),
         ),
     )
+    if kwargs.get("data_batch") is not None:
+        data_batch = kwargs["data_batch"]
+        activations = get_activations_vision(
+            model,
+            data_batch,
+            specs
+        )
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
         *parent_path, attr_name = name.split(".")
@@ -339,9 +346,11 @@ def requantize_qat(
                 specs[name]["weight"],
             )
         if hasattr(module, "input_info"):
+            assert kwargs.get("data_batch") is not None, "data_batch must be provided"
+
             # calibrate
             module.input_info = calibrate(
-                module.input,
+                activations[name],
                 specs[name]["input"],
             )
 
