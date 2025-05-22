@@ -311,11 +311,7 @@ def requantize_qat(
     )
     if kwargs.get("data_batch") is not None:
         data_batch = kwargs["data_batch"]
-        activations = get_activations_vision(
-            model,
-            data_batch,
-            specs
-        )
+        activations = get_activations_vision(model, data_batch, specs)
     for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
         parent_module = model
         *parent_path, attr_name = name.split(".")

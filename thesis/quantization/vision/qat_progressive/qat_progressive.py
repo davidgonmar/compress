@@ -129,7 +129,11 @@ optimizer = optim.SGD(
 # basically, we want to train for 100 epochs pre-conditioning on the optimal weights at the previous bit-width
 epochs = max(args.epoch_milestones) + 100
 
-scheduler = MultiStepLR(optimizer, [max(args.epoch_milestones) + 40, max(args.epoch_milestones) + 80], gamma=0.1)
+scheduler = MultiStepLR(
+    optimizer,
+    [max(args.epoch_milestones) + 40, max(args.epoch_milestones) + 80],
+    gamma=0.1,
+)
 
 bits_schedule = list(zip(args.epoch_milestones, args.bits_list[1:]))
 bits_schedule.sort()

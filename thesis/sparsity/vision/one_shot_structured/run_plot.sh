@@ -9,4 +9,4 @@ OUT="$RESULTS_DIR/one_shot_structured_pruning_cifar10.pdf"
 
 python -m sparsity.vision.one_shot_structured.plot "$RESULTS_DIR" --outfile "$OUT"
 
-echo "LaTeX table written to $OUT"
+echo "Plot saved to $OUT"

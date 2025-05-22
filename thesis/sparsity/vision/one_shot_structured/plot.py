@@ -54,6 +54,7 @@ def main() -> None:
 
     # extract rows
     rows: List[Row] = [_extract_row(f) for f in files]
+
     # sort by target sparsity then method name
     rows.sort(key=lambda r: (round(r[1]), r[0]))
 

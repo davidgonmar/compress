@@ -7,10 +7,11 @@ import statistics
 
 N_SEEDS = 5
 
+
 def parse_filename(path):
     base = os.path.basename(path)
     name, _ = os.path.splitext(base)
-    m = re.match(r'^([^_]+)(?:_results)?_w(\d+)a(\d+)(?:_s\d+)?$', name)
+    m = re.match(r"^([^_]+)(?:_results)?_w(\d+)a(\d+)(?:_s\d+)?$", name)
     if not m:
         return None
     return m.group(1), m.group(2), m.group(3)
@@ -24,9 +25,7 @@ def main():
 
     # Collect all JSON result files
     files = sorted(
-        os.path.join(args.dir, f)
-        for f in os.listdir(args.dir)
-        if f.endswith(".json")
+        os.path.join(args.dir, f) for f in os.listdir(args.dir) if f.endswith(".json")
     )
 
     data = {}
@@ -75,5 +74,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

@@ -28,7 +28,6 @@ def main():
     parser = argparse.ArgumentParser("One‑shot pruning")
     parser.add_argument("--model", default="resnet20")
     parser.add_argument("--pretrained_path", default="resnet20.pth")
-    parser.add_argument("--num_classes", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--target_sparsity", type=float, default=0.5)
@@ -61,7 +60,6 @@ def main():
         pretrained_path=args.pretrained_path,
         strict=True,
         modifier_before_load=get_cifar10_modifier(args.model),
-        model_args={"num_classes": args.num_classes},
     )
     model = fuse_conv_bn(
         model, resnet20_fuse_pairs, fuse_impl=fuse_bn_conv_sparse_train
@@ -75,26 +73,31 @@ def main():
 
     if args.method == "magnitude_weights":
         pruner = WeightMagnitudeIntraGroupPruner(model, policies)
-    else:
+    elif args.method == "magnitude_activations":
         calib_subset = torch.utils.data.Subset(
             datasets.CIFAR10("./data", train=True, download=True, transform=transform),
             torch.randint(0, len(testset), (args.calibration_samples,)),
         )
         calib_loader = DataLoader(calib_subset, batch_size=args.calibration_bs)
         runner = VisionClassificationModelRunner(model, calib_loader)
-        if args.method == "magnitude_activations":
-            pruner = ActivationMagnitudeIntraGroupPruner(
-                model,
-                policies,
-                runner,
-            )
-        else:
-            pruner = TaylorExpansionIntraGroupPruner(
-                model,
-                policies,
-                runner,
-                approx="fisher_diag",
-            )
+        pruner = ActivationMagnitudeIntraGroupPruner(
+            model,
+            policies,
+            runner,
+        )
+    else:  # args.method == "taylor"
+        calib_subset = torch.utils.data.Subset(
+            datasets.CIFAR10("./data", train=True, download=True, transform=transform),
+            torch.randint(0, len(testset), (args.calibration_samples,)),
+        )
+        calib_loader = DataLoader(calib_subset, batch_size=1)
+        runner = VisionClassificationModelRunner(model, calib_loader)
+        pruner = TaylorExpansionIntraGroupPruner(
+            model,
+            policies,
+            runner,
+            approx="fisher_diag",
+        )
 
     model = pruner.prune()
 

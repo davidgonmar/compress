@@ -6,7 +6,6 @@ mkdir -p "$DIR/results"
 
 MODEL="resnet20"
 PRETRAINED="resnet20.pth"
-NUM_CLASSES=10
 BATCH_SIZE=128
 WORKERS=4
 CALIBRATION_SAMPLES=512
@@ -23,7 +22,6 @@ for m in "${METHODS[@]}"; do
     python -m sparsity.vision.one_shot_unstructured.one_shot_unstructured_pruning_cifar10 \
       --model "$MODEL" \
       --pretrained_path "$PRETRAINED" \
-      --num_classes "$NUM_CLASSES" \
       --batch_size "$BATCH_SIZE" \
       --num_workers "$WORKERS" \
       --target_sparsity "$t" \

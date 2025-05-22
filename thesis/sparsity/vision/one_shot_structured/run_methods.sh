@@ -6,14 +6,13 @@ mkdir -p "$DIR/results"
 
 MODEL="resnet20"
 PRETRAINED="resnet20.pth"
-NUM_CLASSES=10
 BATCH_SIZE=128
 WORKERS=4
 CALIBRATION_SAMPLES=512
 CALIBRATION_BS=4
 SEED=0
 
-METHODS=(taylor_no_bias taylor_bias norm_weights norm_activations)
+METHODS=(taylor_no_bias norm_activations taylor_bias norm_weights)
 TARGETS=(0.00 0.025 0.05 0.075 0.1 0.125 0.15)
 
 for m in "${METHODS[@]}"; do
@@ -23,7 +22,6 @@ for m in "${METHODS[@]}"; do
     python -m sparsity.vision.one_shot_structured.one_shot_structured_pruning_cifar10 \
       --model "$MODEL" \
       --pretrained_path "$PRETRAINED" \
-      --num_classes "$NUM_CLASSES" \
       --batch_size "$BATCH_SIZE" \
       --num_workers "$WORKERS" \
       --target_sparsity "$t" \

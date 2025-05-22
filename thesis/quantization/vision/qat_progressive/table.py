@@ -8,6 +8,7 @@ from pathlib import Path
 
 N_SEEDS = 5
 
+
 def parse_filename(path):
     """
     Expect filenames like:
@@ -16,35 +17,33 @@ def parse_filename(path):
     Returns (method, [bit1, bit2, ...]) or None.
     """
     name = Path(path).stem
-    m = re.match(r'^([^_]+)_p([0-9]+(?:-[0-9]+)*)_s\d+$', name)
+    m = re.match(r"^([^_]+)_p([0-9]+(?:-[0-9]+)*)_s\d+$", name)
     if not m:
         return None
     method = m.group(1)
-    bits_seq = m.group(2).split('-')
+    bits_seq = m.group(2).split("-")
     return method, bits_seq
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Generate LaTeX table from progressive QAT JSON results"
     )
     parser.add_argument(
-        "-d", "--dir",
-        default="results",
-        help="Directory containing the JSON files"
+        "-d", "--dir", default="results", help="Directory containing the JSON files"
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         default="progressive_table.tex",
-        help="Where to write the .tex table"
+        help="Where to write the .tex table",
     )
     args = parser.parse_args()
 
     # collect all .json files
-    files = sorted([
-        os.path.join(args.dir, f)
-        for f in os.listdir(args.dir)
-        if f.endswith(".json")
-    ])
+    files = sorted(
+        [os.path.join(args.dir, f) for f in os.listdir(args.dir) if f.endswith(".json")]
+    )
 
     data = {}
     for path in files:
@@ -101,6 +100,6 @@ def main():
 
     print(f"Wrote table to {Path(args.output).resolve()}")
 
+
 if __name__ == "__main__":
     main()
-

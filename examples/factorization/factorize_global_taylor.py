@@ -25,7 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = load_vision_model(
     "resnet20",
-    pretrained_path="resnet20.pth",
+    pretrained_path="renset20.pth",
     strict=True,
     modifier_before_load=get_cifar10_modifier("resnet20"),
     modifier_after_load=None,
@@ -44,11 +44,10 @@ test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
-# subset
-train_set = torch.utils.data.Subset(
-    train_set, torch.randint(0, len(train_set), (5000,))
+subset_train_set = torch.utils.data.Subset(
+    train_set, torch.randint(0, len(train_set), (10000,))
 )
-train_loader = DataLoader(train_set, batch_size=1, shuffle=True)
+train_loader = DataLoader(subset_train_set, batch_size=1, shuffle=True)
 
 criterion = torch.nn.CrossEntropyLoss()
 eval_results = evaluate_vision_model(model, test_loader)

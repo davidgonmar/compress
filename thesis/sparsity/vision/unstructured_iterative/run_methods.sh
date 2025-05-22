@@ -8,7 +8,6 @@ mkdir -p "$DIR/results"
 
 MODEL="resnet20"
 PRETRAINED="resnet20.pth"
-NUM_CLASSES=10
 BATCH_SIZE=128
 TEST_BATCH=512
 WORKERS=4
@@ -30,7 +29,6 @@ for m in "${METHODS[@]}"; do
   python -m sparsity.vision.unstructured_iterative.unstructured_iterative_pruning_cifar10 \
     --model "$MODEL" \
     --pretrained_path "$PRETRAINED" \
-    --num_classes "$NUM_CLASSES" \
     --batch_size "$BATCH_SIZE" \
     --test_batch_size "$TEST_BATCH" \
     --train_workers "$WORKERS" \
