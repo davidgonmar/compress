@@ -161,7 +161,7 @@ def main():
             "loss": before_prune["loss"],
         }
 
-        ratio = 1 - scheduler(it, args.n_iters, args.target_sparsity)
+        ratio = scheduler(it, args.n_iters, args.target_sparsity)
         policies = unstructured_resnet20_policy_dict(
             intra_metric=Metric(name="sparsity_ratio", value=ratio),
         )
