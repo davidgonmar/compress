@@ -13,6 +13,7 @@ from typing import Dict
 from collections import defaultdict
 from compress.sparsity.policy import PolicyDict
 from compress.sparsity.runner import Runner
+import math
 
 
 _sparse_layers = (SparseLinear, SparseConv2d, SparseFusedConv2dBatchNorm2d)
@@ -87,7 +88,7 @@ class WeightMagnitudeIntraGroupPruner(AbstractPruner):
             module = mods[name]
             assert isinstance(
                 module, (nn.Conv2d, nn.Linear, *_sparse_layers)
-            ), f"Module {name} is not nn.Conv2d, nn.Linear or SparseConv2d, SparseLinear"
+            ), f"Module {name} is not nn.Conv2d, nn.Linear or sparse layer"
             reshaped = policy.grouper.transform(
                 module.weight
             )  # shape [n_groups, m_elements_per_group]
@@ -99,7 +100,8 @@ class WeightMagnitudeIntraGroupPruner(AbstractPruner):
                 if isinstance(
                     module, (SparseConv2d, SparseLinear, SparseFusedConv2dBatchNorm2d)
                 ):
-                    # if the module is pruned, we need to use the mask
+                    # if the module is pruned, this will make it so that already pruned
+                    # elements have importance of 0
                     reshaped = reshaped * policy.grouper.transform(module.weight_mask)
                 ranked_elements = torch.topk(
                     reshaped.abs(),
@@ -131,16 +133,25 @@ class WeightMagnitudeIntraGroupPruner(AbstractPruner):
 
 
 class WeightNormInterGroupPruner(AbstractPruner):
-    def __init__(self, model: nn.Module, policies: PolicyDict, metric="l2"):
+    def __init__(
+        self, model: nn.Module, policies: PolicyDict, metric="l2", metric_invariant=True
+    ):
         self.model = model
         self.policies = policies
+        self.metric_name, self.metric_invariant = metric, metric_invariant
 
+        # the x passed to the metric is of shape [n_groups, m_elements_per_group]
+        # metrics are computed over each group and generally normalized
         if metric == "l2":
-            self.metric = lambda x: torch.norm(x, dim=1)
+            if not metric_invariant:
+                self.metric = lambda x: torch.norm(x, dim=1)
+            else:
+                self.metric = lambda x: torch.norm(x, dim=1) / math.sqrt(x.shape[1])
         elif metric == "l1":
-            self.metric = lambda x: torch.sum(x.abs(), dim=1)
-        elif metric == "avg":
-            self.metric = lambda x: torch.mean(x, dim=1)
+            if not metric_invariant:
+                self.metric = lambda x: torch.sum(x.abs(), dim=1)
+            else:
+                self.metric = lambda x: torch.sum(x.abs(), dim=1) / x.shape[1]
         else:
             raise ValueError(f"Unknown metric {metric}")
 
@@ -188,26 +199,24 @@ class WeightNormInterGroupPruner(AbstractPruner):
             elif metric.name == "threshold":
                 threshold = metric.value
                 keep = self.metric(reshaped) > threshold
+                if isinstance(
+                    module, (SparseConv2d, SparseLinear, SparseFusedConv2dBatchNorm2d)
+                ):
+                    # if the module is pruned, we need to use the previous mask also
+                    old_mask = policy.grouper.transform(module.weight_mask)[
+                        :, 0
+                    ]  # assume it is broadcasted
+                    keep = keep * old_mask
                 mask = keep.to(reshaped.device)
                 # now we need to untransform the mask
                 # expand the mask
                 weight_mask = mask.unsqueeze(1).expand(-1, reshaped.shape[1])
                 weight_mask = policy.grouper.untransform(weight_mask, module.weight)
-                masks[name] = weight_mask
-                if isinstance(
-                    module, (SparseConv2d, SparseLinear, SparseFusedConv2dBatchNorm2d)
-                ):
-                    # if the module is pruned, we need to use the previous mask also
-                    assert weight_mask.shape == module.weight_mask.shape
-                    masks[name] = weight_mask * policy.grouper.transform(
-                        module.weight_mask
-                    )
-                masks[name] = {"weight": masks[name]}
+                masks[name] = {"weight": weight_mask}
                 if (
                     policy.grouper is OutChannelGroupingGrouperConv2d
                     or policy.grouper is OutChannelGroupingGrouperLinear
-                    and isinstance(module, _sparse_layers)
-                ):
+                ) and isinstance(module, _sparse_layers):
                     # if the module is pruned, we need to use the mask
                     assert mask.shape == module.bias_mask.shape
                     masks[name] = {**masks[name], "bias": mask}
@@ -215,15 +224,38 @@ class WeightNormInterGroupPruner(AbstractPruner):
 
 
 class ActivationNormInterGroupPruner:
-    def __init__(self, model: nn.Module, policies: PolicyDict, runner: Runner):
+    def __init__(
+        self,
+        model: nn.Module,
+        policies: PolicyDict,
+        runner: Runner,
+        metric="l2",
+        metric_invariant=True,
+    ):
         self.model = model
         self.policies = policies
         self.runner = runner
+
+        self.metric_name, self.metric_invariant = metric, metric_invariant
+        # the x passed to the metric is of shape [n_groups, m_elements_per_group]
+        # metrics are computed over each group and generally normalized
+        if metric == "l2":
+            if not metric_invariant:
+                self.metric = lambda x: torch.norm(x, dim=1)
+            else:
+                self.metric = lambda x: torch.norm(x, dim=1) / math.sqrt(x.shape[1])
+        elif metric == "l1":
+            if not metric_invariant:
+                self.metric = lambda x: torch.sum(x.abs(), dim=1)
+            else:
+                self.metric = lambda x: torch.sum(x.abs(), dim=1) / x.shape[1]
 
     def prune(self):
         activations = {}
         hooks = {}
         number_passes = 0
+        training_state = self.model.training
+        self.model.eval()
 
         def get_hook(name):
             nonlocal activations
@@ -270,7 +302,9 @@ class ActivationNormInterGroupPruner:
                 ), f"Module {name} is not a Linear or Conv2d"
                 # if conv -> weight shape [O, I, H_k, W_k]
                 # if linear -> weight shape [O, I]
-                acts = activations[name] / number_passes
+                acts = (
+                    activations[name] / number_passes
+                )  # normalize over number of batches
                 policy = self.policies[name]
                 if isinstance(
                     module, (nn.Conv2d, SparseFusedConv2dBatchNorm2d, SparseConv2d)
@@ -281,10 +315,10 @@ class ActivationNormInterGroupPruner:
                     reshaped_acts = acts.reshape(
                         acts.shape[0], -1
                     )  # shape [O, H_out * W_out]
-                    out_score = torch.mean(reshaped_acts.abs(), dim=1)  # shape [O]
+                    out_score = self.metric(reshaped_acts)  # shape [O]
                     # print(out_score)
                     # now we have the saliencies for this layer
-                    saliencies = out_score
+                    saliencies = out_score  # shape [O]
                     if isinstance(module, (SparseConv2d, SparseFusedConv2dBatchNorm2d)):
                         saliencies = (
                             saliencies
@@ -315,7 +349,7 @@ class ActivationNormInterGroupPruner:
 
                     elif policy.inter_group_metric.name == "threshold":
                         threshold = policy.inter_group_metric.value
-                        keep = saliencies > threshold * saliencies.abs().mean()
+                        keep = saliencies > torch.quantile(saliencies, threshold)
                         mask = keep.to(saliencies.device)
                         # broadcast mask back to original shape
                         o, i, hk, wk = module.weight.shape
@@ -332,12 +366,11 @@ class ActivationNormInterGroupPruner:
                         policy.grouper is OutChannelGroupingGrouperLinear
                     ), "Policy grouper is not a OutChannelGroupingGrouperLinear"
                     # linear
-                    # acts of shape [..., I]
+                    # acts of shape [O]
                     # weight of shape [O, I]
-                    # reshape acts to [combine(...), O]
-                    acts = acts.reshape(-1, acts.shape[-1]) / number_passes
-                    norm = torch.mean(acts.abs(), dim=0)  # shape [O]
-                    saliencies = norm
+                    # reshape acts to [O]
+                    acts = acts.reshape(acts.shape[-1], 1) / number_passes
+                    saliencies = self.metric(acts)  # shape [O]
                     if isinstance(module, SparseLinear):
                         saliencies = (
                             saliencies
@@ -364,8 +397,7 @@ class ActivationNormInterGroupPruner:
                         }
                     elif policy.inter_group_metric.name == "threshold":
                         threshold = policy.inter_group_metric.value
-                        mean_saliency = torch.mean(saliencies.abs())
-                        keep = saliencies > (threshold * mean_saliency)
+                        keep = saliencies > torch.quantile(saliencies, threshold)
                         mask = keep.to(saliencies.device)
                         # broadcast mask back to original shape
                         o = module.weight.shape[0]
@@ -377,7 +409,7 @@ class ActivationNormInterGroupPruner:
                             "bias": bias_mask,
                         }
                 masks[name] = mask
-
+        self.model.train(training_state)
         return apply_masks(self.model, masks)
 
 
@@ -392,12 +424,15 @@ class TaylorExpansionIntraGroupPruner:
         # runner runs one batch of data through the model
         self.model = model
         self.policies = policies
-        self.runner = runner
+        self.runner = (
+            runner  # ASSUMES RUNNER HAS BATCH SIZE 1 FOR CORRECT FISHER ESTIMATION
+        )
         self.approx = approx
         assert self.approx == "fisher_diag", "Only fisher approximation is supported"
 
     def prune(self):
-
+        training_state = self.model.training
+        self.model.eval()
         fisher_hessian_diag = defaultdict(
             lambda: torch.tensor(0).to(next(self.model.parameters()).device)
         )
@@ -448,12 +483,10 @@ class TaylorExpansionIntraGroupPruner:
                 assert isinstance(
                     module, (nn.Conv2d, nn.Linear, *_sparse_layers)
                 ), f"Module {name} is not a Linear or Conv2d"
-                reshaped = policy.grouper.transform(module.weight)
                 saliency_reshaped = policy.grouper.transform(saliencies[name])
                 if isinstance(
                     module, (SparseConv2d, SparseLinear, SparseFusedConv2dBatchNorm2d)
                 ):
-                    reshaped = reshaped * policy.grouper.transform(module.weight_mask)
                     saliency_reshaped = saliency_reshaped * policy.grouper.transform(
                         module.weight_mask
                     )
@@ -462,15 +495,16 @@ class TaylorExpansionIntraGroupPruner:
                 assert policy.intra_group_metric.name == "sparsity_ratio"
                 ranked_elements = torch.topk(
                     saliency_reshaped,
-                    k=int(density * reshaped.shape[1]),
+                    k=int(density * saliency_reshaped.shape[1]),
                     dim=1,
                 ).indices
-                mask = torch.zeros_like(reshaped, dtype=torch.bool)
+                mask = torch.zeros_like(saliency_reshaped, dtype=torch.bool)
                 mask.scatter_(1, ranked_elements, 1)
                 # now we need to untransform the mask
                 mask = policy.grouper.untransform(mask, module.weight)
                 masks[name] = {"weight": mask}
 
+        self.model.train(training_state)
         return apply_masks(self.model, masks)
 
 
@@ -487,11 +521,14 @@ class TaylorExpansionInterGroupPruner:
 
         self.model = model
         self.policies = policies
-        self.runner = runner
+        self.runner = (
+            runner  # ASSUMES RUNNER HAS BATCH SIZE 1 FOR CORRECT FISHER ESTIMATION
+        )
         self.approx = approx
         self.use_bias = use_bias
 
     def prune(self):
+        training_state = self.model.training
         fisher_hessian = defaultdict(
             lambda: torch.tensor(0).to(next(self.model.parameters()).device)
         )
@@ -574,6 +611,10 @@ class TaylorExpansionInterGroupPruner:
                     saliencies_reshaped = (
                         saliencies_reshaped * policy.grouper.transform(mod.weight_mask)
                     )
+                    if self.use_bias:
+                        saliencies_biases[name] = saliencies_biases[
+                            name
+                        ] * mod.bias_mask.reshape(-1)
 
                 # saliencies_reshaped have shape [n_groups, m_elements_per_group]
                 # we need to prune individual groups (inter-group sparsity)
@@ -616,6 +657,8 @@ class TaylorExpansionInterGroupPruner:
                     masks[name] = {"weight": weight_mask, "bias": bias_mask}
                 else:
                     masks[name] = {"weight": weight_mask}
+
+        self.model.train(training_state)
         return apply_masks(self.model, masks)
 
 
@@ -627,6 +670,7 @@ class ActivationMagnitudeIntraGroupPruner:
         self.runner = runner
 
     def prune(self):
+        training_state = self.model.training
         activations = {}
         total_acts = 0
         hooks = {}
@@ -715,8 +759,8 @@ class ActivationMagnitudeIntraGroupPruner:
                     )  # shape [I, H_k, W_k, H_out * W_out]
                     vnorm = lambda x: torch.sqrt(
                         torch.sum(x**2, dim=(-1), keepdim=False)
-                    )
-                    sal = vnorm(acts) * w  # shape [O, I, H_k, W_k]
+                    ) / math.sqrt(x.shape[-1])
+                    sal = vnorm(acts) * w.abs()  # shape [O, I, H_k, W_k]
                     assert sal.shape == module.weight.shape
                 else:
                     # linear
@@ -730,9 +774,9 @@ class ActivationMagnitudeIntraGroupPruner:
                     extra_dims = acts.shape[:-2]
                     vnorm = lambda x: torch.sqrt(
                         torch.sum(x**2, dim=(extra_dims), keepdim=False)
-                    )
+                    ) / math.sqrt(math.prod(extra_dims))
                     sal = vnorm(acts)  # shape [I, 1]
-                    sal = sal * w  # shape [I, O]
+                    sal = sal * w.abs()  # shape [I, O]
                     sal = sal.T  # shape [O, I]
                     assert sal.shape == module.weight.shape
 
@@ -750,7 +794,7 @@ class ActivationMagnitudeIntraGroupPruner:
                 assert policy.intra_group_metric.name == "sparsity_ratio"
                 density = 1 - policy.intra_group_metric.value
                 ranked_elements = torch.topk(
-                    sal.abs(),
+                    sal,
                     k=int(density * sal.shape[1]),
                     dim=1,
                 ).indices
@@ -759,6 +803,8 @@ class ActivationMagnitudeIntraGroupPruner:
                 # now we need to untransform the mask
                 mask = policy.grouper.untransform(mask, module.weight)
                 masks[name] = {"weight": mask}
+
+        self.model.train(training_state)
         return apply_masks(self.model, masks)
 
 

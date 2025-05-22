@@ -55,7 +55,6 @@ def main():
     )
     parser.add_argument("--model", type=str, default="resnet20")
     parser.add_argument("--pretrained_path", type=str, default="resnet20.pth")
-    parser.add_argument("--num_classes", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--test_batch_size", type=int, default=512)
     parser.add_argument("--train_workers", type=int, default=4)
@@ -124,7 +123,6 @@ def main():
         pretrained_path=args.pretrained_path,
         strict=True,
         modifier_before_load=get_cifar10_modifier(args.model),
-        model_args={"num_classes": args.num_classes},
     )
     model = fuse_conv_bn(
         model, resnet20_fuse_pairs, fuse_impl=fuse_bn_conv_sparse_train
@@ -204,7 +202,7 @@ def main():
                                 0, len(trainset), (args.calibration_samples,)
                             ),
                         ),
-                        batch_size=args.calibration_bs,
+                        batch_size=1,
                         shuffle=True,
                     ),
                 ),
