@@ -330,6 +330,7 @@ def to_low_rank_global(
     ratio_to_keep,
     keys,
     sample_input,
+    bn_keys=None,
     metric="flops",
     inplace=True,
     **kwargs,
@@ -388,6 +389,33 @@ def to_low_rank_global(
     cum_energies = [
         _get_cumulative_energies(module) for _, module in modules_to_replace
     ]
+
+    if bn_keys:
+        bn_stats = []
+        # bn_keys is a collection of (conv_name, bn_name) pairs
+        bn_dict = {conv_name: bn_name for conv_name, bn_name in bn_keys}
+
+        named_mods = model.named_modules()
+        keytomods = {k: v for k, v in named_mods}
+
+        for name, module in modules_to_replace:
+            if name in bn_dict:
+                bn_mod = keytomods[bn_dict[name]]
+                rm = bn_mod.running_mean.detach()  # shape [C]
+                rv = bn_mod.running_var.detach()  # shape [C]
+
+                # global variance = E[X^2] - E[X]^2
+                # where E[X^2] = mean(rv + rm^2), and E[X] = mean(rm)
+                global_var = (rv + rm.pow(2)).mean() - rm.mean().pow(2)
+
+                bn_stats.append(global_var)
+            else:
+                bn_stats.append(torch.tensor(1.0, device=module.weight.device))
+
+        # compute importance of each layer with avg std of BN
+        cum_energies = [
+            energy * torch.sqrt(stat) for energy, stat in zip(cum_energies, bn_stats)
+        ]
 
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
     mods = [mod for _, mod in modules_to_replace]
@@ -705,7 +733,7 @@ def merge_back(model: nn.Module, inplace=True):
     return model
 
 
-def factorize_with_activation_aware_svd(
+def to_low_rank_manual_activation_aware(
     model: nn.Module,
     dataloader,
     inplace=True,
@@ -811,11 +839,12 @@ def factorize_with_activation_aware_svd(
 
 
 # global activation aware svd
-def factorize_with_global_activation_aware_svd(
+def to_low_rank_activation_aware_global(
     model: nn.Module,
     dataloader,
     keys,
     ratio_to_keep,
+    bn_keys=None,
     metric="flops",
     inplace=True,
 ):
@@ -925,6 +954,32 @@ def factorize_with_global_activation_aware_svd(
         cum_energy = torch.cumsum(svals**2, 0) / torch.sum(svals**2)
         cum_energies.append(cum_energy)
 
+    if bn_keys:
+        bn_stats = []
+        # bn_keys is a collection of (conv_name, bn_name) pairs
+        bn_dict = {conv_name: bn_name for conv_name, bn_name in bn_keys}
+
+        named_mods = model.named_modules()
+        keytomods = {k: v for k, v in named_mods}
+
+        for name, module in modules_to_replace:
+            if name in bn_dict:
+                bn_mod = keytomods[bn_dict[name]]
+                rm = bn_mod.running_mean.detach()  # shape [C]
+                rv = bn_mod.running_var.detach()  # shape [C]
+
+                # global variance = E[X^2] - E[X]^2
+                # where E[X^2] = mean(rv + rm^2), and E[X] = mean(rm)
+                global_var = (rv + rm.pow(2)).mean() - rm.mean().pow(2)
+
+                bn_stats.append(global_var)
+            else:
+                bn_stats.append(torch.tensor(1.0, device=module.weight.device))
+
+        # compute importance of each layer with avg std of BN
+        cum_energies = [
+            energy * torch.sqrt(stat) for energy, stat in zip(cum_energies, bn_stats)
+        ]
     # costs
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
 
@@ -985,7 +1040,7 @@ def factorize_with_global_activation_aware_svd(
             "name": "rank_ratio_to_keep",
             "value": selected_indices_per_module[name],
         }
-        print("Replacing", name, "ratio=", selected_indices_per_module[name])
+        # print("Replacing", name, "ratio=", selected_indices_per_module[name])
         setattr(
             parent_module,
             attr_name,

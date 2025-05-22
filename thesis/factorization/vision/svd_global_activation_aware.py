@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
-from compress.factorization.factorize import to_low_rank_global
+from compress.factorization.factorize import to_low_rank_activation_aware_global
 from compress.flops import count_model_flops
 from compress.experiments import (
     load_vision_model,
@@ -58,9 +58,9 @@ train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
 subset_train_set = torch.utils.data.Subset(
-    train_set, torch.randint(0, len(train_set), (10000,))
+    train_set, torch.randint(0, len(train_set), (128,))
 )
-train_loader = DataLoader(subset_train_set, batch_size=100, shuffle=True)
+train_loader = DataLoader(subset_train_set, batch_size=128, shuffle=True)
 
 eval_results = evaluate_vision_model(model, test_loader)
 n_params_orig = sum(p.numel() for p in model.parameters())
@@ -114,9 +114,9 @@ if args.values is not None:
     ratios = args.values
 
 for ratio in ratios:
-    model_lr = to_low_rank_global(
+    model_lr = to_low_rank_activation_aware_global(
         model,
-        sample_input=torch.randn(1, 3, 32, 32).float().cuda(),
+        train_loader,
         ratio_to_keep=ratio,
         bn_keys=resnet20_fuse_pairs,
         inplace=False,
