@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.factorization.factorize import (
-    to_low_rank_manual,
+    to_low_rank_manual_activation_aware,
     all_same_svals_energy_ratio,
     all_same_rank_ratio,
 )
@@ -55,6 +55,10 @@ train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
 
+subset_indices = torch.randperm(len(train_set))[:128]
+train_set = torch.utils.data.Subset(train_set, subset_indices)
+
+train_loader = DataLoader(train_set, batch_size=128, shuffle=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -165,8 +169,9 @@ for x in (
     if args.keep_edge_layer:
         del cfg["conv1"]
         del cfg["linear"]
-    model_lr = to_low_rank_manual(
+    model_lr = to_low_rank_manual_activation_aware(
         model,
+        train_loader,
         cfg_dict=cfg,
         inplace=False,
     )

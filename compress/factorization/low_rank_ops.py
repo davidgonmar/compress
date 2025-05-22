@@ -135,6 +135,13 @@ class LowRankLinear(nn.Module):
         assert S.shape == (rank, rank)
         assert U.shape == (out_f, out_f)
         assert V_T.shape == (in_f, in_f)
+
+        # check if it is worth it
+        mem_orig = W.numel()
+        mem_low_rank = rank * (in_f + out_f)
+        if mem_low_rank >= mem_orig:
+            return linear
+
         act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
         W0 = U[:, :rank] @ S
         W1 = V_T[:rank, :] @ act_cov_mat_cholinv
@@ -291,6 +298,11 @@ class LowRankConv2d(nn.Module):
             )
         S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
 
+        # check if it is worth it
+        mem_orig = W.numel()
+        mem_low_rank = rank * (i * h * w + o)
+        if mem_low_rank >= mem_orig:
+            return conv2d
         act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
         W0 = (
             ((U[:, :rank] @ S).reshape(i, h, w, rank).permute(3, 0, 1, 2)).reshape(
