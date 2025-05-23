@@ -163,7 +163,7 @@ student = prepare_for_qat(
     stu_raw,
     specs=quant_specs,
     use_lsq=True,
-    data_batch=next(iter(train_loader))[0][:100].to(device),
+    data_batch=next(iter(train_loader))[0][:1024].to(device),
     method_args={"online": False},
     fuse_bn_keys=resnet20_fuse_pairs,
 ).to(device)
@@ -178,6 +178,7 @@ teacher_feats, student_feats = {}, {}
 teacher_hooks = attach_feature_hooks(teacher, layer_names, teacher_feats)
 student_hooks = attach_feature_hooks(student, layer_names, student_feats)
 
+# gather layer output sizes
 dummy = next(iter(train_loader))[0][:100].to(device)
 with torch.no_grad():
     teacher(dummy)
