@@ -65,16 +65,6 @@ print(
 )
 
 results = []
-results.append(
-    {
-        "type": "original",
-        "loss": eval_results["loss"],
-        "accuracy": eval_results["accuracy"],
-        "num_params": n_params_orig,
-        "flops": flops_orig,
-    }
-)
-
 
 keys = get_all_convs_and_linears(model)
 
@@ -122,12 +112,11 @@ for ratio in ratios:
     )
     results.append(
         {
-            "type": "global",
-            "ratio": ratio,
+            "metric_value": ratio,
             "loss": eval_lr["loss"],
             "accuracy": eval_lr["accuracy"],
-            "param_ratio": n_params_lr / n_params_orig,
-            "flops": flops_raw,
+            "params_ratio": n_params_lr / n_params_orig,
+            "flops_ratio": flops_raw / flops_orig,
             "metric_name": args.metric,
         }
     )

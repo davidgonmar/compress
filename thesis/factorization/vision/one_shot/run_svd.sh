@@ -7,39 +7,54 @@ mkdir -p "${RESULTS_DIR}"
 
 PRETRAINED_RESNET20="resnet20.pth"
 
-
-python -m factorization.vision.svd_global_activation_aware \
+# global activation-aware
+python "${SCRIPT_DIR}/svd_global_activation_aware.py" \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
   --metric flops \
   --output_file "${RESULTS_DIR}/global_activation_aware_flops_results.json"
 
-python -m factorization.vision.svd_manual_activation_aware \
+python "${SCRIPT_DIR}/svd_global_activation_aware.py" \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
-  --metric energy \
-  --output_file "${RESULTS_DIR}/manual_activation_aware_energy_results.json"
+  --metric params \
+  --output_file "${RESULTS_DIR}/global_activation_aware_params_results.json"
 
-python -m factorization.vision.svd_manual_activation_aware \
-  --model_name resnet20 \
-  --pretrained_path "${PRETRAINED_RESNET20}" \
-  --metric flops \
-  --output_file "${RESULTS_DIR}/manual_activation_aware_flops_results.json"
-
-python -m factorization.vision.svd_global \
+# global regular
+python "${SCRIPT_DIR}/svd_global.py" \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
   --metric flops \
   --output_file "${RESULTS_DIR}/global_flops_results.json"
 
-python -m factorization.vision.svd_manual \
+python "${SCRIPT_DIR}/svd_global.py" \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
-  --metric flops \
-  --output_file "${RESULTS_DIR}/manual_flops_results.json"
+  --metric params \
+  --output_file "${RESULTS_DIR}/global_params_results.json"
 
-python -m factorization.vision.svd_manual \
+# manual activation-aware
+python "${SCRIPT_DIR}/svd_manual_activation_aware.py" \
+  --model_name resnet20 \
+  --pretrained_path "${PRETRAINED_RESNET20}" \
+  --metric energy \
+  --output_file "${RESULTS_DIR}/manual_activation_aware_energy_results.json"
+
+python "${SCRIPT_DIR}/svd_manual_activation_aware.py" \
+  --model_name resnet20 \
+  --pretrained_path "${PRETRAINED_RESNET20}" \
+  --metric rank \
+  --output_file "${RESULTS_DIR}/manual_activation_aware_rank_results.json"
+
+# manual regular
+python "${SCRIPT_DIR}/svd_manual.py" \
   --model_name resnet20 \
   --pretrained_path "${PRETRAINED_RESNET20}" \
   --metric energy \
   --output_file "${RESULTS_DIR}/manual_energy_results.json"
+
+python "${SCRIPT_DIR}/svd_manual.py" \
+  --model_name resnet20 \
+  --pretrained_path "${PRETRAINED_RESNET20}" \
+  --metric rank \
+  --output_file "${RESULTS_DIR}/manual_rank_results.json"

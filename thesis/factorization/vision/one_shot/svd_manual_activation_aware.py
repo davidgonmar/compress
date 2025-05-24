@@ -21,11 +21,9 @@ from compress import seed_everything
 parser = argparse.ArgumentParser()
 parser.add_argument("--pretrained_path", type=str, default="resnet20.pth")
 parser.add_argument("--model_name", type=str, default="resnet20")
-parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
 parser.add_argument("--seed", type=int, default=0)
-parser.add_argument("--values", type=float, nargs="+", default=None)
-parser.add_argument("--output_file", type=str, default=None)
+parser.add_argument("--output_file", type=str, required=True)
 
 args = parser.parse_args()
 seed_everything(args.seed)
@@ -41,10 +39,10 @@ model = load_vision_model(
     model_args={"num_classes": 10},
 ).to(device)
 
-mean = cifar10_mean
-std = cifar10_std
 
-transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
+transform = transforms.Compose(
+    [transforms.ToTensor(), transforms.Normalize(cifar10_mean, cifar10_std)]
+)
 
 test_dataset = datasets.CIFAR10(
     root="data", train=False, transform=transform, download=True
@@ -55,7 +53,7 @@ train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
 
-subset_indices = torch.randperm(len(train_set))[:128]
+subset_indices = torch.randperm(len(train_set))[:256]
 train_set = torch.utils.data.Subset(train_set, subset_indices)
 
 train_loader = DataLoader(train_set, batch_size=128, shuffle=True)
@@ -73,15 +71,6 @@ print(
 )
 
 results = []
-results.append(
-    {
-        "type": "original",
-        "loss": eval_results["loss"],
-        "accuracy": eval_results["accuracy"],
-        "num_params": n_params,
-        "flops": flops,
-    }
-)
 
 energies = [
     0.3,
@@ -121,32 +110,8 @@ ratios = [
     0.9,
 ]
 
-# or flops
-params_ratio = [
-    0.1,
-    0.2,
-    0.3,
-    0.4,
-    0.5,
-    0.55,
-    0.6,
-    0.65,
-    0.7,
-    0.75,
-    0.8,
-    0.85,
-    0.9,
-]
-
-if args.values is not None:
-    energies = args.values
-    ratios = args.values
-    params_ratio = args.values
-
 for x in (
-    energies
-    if args.metric == "energy"
-    else ratios if args.metric == "rank" else params_ratio
+    energies if args.metric == "energy" else ratios if args.metric == "rank" else None
 ):
     cfg = (
         all_same_svals_energy_ratio(
@@ -160,15 +125,10 @@ for x in (
                 ratio=x,
             )
             if args.metric == "rank"
-            else all_same_rank_ratio(
-                model,
-                ratio=x,
-            )
+            else None
         )
     )
-    if args.keep_edge_layer:
-        del cfg["conv1"]
-        del cfg["linear"]
+
     model_lr = to_low_rank_manual_activation_aware(
         model,
         train_loader,
@@ -185,27 +145,17 @@ for x in (
     print(
         f"{s}: {x:.8f}, Test Loss: {eval_results['loss']:.4f}, Test Accuracy: {eval_results['accuracy']:.4f}, Ratio of parameters: {n_params_lr / n_params:.4f}, Flops: {fl}"
     )
-    names = {
-        "rank": "Rank ratio",
-        "energy": "Energy ratio",
-        "params_ratio": "Parameters ratio",
-        "flops": "FLOPs ratio",
-    }
     results.append(
         {
             "loss": eval_results["loss"],
             "accuracy": eval_results["accuracy"],
-            "param_ratio": n_params_lr / n_params,
-            "flops": fl2,
-            "ratio": x,
-            "metric_name": names[args.metric],
+            "params_ratio": n_params_lr / n_params,
+            "flops_ratio": fl2 / flops,
+            "metric_name": args.metric,
+            "metric_value": x,
         }
     )
 
-filename = (
-    args.output_file
-    if args.output_file is not None
-    else f"factorization_results_{args.model_name}_{args.metric}.json"
-)
-with open(filename, "w") as f:
+
+with open(args.output_file, "w") as f:
     json.dump(results, f, indent=4)
