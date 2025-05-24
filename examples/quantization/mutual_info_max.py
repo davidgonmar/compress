@@ -59,6 +59,55 @@ class ComplexAdapter(nn.Module):
         return self.net(x)
 
 
+class SEBlock(nn.Module):
+    def __init__(self, channels: int, reduction: int = 16):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, _, _ = x.size()
+        y = self.pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+
+class ComplexAdapter(nn.Module):
+    """
+    Adapter with multi-scale dilated convs + SE global context.
+    """
+
+    def __init__(self, c_in: int, c_out: int):
+        super().__init__()
+        hidden = max(c_in, c_out)
+        self.net = nn.Sequential(
+            # local 3×3 conv
+            nn.Conv2d(c_in, hidden, kernel_size=3, padding=1, dilation=1, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.ReLU(inplace=True),
+            # wider context via dilation=2
+            nn.Conv2d(hidden, hidden, kernel_size=3, padding=2, dilation=2, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.ReLU(inplace=True),
+            # even wider via dilation=4
+            nn.Conv2d(hidden, hidden, kernel_size=3, padding=4, dilation=4, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.ReLU(inplace=True),
+            # squeeze-and-excitation for global context
+            SEBlock(hidden),
+            # project down to teacher’s channel size
+            nn.Conv2d(hidden, c_out, kernel_size=1, bias=False),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 parser = argparse.ArgumentParser(
     description="CIFAR-10 QAT with feature-KD (2-conv adapters)"
 )
@@ -92,7 +141,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--matchers_each",
-    default=1,
+    default=3,
     type=int,
     help="number of consecutive batches to update the matcher adapters",
 )
@@ -222,19 +271,22 @@ optimizer_matchers = torch.optim.SGD(
 )
 
 scheduler_student = torch.optim.lr_scheduler.StepLR(
-    optimizer_student, step_size=80, gamma=0.1
+    optimizer_student, step_size=25, gamma=0.1
 )
 
 scheduler_matchers = torch.optim.lr_scheduler.StepLR(
-    optimizer_matchers, step_size=80, gamma=0.1
+    optimizer_matchers, step_size=1000, gamma=0.1
 )
 
 
 def criterion_mse(a, b):
+    return cm(a, b)
     a_hat = (a - a.mean((2, 3), keepdim=True)) / (a.std((2, 3), keepdim=True) + 1e-5)
     b_hat = (b - b.mean((2, 3), keepdim=True)) / (b.std((2, 3), keepdim=True) + 1e-5)
     return cm(a_hat, b_hat)
 
+
+print(teacher)
 
 print("Starting training…")
 for epoch in range(1, args.epochs + 1):
