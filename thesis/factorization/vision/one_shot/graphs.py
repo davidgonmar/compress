@@ -82,7 +82,7 @@ def main():
     ax.grid(True)
     fig.tight_layout()
     plt.savefig(args.output)
-    print(f"saved → {args.output}")
+    print(f"saved -> {args.output}")
 
 
 if __name__ == "__main__":

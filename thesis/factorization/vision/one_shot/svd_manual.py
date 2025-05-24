@@ -21,10 +21,8 @@ from compress import seed_everything
 parser = argparse.ArgumentParser()
 parser.add_argument("--pretrained_path", type=str, default="resnet20.pth")
 parser.add_argument("--model_name", type=str, default="resnet20")
-parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
 parser.add_argument("--seed", type=int, default=0)
-parser.add_argument("--values", type=float, nargs="+", default=None)
 parser.add_argument("--output_file", type=str, default=None)
 
 args = parser.parse_args()
@@ -54,7 +52,6 @@ test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -117,23 +114,6 @@ ratios = [
     0.9,
 ]
 
-# or flops
-params_ratio = [
-    0.1,
-    0.2,
-    0.3,
-    0.4,
-    0.5,
-    0.55,
-    0.6,
-    0.65,
-    0.7,
-    0.75,
-    0.8,
-    0.85,
-    0.9,
-]
-
 if args.values is not None:
     energies = args.values
     ratios = args.values
@@ -162,9 +142,6 @@ for x in (
             )
         )
     )
-    if args.keep_edge_layer:
-        del cfg["conv1"]
-        del cfg["linear"]
     model_lr = to_low_rank_manual(
         model,
         cfg_dict=cfg,

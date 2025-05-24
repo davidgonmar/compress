@@ -349,7 +349,7 @@ class ActivationNormInterGroupPruner:
 
                     elif policy.inter_group_metric.name == "threshold":
                         threshold = policy.inter_group_metric.value
-                        keep = saliencies > torch.quantile(saliencies, threshold)
+                        keep = saliencies > threshold
                         mask = keep.to(saliencies.device)
                         # broadcast mask back to original shape
                         o, i, hk, wk = module.weight.shape
@@ -600,7 +600,6 @@ class TaylorExpansionInterGroupPruner:
                 if name not in self.policies.keys():
                     continue
                 policy = self.policies[name]
-                assert policy.inter_group_metric.name == "sparsity_ratio"
                 assert isinstance(
                     mod, (nn.Conv2d, nn.Linear, *_sparse_layers)
                 ), f"Module {name} is not a Linear or Conv2d"
@@ -627,36 +626,57 @@ class TaylorExpansionInterGroupPruner:
                     )
                 # now we have the saliencies for this layer
                 # we can use the saliencies to prune the model
+                if policy.inter_group_metric.name == "sparsity_ratio":
+                    topk = int(
+                        (1 - policy.inter_group_metric.value)
+                        * per_group_saliencies.shape[0]
+                    )
+                    ranked_elements = torch.topk(
+                        per_group_saliencies,
+                        k=topk,
+                        dim=0,
+                    ).indices  # shape [topk]
+                    mask = torch.zeros_like(per_group_saliencies, dtype=torch.bool)
+                    mask.scatter_(0, ranked_elements, 1)
 
-                topk = int(
-                    (1 - policy.inter_group_metric.value)
-                    * per_group_saliencies.shape[0]
-                )
-                ranked_elements = torch.topk(
-                    per_group_saliencies,
-                    k=topk,
-                    dim=0,
-                ).indices  # shape [topk]
-                mask = torch.zeros_like(per_group_saliencies, dtype=torch.bool)
-                mask.scatter_(0, ranked_elements, 1)
+                    weight_mask = mask.unsqueeze(1).expand(
+                        -1, saliencies_reshaped.shape[1]
+                    )
 
-                weight_mask = mask.unsqueeze(1).expand(-1, saliencies_reshaped.shape[1])
+                    # now we need to untransform the mask
+                    weight_mask = policy.grouper.untransform(weight_mask, mod.weight)
 
-                # now we need to untransform the mask
-                weight_mask = policy.grouper.untransform(weight_mask, mod.weight)
+                    # if we have output channels pruning, we can also prune the bias
 
-                # if we have output channels pruning, we can also prune the bias
-
-                if (
-                    policy.grouper is OutChannelGroupingGrouperConv2d
-                    or policy.grouper is OutChannelGroupingGrouperLinear
-                ):
-                    # if the module is pruned, we need to use the mask
-                    assert mask.shape == mod.bias.shape
-                    bias_mask = mask
-                    masks[name] = {"weight": weight_mask, "bias": bias_mask}
-                else:
+                    if (
+                        policy.grouper is OutChannelGroupingGrouperConv2d
+                        or policy.grouper is OutChannelGroupingGrouperLinear
+                    ):
+                        # if the module is pruned, we need to use the mask
+                        assert mask.shape == mod.bias.shape
+                        bias_mask = mask
+                        masks[name] = {"weight": weight_mask, "bias": bias_mask}
+                    else:
+                        masks[name] = {"weight": weight_mask}
+                elif policy.inter_group_metric.name == "threshold":
+                    threshold = policy.inter_group_metric.value
+                    keep = per_group_saliencies > threshold
+                    mask = keep.to(per_group_saliencies.device)
+                    weight_mask = mask.unsqueeze(1).expand(
+                        -1, saliencies_reshaped.shape[1]
+                    )
+                    weight_mask = policy.grouper.untransform(weight_mask, mod.weight)
                     masks[name] = {"weight": weight_mask}
+
+                    if (
+                        policy.grouper is OutChannelGroupingGrouperConv2d
+                        or policy.grouper is OutChannelGroupingGrouperLinear
+                    ):
+                        assert mask.shape == mod.bias.shape
+                        bias_mask = mask
+                        masks[name] = {"weight": weight_mask, "bias": bias_mask}
+                    else:
+                        masks[name] = {"weight": weight_mask}
 
         self.model.train(training_state)
         return apply_masks(self.model, masks)
