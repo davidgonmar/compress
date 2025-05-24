@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-PARALLELISM="${1:-5}"
+PARALLELISM="${1:-8}"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/results"
 CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
