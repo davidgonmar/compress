@@ -7,11 +7,10 @@ mkdir -p "${RESULTS_DIR}"
 
 
 
-python -m factorization.vision.graphs \
+python "${SCRIPT_DIR}/graph_flops.py" \
   --global_json "${RESULTS_DIR}/global_flops_results.json" \
-  --manual_flops_json "${RESULTS_DIR}/manual_flops_results.json" \
+  --manual_rank_json "${RESULTS_DIR}/manual_rank_results.json" \
   --manual_energy_json "${RESULTS_DIR}/manual_energy_results.json" \
-  --manual_activation_aware_flops_json "${RESULTS_DIR}/manual_activation_aware_flops_results.json" \
+  --manual_activation_aware_rank_json "${RESULTS_DIR}/manual_activation_aware_rank_results.json" \
   --manual_activation_aware_energy_json "${RESULTS_DIR}/manual_activation_aware_energy_results.json" \
-  --global_activation_aware_flops_json "${RESULTS_DIR}/global_activation_aware_flops_results.json" \
-  --output "${RESULTS_DIR}/flops_vs_acc.pdf"
+  --global_activation_aware_params_json "${RESULTS_DIR}/global_activation_aware_params_results.json" \

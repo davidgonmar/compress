@@ -14,10 +14,10 @@ import argparse
 import json
 from compress import seed_everything
 from compress.layer_fusion import resnet20_fuse_pairs
+from compress.utils import get_all_convs_and_linears
+
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--keep_edge_layer", action="store_true")
-parser.add_argument("--do_global", action="store_true")
 parser.add_argument(
     "--pretrained_path", type=str, default="cifar10_resnet20_hoyer_finetuned.pth"
 )
@@ -29,6 +29,7 @@ parser.add_argument("--values", type=float, nargs="+", default=None)
 parser.add_argument("--metric", type=str, default="flops")
 parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
+
 
 seed_everything(args.seed)
 
@@ -70,23 +71,8 @@ print(
 )
 
 results = []
-results.append(
-    {
-        "type": "original",
-        "loss": eval_results["loss"],
-        "accuracy": eval_results["accuracy"],
-        "num_params": n_params_orig,
-        "flops": flops_orig,
-    }
-)
-
-from compress.utils import get_all_convs_and_linears
 
 keys = get_all_convs_and_linears(model)
-
-if args.keep_edge_layer:
-    keys.remove("conv1")
-    keys.remove("linear")
 
 ratios = [
     0.1,
@@ -132,13 +118,12 @@ for ratio in ratios:
     )
     results.append(
         {
-            "type": "global",
-            "ratio": ratio,
+            "metric_value": ratio,
             "loss": eval_lr["loss"],
             "accuracy": eval_lr["accuracy"],
-            "param_ratio": n_params_lr / n_params_orig,
-            "flops": flops_raw,
-            "metric_name": "FLOPs ratio",
+            "params_ratio": n_params_lr / n_params_orig,
+            "flops_ratio": flops_raw / flops_orig,
+            "metric_name": args.metric,
         }
     )
 

@@ -66,15 +66,6 @@ print(
 )
 
 results = []
-results.append(
-    {
-        "type": "original",
-        "loss": eval_results["loss"],
-        "accuracy": eval_results["accuracy"],
-        "num_params": n_params,
-        "flops": flops,
-    }
-)
 
 energies = [
     0.3,
@@ -114,15 +105,9 @@ ratios = [
     0.9,
 ]
 
-if args.values is not None:
-    energies = args.values
-    ratios = args.values
-    params_ratio = args.values
 
 for x in (
-    energies
-    if args.metric == "energy"
-    else ratios if args.metric == "rank" else params_ratio
+    energies if args.metric == "energy" else ratios if args.metric == "rank" else None
 ):
     cfg = (
         all_same_svals_energy_ratio(
@@ -136,10 +121,7 @@ for x in (
                 ratio=x,
             )
             if args.metric == "rank"
-            else all_same_rank_ratio(
-                model,
-                ratio=x,
-            )
+            else None
         )
     )
     model_lr = to_low_rank_manual(
@@ -151,26 +133,20 @@ for x in (
     model_lr.to(device)
     eval_results = evaluate_vision_model(model_lr, test_loader)
 
-    fl = count_model_flops(model_lr, (1, 3, 32, 32))
+    fl = count_model_flops(model_lr, (1, 3, 32, 32), formatted=True)
     fl2 = count_model_flops(model_lr, (1, 3, 32, 32), formatted=False)
     s = "Energy ratio" if args.metric == "energy" else "Rank ratio"
     print(
         f"{s}: {x:.8f}, Test Loss: {eval_results['loss']:.4f}, Test Accuracy: {eval_results['accuracy']:.4f}, Ratio of parameters: {n_params_lr / n_params:.4f}, Flops: {fl}"
     )
-    names = {
-        "rank": "Rank ratio",
-        "energy": "Energy ratio",
-        "params_ratio": "Parameters ratio",
-        "flops": "FLOPs ratio",
-    }
     results.append(
         {
             "loss": eval_results["loss"],
             "accuracy": eval_results["accuracy"],
-            "param_ratio": n_params_lr / n_params,
-            "flops": fl2,
-            "ratio": x,
-            "metric_name": names[args.metric],
+            "params_ratio": n_params_lr / n_params,
+            "flops_ratio": fl2 / flops,
+            "metric_value": x,
+            "metric_name": args.metric,
         }
     )
 
