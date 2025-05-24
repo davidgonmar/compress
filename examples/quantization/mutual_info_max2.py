@@ -17,6 +17,7 @@ from compress.layer_fusion import resnet20_fuse_pairs
 from compress import seed_everything
 import math
 
+
 def attach_feature_hooks(model, layer_names, store):
     hooks = []
     for name, module in model.named_modules():
@@ -32,23 +33,25 @@ def attach_feature_hooks(model, layer_names, store):
 class Matcher(nn.Module):
     def __init__(self, c_in, c_out, heads=4, head_dim=64):
         super().__init__()
-        self.to_qkv = nn.Conv2d(c_in, heads*head_dim*3, kernel_size=1, bias=False)
-        self.mha_out = nn.Conv2d(heads*head_dim, c_out, kernel_size=1, bias=False)
+        self.to_qkv = nn.Conv2d(c_in, heads * head_dim * 3, kernel_size=1, bias=False)
+        self.mha_out = nn.Conv2d(heads * head_dim, c_out, kernel_size=1, bias=False)
         self.heads = heads
         self.head_dim = head_dim
 
     def forward(self, x):
         b, c, h, w = x.shape
         # 1×1 conv to produce (Q,K,V)
-        qkv = self.to_qkv(x).reshape(b, 3, self.heads, self.head_dim, h*w)
-        q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]             # each: B×heads×head_dim×(H·W)
+        qkv = self.to_qkv(x).reshape(b, 3, self.heads, self.head_dim, h * w)
+        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]  # each: B×heads×head_dim×(H·W)
 
-        # scaled dot-product attention 
-        q = q.permute(0,1,3,2)                              # → B,heads,(H·W),head_dim
-        k = k                                               
-        attn = torch.softmax((q @ k) / math.sqrt(self.head_dim), dim=-1)  # B,heads,(H·W),(H·W)
-        out = (attn @ v.permute(0,1,3,2))                   # B,heads,(H·W),head_dim
-        out = out.permute(0,1,3,2).reshape(b, self.heads*self.head_dim, h, w)
+        # scaled dot-product attention
+        q = q.permute(0, 1, 3, 2)  # → B,heads,(H·W),head_dim
+        k = k
+        attn = torch.softmax(
+            (q @ k) / math.sqrt(self.head_dim), dim=-1
+        )  # B,heads,(H·W),(H·W)
+        out = attn @ v.permute(0, 1, 3, 2)  # B,heads,(H·W),head_dim
+        out = out.permute(0, 1, 3, 2).reshape(b, self.heads * self.head_dim, h, w)
 
         # project back to c_out
         return self.mha_out(out)
@@ -66,7 +69,12 @@ parser.add_argument(
 parser.add_argument("--epochs", default=100, type=int)
 parser.add_argument("--batch_size", default=128, type=int)
 parser.add_argument("--val_batch_size", default=512, type=int)
-parser.add_argument("--pretrained_path", type=str, default="resnet20.pth", help="path to pretrained model")
+parser.add_argument(
+    "--pretrained_path",
+    type=str,
+    default="resnet20.pth",
+    help="path to pretrained model",
+)
 parser.add_argument(
     "--student_batches",
     type=int,
@@ -284,4 +292,3 @@ for h in teacher_hooks + student_hooks:
 
 with open(args.output_path, "w") as f:
     json.dump(results, f, indent=4)
-
