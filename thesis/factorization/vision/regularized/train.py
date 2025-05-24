@@ -17,6 +17,7 @@ from compress.experiments import (
 )
 from compress.factorization.utils import matrix_approx_rank
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Finetune ResNet on CIFAR-10 with Hoyer regularization and configurable hyperparameters"
@@ -30,27 +31,40 @@ def parse_args():
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--model_name", type=str, default="resnet20")
     parser.add_argument("--pretrained_path", type=str, default="resnet20.pth")
-    parser.add_argument("--save_path", type=str, default="cifar10_resnet20_hoyer_finetuned.pth")
+    parser.add_argument(
+        "--save_path", type=str, default="cifar10_resnet20_hoyer_finetuned.pth"
+    )
     parser.add_argument("--reg_weight", type=float, default=0.005)
-    parser.add_argument("--log_path", type=str, required=True, help="Path to save training log as JSON")
+    parser.add_argument(
+        "--log_path", type=str, required=True, help="Path to save training log as JSON"
+    )
     return parser.parse_args()
+
 
 def main():
     args = parse_args()
 
-    train_transform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(cifar10_mean, cifar10_std),
-    ])
-    val_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(cifar10_mean, cifar10_std),
-    ])
+    train_transform = transforms.Compose(
+        [
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(cifar10_mean, cifar10_std),
+        ]
+    )
+    val_transform = transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize(cifar10_mean, cifar10_std),
+        ]
+    )
 
-    train_dataset = datasets.CIFAR10(root="data", train=True, download=True, transform=train_transform)
-    val_dataset = datasets.CIFAR10(root="data", train=False, download=True, transform=val_transform)
+    train_dataset = datasets.CIFAR10(
+        root="data", train=True, download=True, transform=train_transform
+    )
+    val_dataset = datasets.CIFAR10(
+        root="data", train=False, download=True, transform=val_transform
+    )
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
@@ -66,10 +80,19 @@ def main():
     ).to(device)
 
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=args.momentum)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        momentum=args.momentum,
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=args.step_size, gamma=args.gamma
+    )
 
-    params_and_reshapers = extract_weights_and_reshapers(model, cls_list=(torch.nn.Conv2d,), keywords={"weight"})
+    params_and_reshapers = extract_weights_and_reshapers(
+        model, cls_list=(torch.nn.Conv2d,), keywords={"weight"}
+    )
     regularizer = SingularValuesRegularizer(
         metric="squared_hoyer_sparsity",
         params_and_reshapers=params_and_reshapers,
@@ -99,9 +122,11 @@ def main():
         reg_loss /= len(train_loader.dataset)
 
         scheduler.step()
-        current_lr = optimizer.param_groups[0]['lr']
+        current_lr = optimizer.param_groups[0]["lr"]
 
-        print(f"Epoch {epoch+1}/{args.epochs}, Train Loss: {train_loss:.4f}, Reg Loss: {reg_loss:.4f}")
+        print(
+            f"Epoch {epoch+1}/{args.epochs}, Train Loss: {train_loss:.4f}, Reg Loss: {reg_loss:.4f}"
+        )
         print(f"Learning Rate after epoch {epoch+1}: {current_lr:.5f}")
         print("Approximate ranks per layer:")
 
@@ -116,7 +141,9 @@ def main():
             if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
                 approx = matrix_approx_rank(module.weight)
                 total = _mul(module.weight.shape)
-                print(f"{name}: rank {approx} / {module.weight.shape[0]}, total elems {total}")
+                print(
+                    f"{name}: rank {approx} / {module.weight.shape[0]}, total elems {total}"
+                )
                 ranks[name] = {"rank": approx, "total": total}
 
         model.eval()
@@ -149,6 +176,7 @@ def main():
 
     with open(args.log_path, "w") as f:
         json.dump(log_data, f, indent=2)
+
 
 if __name__ == "__main__":
     main()
