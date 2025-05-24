@@ -90,9 +90,6 @@ ratios = [
     1.0,
 ]
 
-if args.values is not None:
-    ratios = args.values
-
 for ratio in ratios:
     model_lr = to_low_rank_activation_aware_global(
         model,

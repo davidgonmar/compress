@@ -25,7 +25,6 @@ parser.add_argument("--model_name", type=str, default="resnet20")
 parser.add_argument(
     "--output_file", type=str, default="global_factorization_results_resnet20.json"
 )
-parser.add_argument("--values", type=float, nargs="+", default=None)
 parser.add_argument("--metric", type=str, default="flops")
 parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
@@ -95,9 +94,6 @@ ratios = [
     0.95,
     1.0,
 ]
-
-if args.values is not None:
-    ratios = args.values
 
 for ratio in ratios:
     model_lr = to_low_rank_global(
