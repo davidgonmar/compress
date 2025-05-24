@@ -14,22 +14,17 @@ import argparse
 import json
 from compress import seed_everything
 from compress.layer_fusion import resnet20_fuse_pairs
+from compress.utils import get_all_convs_and_linears
+
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--keep_edge_layer", action="store_true")
-parser.add_argument("--do_global", action="store_true")
-parser.add_argument(
-    "--pretrained_path", type=str, default="cifar10_resnet20_hoyer_finetuned.pth"
-)
 parser.add_argument("--model_name", type=str, default="resnet20")
-parser.add_argument(
-    "--output_file", type=str, default="global_factorization_results_resnet20.json"
-)
-parser.add_argument("--values", type=float, nargs="+", default=None)
-parser.add_argument("--metric", type=str, default="flops")
+parser.add_argument("--pretrained_path", type=str, default="resnet20.pth")
+parser.add_argument("--output_file", type=str, required=True)
+parser.add_argument("--metric", type=str, default="flops", choices=["flops", "params"])
 parser.add_argument("--seed", type=int, default=0)
-args = parser.parse_args()
 
+args = parser.parse_args()
 seed_everything(args.seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -80,13 +75,8 @@ results.append(
     }
 )
 
-from compress.utils import get_all_convs_and_linears
 
 keys = get_all_convs_and_linears(model)
-
-if args.keep_edge_layer:
-    keys.remove("conv1")
-    keys.remove("linear")
 
 ratios = [
     0.1,
@@ -138,7 +128,7 @@ for ratio in ratios:
             "accuracy": eval_lr["accuracy"],
             "param_ratio": n_params_lr / n_params_orig,
             "flops": flops_raw,
-            "metric_name": "FLOPs ratio",
+            "metric_name": args.metric,
         }
     )
 
