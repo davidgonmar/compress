@@ -73,9 +73,7 @@ parser.add_argument(
 parser.add_argument(
     "--output_path", type=str, required=True, help="Where to save the JSON results"
 )
-parser.add_argument(
-    "--seed", type=int, help="random seed"
-)
+parser.add_argument("--seed", type=int, help="random seed")
 
 args = parser.parse_args()
 
@@ -267,6 +265,9 @@ for epoch in range(1, args.epochs + 1):
             "total_loss": avg_loss,
             "accuracy": acc,
         }
+    )
+    print(
+        f"Epoch {epoch}: CE Loss: {avg_ce:.4f}, KD Loss: {avg_kd:.4f}, Total Loss: {avg_loss:.4f}, Accuracy: {acc:.2f}%"
     )
 
 for h in teacher_hooks + student_hooks:
