@@ -61,6 +61,7 @@ criterion = torch.nn.CrossEntropyLoss()
 eval_results = evaluate_vision_model(model, test_loader)
 n_params = sum(p.numel() for p in model.parameters())
 flops = count_model_flops(model, (1, 3, 32, 32))
+flops_raw = count_model_flops(model, (1, 3, 32, 32), formatted=False)
 print(
     f"Test Loss: {eval_results['loss']}, Test Accuracy: {eval_results['accuracy']}, Number of parameters: {n_params}, Flops: {flops}"
 )
@@ -144,7 +145,7 @@ for x in (
             "loss": eval_results["loss"],
             "accuracy": eval_results["accuracy"],
             "params_ratio": n_params_lr / n_params,
-            "flops_ratio": fl2["total"] / flops["total"],
+            "flops_ratio": fl2["total"] / flops_raw["total"],
             "metric_value": x,
             "metric_name": args.metric,
         }
