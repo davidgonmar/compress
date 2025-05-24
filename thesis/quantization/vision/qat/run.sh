@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-PARALLELISM="${1:-5}"
+PARALLELISM="${1:-6}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULTS_DIR="$SCRIPT_DIR/results"
-mkdir -p "$RESULTS_DIR"
+# directory that will hold one JSON file per run
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/results"
+CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-TRAIN_SCRIPT="$SCRIPT_DIR/train.py"
-PRETRAINED_PATH="resnet20.pth"
+mkdir -p "$DIR"
 
-REG_WEIGHTS=(0.001 0.002 0.003 0.004 0.005)
+METHODS=(lsq qat)
+BITS=(2 4)
+SEEDS=(0 1 2 3 4)
 
 CMDS=()
 
-for weight in "${REG_WEIGHTS[@]}"; do
-  LOG_PATH="$RESULTS_DIR/training_log_${weight}.json"
-  SAVE_PATH="$RESULTS_DIR/cifar10_resnet20_hoyer_finetuned_${weight}.pth"
-
-  CMDS+=("python \"$TRAIN_SCRIPT\" \
---log_path \"$LOG_PATH\" \
---save_path \"$SAVE_PATH\" \
---pretrained_path \"$PRETRAINED_PATH\" \
---epochs 200 \
---batch_size 128 \
---lr 0.01 \
---reg_weight $weight")
+for method in "${METHODS[@]}"; do
+  for w in "${BITS[@]}"; do
+    for a in "${BITS[@]}"; do
+      for seed in "${SEEDS[@]}"; do
+        tag="${method}_w${w}a${a}_s${seed}"
+        out="${DIR}/${tag}.json"
+        CMDS+=("python \"$CURDIR/qat.py\" \
+--method \"$method\" --nbits_activations \"$a\" --nbits_weights \"$w\" \
+--seed \"$seed\" --output_path \"$out\"")
+      done
+    done
+  done
 done
 
-# Run in parallel
 printf '%s\n' "${CMDS[@]}" | xargs -P "$PARALLELISM" -I CMD bash -c CMD
