@@ -23,4 +23,4 @@ for seed in "${SEEDS[@]}"; do
     --output_path \"$out\"")
 done
 
-printf '%s\n' "${CMDS[@]}" | xargs -n1 -P "$PARALLELISM" bash -c
+printf '%s\n' "${CMDS[@]}" | xargs -P "$PARALLELISM" -I CMD bash -c CMD
