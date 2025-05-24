@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--test_batch_size", type=int, default=512)
     parser.add_argument("--train_workers", type=int, default=4)
     parser.add_argument("--test_workers", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=0.005)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--target_sparsity", type=float, default=0.05)
@@ -83,7 +83,7 @@ def main():
         "--method",
         type=str,
         choices=["norm_weights", "norm_activations", "taylor"],
-        default="norm_activations",
+        default="taylor",
         help="Pruning method to use: 'norm_weights', 'norm_activations', or 'taylor'",
     )
     parser.add_argument("--calibration_samples", type=int, default=512)
@@ -186,9 +186,8 @@ def main():
             "loss": before_prune["loss"],
         }
 
-        ratio = 1 - scheduler(it, args.n_iters, args.target_sparsity)
         policies = per_output_channel_resnet20_policy_dict(
-            inter_metric=Metric(name="threshold", value=0.1),
+            inter_metric=Metric(name="threshold", value=3e-9),
         )
 
         if args.method == "norm_weights":
@@ -236,7 +235,6 @@ def main():
         else:
             raise ValueError("Unknown pruning method: {}".format(args.method))
 
-        print(f"Pruning iteration {it} at ratio {ratio:.4f}...")
         model = pruner.prune()
         sparsity_str = get_sparsity_information_str(get_sparsity_information(model))
 
