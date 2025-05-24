@@ -14,6 +14,7 @@ from compress.experiments import (
 )
 from compress.quantization.recipes import get_recipe_quant
 from compress.layer_fusion import resnet20_fuse_pairs
+from compress import seed_everything
 
 
 def attach_feature_hooks(model, layer_names, store):
@@ -72,8 +73,14 @@ parser.add_argument(
 parser.add_argument(
     "--output_path", type=str, required=True, help="Where to save the JSON results"
 )
+parser.add_argument(
+    "--seed", type=int, help="random seed"
+)
 
 args = parser.parse_args()
+
+seed_everything(args.seed)
+
 assert 0.0 <= args.alpha <= 1.0, "alpha must be in [0,1]"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
