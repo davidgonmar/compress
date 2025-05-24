@@ -27,14 +27,33 @@ def main():
     args = parser.parse_args()
 
     def plot_flops_vs_acc():
+
+        # global
         xs, ys = load_curve(args.global_flops_json, "flops_ratio", "accuracy")
         plt.plot(xs, ys, label="Global (FLOPs)")
-        xs, ys = load_curve(args.global_params_json, "params_ratio", "accuracy")
-        plt.plot(xs, ys, label="Global (Params)")
+
         xs, ys = load_curve(
             args.global_activation_aware_flops_json, "flops_ratio", "accuracy"
         )
         plt.plot(xs, ys, label="Global Activation-aware (FLOPs)")
+
+        # manual uniform
+        xs, ys = load_curve(args.manual_rank_json, "flops_ratio", "accuracy")
+        plt.plot(xs, ys, label="Uniform (Rank)")
+
+        xs, ys = load_curve(
+            args.manual_activation_aware_rank_json, "flops_ratio", "accuracy"
+        )
+        plt.plot(xs, ys, label="Uniform Activation-aware (Rank)")
+
+        # manual energy
+        xs, ys = load_curve(args.manual_energy_json, "flops_ratio", "accuracy")
+        plt.plot(xs, ys, label="Uniform (Energy)")
+
+        xs, ys = load_curve(
+            args.manual_activation_aware_energy_json, "flops_ratio", "accuracy"
+        )
+        plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
         plt.xlabel("FLOPs (Millions)")
         plt.ylabel("Top-1 Accuracy (%)")
@@ -44,12 +63,32 @@ def main():
         plt.close()
 
     def plot_params_vs_acc():
+        # global
         xs, ys = load_curve(args.global_params_json, "params_ratio", "accuracy")
         plt.plot(xs, ys, label="Global (Params)")
+
         xs, ys = load_curve(
             args.global_activation_aware_params_json, "params_ratio", "accuracy"
         )
         plt.plot(xs, ys, label="Global Activation-aware (Params)")
+
+        # manual uniform
+        xs, ys = load_curve(args.manual_rank_json, "params_ratio", "accuracy")
+        plt.plot(xs, ys, label="Uniform (Rank)")
+
+        xs, ys = load_curve(
+            args.manual_activation_aware_rank_json, "params_ratio", "accuracy"
+        )
+        plt.plot(xs, ys, label="Uniform Activation-aware (Rank)")
+
+        # manual energy
+        xs, ys = load_curve(args.manual_energy_json, "params_ratio", "accuracy")
+        plt.plot(xs, ys, label="Uniform (Energy)")
+
+        xs, ys = load_curve(
+            args.manual_activation_aware_energy_json, "params_ratio", "accuracy"
+        )
+        plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
         plt.xlabel("Params (Millions)")
         plt.ylabel("Top-1 Accuracy (%)")
