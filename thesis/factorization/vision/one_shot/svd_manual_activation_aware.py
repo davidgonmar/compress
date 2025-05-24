@@ -150,7 +150,7 @@ for x in (
             "loss": eval_results["loss"],
             "accuracy": eval_results["accuracy"],
             "params_ratio": n_params_lr / n_params,
-            "flops_ratio": fl2 / flops,
+            "flops_ratio": fl2["total"] / flops["total"],
             "metric_name": args.metric,
             "metric_value": x,
         }

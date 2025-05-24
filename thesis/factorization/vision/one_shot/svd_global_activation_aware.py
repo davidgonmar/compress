@@ -113,7 +113,7 @@ for ratio in ratios:
             "loss": eval_lr["loss"],
             "accuracy": eval_lr["accuracy"],
             "params_ratio": n_params_lr / n_params_orig,
-            "flops_ratio": flops_raw / flops_orig,
+            "flops_ratio": flops_raw["total"] / flops_orig["total"],
             "metric_name": args.metric,
         }
     )
