@@ -6,7 +6,7 @@ CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$DIR"
 
 SEEDS=(0 1 2 3 4)
-ALPHAS=(0.98)
+ALPHAS=(0.8 0.9 0.95 0.98)
 
 CMDS=()
 for alpha in "${ALPHAS[@]}"; do

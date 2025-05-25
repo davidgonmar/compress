@@ -4,7 +4,6 @@ import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-
 def load_curve(json_path, x_key):
     with Path(json_path).open() as f:
         data = json.load(f)
@@ -50,12 +49,14 @@ def main():
             args.manual_activation_aware_energy_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
-        plt.xlabel("FLOPs Ratio")
-        plt.ylabel("Top-1 Accuracy (%)")
-        plt.yticks(range(0, 101, 10))
+        plt.xlabel("FLOPs Ratio", fontsize=14)
+        plt.ylabel("Top-1 Accuracy (%)", fontsize=14)
+        plt.xticks(fontsize=14)
+        plt.yticks(range(0, 101, 10), fontsize=14)
         plt.grid(True)
-        plt.legend()
-        plt.savefig(args.output_flops)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+        plt.savefig(args.output_flops, bbox_inches='tight')
         plt.close()
 
     def plot_params_vs_acc():
@@ -82,12 +83,14 @@ def main():
             args.manual_activation_aware_energy_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
-        plt.xlabel("Parameter Count Ratio")
-        plt.ylabel("Top-1 Accuracy (%)")
-        plt.yticks(range(0, 101, 10))
+        plt.xlabel("Parameter Count Ratio", fontsize=14)
+        plt.ylabel("Top-1 Accuracy (%)", fontsize=14)
+        plt.xticks(fontsize=14)
+        plt.yticks(range(0, 101, 10), fontsize=14)
         plt.grid(True)
-        plt.legend()
-        plt.savefig(args.output_params)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+        plt.savefig(args.output_params, bbox_inches='tight')
         plt.close()
 
     plot_flops_vs_acc()
@@ -96,3 +99,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

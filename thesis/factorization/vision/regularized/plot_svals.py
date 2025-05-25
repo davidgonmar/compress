@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -13,9 +12,11 @@ from compress.experiments import load_vision_model, get_cifar10_modifier
 from compress.utils import get_all_convs_and_linears
 
 
-def compute_singular_value_energies(model: torch.nn.Module) -> np.ndarray:
-    energies = []
-    for name, layer in get_all_convs_and_linears(model):
+def compute_layerwise_energy_curves(model: torch.nn.Module, layers: list[str]) -> list[tuple[str, np.ndarray]]:
+    named_modules = dict(model.named_modules())
+    results: list[tuple[str, np.ndarray]] = []
+    for key in layers:
+        layer = named_modules[key]
         weight = layer.weight.data
         if weight.ndim == 4:
             out_c, in_c, k_h, k_w = weight.shape
@@ -24,14 +25,39 @@ def compute_singular_value_energies(model: torch.nn.Module) -> np.ndarray:
             weight_2d = weight
         with torch.no_grad():
             s = torch.linalg.svdvals(weight_2d)
-        energies.append(s.pow(2).cpu())
-    return torch.cat(energies).numpy()
+        energy = s.pow(2).cumsum(0) / s.pow(2).sum()
+        energy = np.insert(energy.cpu().numpy(), 0, 0.0)
+        results.append((key, energy))
+    return results
+
+
+def plot_energy_collage(layer_energies: list[tuple[str, np.ndarray]], output_path: Path):
+    n = len(layer_energies)
+    cols = 3
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
+    axes = axes.flatten()
+    for idx in range(rows * cols):
+        if idx < n:
+            name, energy = layer_energies[idx]
+            ax = axes[idx]
+            ax.plot(range(len(energy)), energy, marker="o", markersize=2, linewidth=1)
+            ax.set_title(name, fontsize=18)
+            ax.set_ylim(0, 1.05)
+            ax.set_xlim(0, len(energy) - 1)
+            ax.tick_params(labelbottom=False, labelleft=False)
+            ax.grid(True, linestyle="--", linewidth=0.3)
+        else:
+            axes[idx].remove()
+    plt.tight_layout(pad=2.0)
+    fig.savefig(output_path, dpi=300)
+    print(f"Saved collage to {output_path.resolve()}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pretrained_path", type=Path, required=True)
-    parser.add_argument("--output_plot", type=Path, default=Path("sv_energy.pdf"))
+    parser.add_argument("--output_plot", type=Path, default=Path("sv_energy_selected_layers.pdf"))
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     return parser.parse_args()
 
@@ -48,23 +74,19 @@ def main() -> None:
         model_args={"num_classes": 10},
     ).to(device)
     model.eval()
-    energies = compute_singular_value_energies(model)
-    energies_sorted = np.sort(energies)[::-1]
-    cumulative = np.cumsum(energies_sorted) / energies_sorted.sum()
-    fig, ax1 = plt.subplots(figsize=(9, 5))
-    ax1.plot(energies_sorted, marker="o", linewidth=1, markersize=2)
-    ax1.set_xlabel("Singular-value index (sorted)")
-    ax1.set_ylabel("Energy (σ²)")
-    ax1.set_yscale("log")
-    ax2 = ax1.twinx()
-    ax2.plot(cumulative, linestyle="--", linewidth=1)
-    ax2.set_ylabel("Cumulative energy")
-    ax2.set_ylim(0, 1.0)
-    plt.title("Singular-value energies – ResNet-20")
-    plt.tight_layout()
-    fig.savefig(args.output_plot, dpi=300)
-    print(f"Saved plot to {os.path.abspath(args.output_plot)}")
+    layers_to_plot = [
+        "conv1",
+        "layer1.0.conv1",
+        "layer1.2.conv2",
+        "layer2.1.conv2",
+        "layer3.0.conv1",
+        "linear",
+    ]
+    layer_energies = compute_layerwise_energy_curves(model, layers_to_plot)
+    plot_energy_collage(layer_energies, args.output_plot)
 
 
 if __name__ == "__main__":
     main()
+
+
