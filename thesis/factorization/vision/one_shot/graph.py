@@ -5,10 +5,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-def load_curve(json_path, x_key, y_key):
+def load_curve(json_path, x_key):
     with Path(json_path).open() as f:
         data = json.load(f)
-    return [item[x_key] for item in data], [item[y_key] for item in data]
+    return [item[x_key] for item in data], [item["accuracy"] * 100 for item in data]
 
 
 def main():
@@ -27,72 +27,65 @@ def main():
     args = parser.parse_args()
 
     def plot_flops_vs_acc():
+        plt.figure(figsize=(10, 5))
 
-        # global
-        xs, ys = load_curve(args.global_flops_json, "flops_ratio", "accuracy")
+        xs, ys = load_curve(args.global_flops_json, "flops_ratio")
         plt.plot(xs, ys, label="Global (FLOPs)")
 
         xs, ys = load_curve(
-            args.global_activation_aware_flops_json, "flops_ratio", "accuracy"
-        )
+            args.global_activation_aware_flops_json, "flops_ratio")
         plt.plot(xs, ys, label="Global Activation-aware (FLOPs)")
 
-        # manual uniform
-        xs, ys = load_curve(args.manual_rank_json, "flops_ratio", "accuracy")
+        xs, ys = load_curve(args.manual_rank_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform (Rank)")
 
         xs, ys = load_curve(
-            args.manual_activation_aware_rank_json, "flops_ratio", "accuracy"
-        )
+            args.manual_activation_aware_rank_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Rank)")
 
-        # manual energy
-        xs, ys = load_curve(args.manual_energy_json, "flops_ratio", "accuracy")
+        xs, ys = load_curve(args.manual_energy_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform (Energy)")
 
         xs, ys = load_curve(
-            args.manual_activation_aware_energy_json, "flops_ratio", "accuracy"
-        )
+            args.manual_activation_aware_energy_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
-        plt.xlabel("FLOPs (Millions)")
+        plt.xlabel("FLOPs Ratio")
         plt.ylabel("Top-1 Accuracy (%)")
-
+        plt.yticks(range(0, 101, 10))
+        plt.grid(True)
         plt.legend()
         plt.savefig(args.output_flops)
         plt.close()
 
     def plot_params_vs_acc():
-        # global
-        xs, ys = load_curve(args.global_params_json, "params_ratio", "accuracy")
+        plt.figure(figsize=(10, 5))
+
+        xs, ys = load_curve(args.global_params_json, "params_ratio")
         plt.plot(xs, ys, label="Global (Params)")
 
         xs, ys = load_curve(
-            args.global_activation_aware_params_json, "params_ratio", "accuracy"
-        )
+            args.global_activation_aware_params_json, "params_ratio")
         plt.plot(xs, ys, label="Global Activation-aware (Params)")
 
-        # manual uniform
-        xs, ys = load_curve(args.manual_rank_json, "params_ratio", "accuracy")
+        xs, ys = load_curve(args.manual_rank_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform (Rank)")
 
         xs, ys = load_curve(
-            args.manual_activation_aware_rank_json, "params_ratio", "accuracy"
-        )
+            args.manual_activation_aware_rank_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Rank)")
 
-        # manual energy
-        xs, ys = load_curve(args.manual_energy_json, "params_ratio", "accuracy")
+        xs, ys = load_curve(args.manual_energy_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform (Energy)")
 
         xs, ys = load_curve(
-            args.manual_activation_aware_energy_json, "params_ratio", "accuracy"
-        )
+            args.manual_activation_aware_energy_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
-        plt.xlabel("Params (Millions)")
+        plt.xlabel("Parameter Count Ratio")
         plt.ylabel("Top-1 Accuracy (%)")
-
+        plt.yticks(range(0, 101, 10))
+        plt.grid(True)
         plt.legend()
         plt.savefig(args.output_params)
         plt.close()

@@ -21,18 +21,42 @@ def main():
     with open(args.input) as f:
         runs = json.load(f)
 
-    accuracies = [entry.get("accuracy") for entry in runs]
-    epochs = [entry.get("epoch", idx + 1) for idx, entry in enumerate(runs)]
+    epochs = []
+    accuracies = []
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(epochs, accuracies, marker="o")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.grid(True)
+    for idx, entry in enumerate(runs):
+        acc = entry.get("accuracy")
+        if acc is not None:
+            accuracies.append(acc)
+            epochs.append(entry.get("epoch", idx + 1))
+
+    if not epochs or not accuracies:
+        raise ValueError("No valid accuracy data found to plot.")
+
+    plt.figure(figsize=(14, 7))
+    plt.plot(
+        epochs,
+        accuracies,
+        marker="o",
+        linestyle="-",
+        linewidth=3,
+        color="tab:blue",
+        label="Accuracy"
+    )
+
+    plt.title("Training Accuracy over Epochs", fontsize=20)
+    plt.xlabel("Epoch", fontsize=18)
+    plt.ylabel("Accuracy", fontsize=18)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    plt.grid(True, linestyle="--", alpha=0.8)
+    plt.legend(fontsize=14)
     plt.tight_layout()
+
     plt.savefig(args.output)
     print(f"Saved training plot to {args.output}")
 
 
 if __name__ == "__main__":
     main()
+
