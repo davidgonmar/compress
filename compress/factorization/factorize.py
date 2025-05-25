@@ -284,7 +284,7 @@ def generate_cost_flops_linear(mat, size):
     # a decomposed linear layer has shapes W_o in [O, R] and W_i in [R, I]
     # flops(R) = B * I * R + O * R
 
-    r_vec = torch.arange(0, min(mat.shape[0], mat.shape[1]), 1)
+    r_vec = torch.arange(1, min(mat.shape[0], mat.shape[1]) + 1, 1)
     i, o = mat.shape
     return r_vec * (i + o)
 
@@ -294,7 +294,7 @@ def generate_cost_flops_conv2d(mat, out_size):
     # flops(R) = R * C_in * H_k * W_k * H_out * W_out + C_out * R * H_out * W_out = R * H_out * W_out * (C_in * H_k * W_k + C_out)
 
     R = torch.arange(
-        0, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]), 1
+        1, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]) + 1, 1
     )
 
     C_out, C_in, H_k, W_k = mat.shape
@@ -307,7 +307,7 @@ def generate_cost_params_linear(mat, size):
     # instead of flops, takes into account the number of parameters
     # a decomposed linear layer has shapes W_o in [O, R] and W_i in [R, I]
     # params(R) = R * (I + O)
-    r_vec = torch.arange(0, min(mat.shape[0], mat.shape[1]), 1)
+    r_vec = torch.arange(1, min(mat.shape[0], mat.shape[1]) + 1, 1)
     i, o = mat.shape
     return r_vec * (i + o)
 
@@ -317,7 +317,7 @@ def generate_cost_params_conv2d(mat, out_size):
     # a separated convolution requires
     # params(R) = R * C_in * H_k * W_k + C_out * R
     R = torch.arange(
-        0, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]), 1
+        1, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]) + 1, 1
     )
 
     C_out, C_in, H_k, W_k = mat.shape
