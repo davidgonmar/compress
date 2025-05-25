@@ -829,64 +829,36 @@ class ActivationMagnitudeIntraGroupPruner:
 
 
 def get_sparsity_information(model: nn.Module) -> dict:
-    """
-    Recursively walk the module tree, but **stop** descending once a module
-    belongs to `_sparse_layers`.  Everything else is explored depth-first.
-
-    Returns a dict with sparsity information for the whole model and for the
-    subset of weights inside `_sparse_layers`.
-    """
-    # running totals
-    nz_total = total = 0
-    nz_prunable = total_prunable = 0
+    nz_total = 0 
+    total = 0 
 
     stack = [model]
     while stack:
         module = stack.pop()
 
         if isinstance(module, _sparse_layers):
-            # treat this block as atomic
-            nz = module.nonzero_params()
-            tot = module.total_params()
-
-            nz_prunable += nz
-            total_prunable += tot
-            nz_total += nz
-            total += tot
+            nz_total += module.nonzero_params()
+            total += module.total_params()
             continue
 
-        # count parameters that belong *directly* to this module
         for p in module.parameters(recurse=False):
-            numel = p.numel()
-            total += numel
-            nz_total += torch.count_nonzero(p).item()
+            total += p.numel()
 
-        # explore children
         stack.extend(module.children())
-
-    sparsity_total = 1.0 - nz_total / total if total else 0.0
-    sparsity_prunable = 1.0 - nz_prunable / total_prunable if total_prunable else 0.0
-
+    sparsity_ratio = 1.0 - nz_total / total if total else 0.0
     return {
         "nonzero_params": nz_total,
-        "total_params": total,
-        "total_prunable_params": total_prunable,
-        "sparsity_ratio_wrt_prunable": sparsity_prunable,
-        "sparsity_ratio_wrt_total": sparsity_total,
+        "total_params":   total,
+        "sparsity_ratio": sparsity_ratio,
     }
 
-
 def get_sparsity_information_str(dic: dict) -> str:
-    """
-    Returns a string with the sparsity information.
-    """
+
     return (
         f"Nonzero params: {dic['nonzero_params']}, "
-        f"Total prunable params: {dic['total_prunable_params']}, "
-        f"Sparsity ratio w.r.t. prunable params: {dic['sparsity_ratio_wrt_prunable']:.2%}, "
-        f"Sparsity ratio w.r.t. total params: {dic['sparsity_ratio_wrt_total']:.2%}"
+        f"Total params: {dic['total_params']}, "
+        f"Sparsity ratio: {dic['sparsity_ratio']:.2%}"
     )
-
 
 def merge_pruned_modules(model: nn.Module) -> nn.Module:
     """
