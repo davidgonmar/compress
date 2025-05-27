@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+
 def load_curve(json_path, x_key):
     with Path(json_path).open() as f:
         data = json.load(f)
@@ -31,22 +32,19 @@ def main():
         xs, ys = load_curve(args.global_flops_json, "flops_ratio")
         plt.plot(xs, ys, label="Global (FLOPs)")
 
-        xs, ys = load_curve(
-            args.global_activation_aware_flops_json, "flops_ratio")
+        xs, ys = load_curve(args.global_activation_aware_flops_json, "flops_ratio")
         plt.plot(xs, ys, label="Global Activation-aware (FLOPs)")
 
         xs, ys = load_curve(args.manual_rank_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform (Rank)")
 
-        xs, ys = load_curve(
-            args.manual_activation_aware_rank_json, "flops_ratio")
+        xs, ys = load_curve(args.manual_activation_aware_rank_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Rank)")
 
         xs, ys = load_curve(args.manual_energy_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform (Energy)")
 
-        xs, ys = load_curve(
-            args.manual_activation_aware_energy_json, "flops_ratio")
+        xs, ys = load_curve(args.manual_activation_aware_energy_json, "flops_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
         plt.xlabel("FLOPs Ratio", fontsize=14)
@@ -56,7 +54,7 @@ def main():
         plt.grid(True)
         plt.legend(fontsize=12)
         plt.tight_layout()
-        plt.savefig(args.output_flops, bbox_inches='tight')
+        plt.savefig(args.output_flops, bbox_inches="tight")
         plt.close()
 
     def plot_params_vs_acc():
@@ -65,22 +63,19 @@ def main():
         xs, ys = load_curve(args.global_params_json, "params_ratio")
         plt.plot(xs, ys, label="Global (Params)")
 
-        xs, ys = load_curve(
-            args.global_activation_aware_params_json, "params_ratio")
+        xs, ys = load_curve(args.global_activation_aware_params_json, "params_ratio")
         plt.plot(xs, ys, label="Global Activation-aware (Params)")
 
         xs, ys = load_curve(args.manual_rank_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform (Rank)")
 
-        xs, ys = load_curve(
-            args.manual_activation_aware_rank_json, "params_ratio")
+        xs, ys = load_curve(args.manual_activation_aware_rank_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Rank)")
 
         xs, ys = load_curve(args.manual_energy_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform (Energy)")
 
-        xs, ys = load_curve(
-            args.manual_activation_aware_energy_json, "params_ratio")
+        xs, ys = load_curve(args.manual_activation_aware_energy_json, "params_ratio")
         plt.plot(xs, ys, label="Uniform Activation-aware (Energy)")
 
         plt.xlabel("Parameter Count Ratio", fontsize=14)
@@ -90,7 +85,7 @@ def main():
         plt.grid(True)
         plt.legend(fontsize=12)
         plt.tight_layout()
-        plt.savefig(args.output_params, bbox_inches='tight')
+        plt.savefig(args.output_params, bbox_inches="tight")
         plt.close()
 
     plot_flops_vs_acc()
@@ -99,5 +94,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

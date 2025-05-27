@@ -14,7 +14,7 @@ CMDS=()
 
 for weight in "${REG_WEIGHTS[@]}"; do
   LOG_PATH="$RESULTS_DIR/training_log_${weight}.json"
-  SAVE_PATH="$RESULTS_DIR/cifar10_resnet20_hoyer_finetuned_${weight}.pth"
+  SAVE_PATH="$RESULTS_DIR/resnet20_regularized_${weight}.pth"
 
   CMDS+=("python \"$TRAIN_SCRIPT\" \
 --log_path \"$LOG_PATH\" \
@@ -23,6 +23,8 @@ for weight in "${REG_WEIGHTS[@]}"; do
 --epochs 200 \
 --batch_size 128 \
 --lr 0.01 \
+--step_size 80 \
+--gamma 0.1 \
 --reg_weight $weight")
 done
 

@@ -52,11 +52,10 @@ test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
-
-subset_indices = torch.randperm(len(train_set))[:256]
-train_set = torch.utils.data.Subset(train_set, subset_indices)
-
-train_loader = DataLoader(train_set, batch_size=128, shuffle=True)
+subset_train_set = torch.utils.data.Subset(
+    train_set, torch.randint(0, len(train_set), (512,))
+)
+train_loader = DataLoader(subset_train_set, batch_size=128, shuffle=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JSONS=(
-  "$DIR/results/global_factorization_cifar10_resnet20_hoyer_finetuned_0.001.json"
-  "$DIR/results/global_factorization_cifar10_resnet20_hoyer_finetuned_0.002.json"
-  "$DIR/results/global_factorization_cifar10_resnet20_hoyer_finetuned_0.003.json"
-  "$DIR/results/global_factorization_cifar10_resnet20_hoyer_finetuned_0.004.json"
-  "$DIR/results/global_factorization_cifar10_resnet20_hoyer_finetuned_0.005.json"
+
+FLOPS_JSONS=(
+  "$DIR/results/global_factorization_resnet20_regularized_0.001_flops.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.002_flops.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.003_flops.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.004_flops.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.005_flops.json"
+)
+
+PARAMS_JSONS=(
+  "$DIR/results/global_factorization_resnet20_regularized_0.001_params.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.002_params.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.003_params.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.004_params.json"
+  "$DIR/results/global_factorization_resnet20_regularized_0.005_params.json"
 )
 
 python "$DIR/graph.py" \
-  --jsons "${JSONS[@]}" \
-  --output_flops "$DIR/results/flops_vs_acc.pdf" \
-  --output_params "$DIR/results/params_vs_acc.pdf"
+  --flops-jsons "${FLOPS_JSONS[@]}" \
+  --params-jsons "${PARAMS_JSONS[@]}" \
+  --output-flops "$DIR/results/flops_vs_acc.pdf" \
+  --output-params "$DIR/results/params_vs_acc.pdf"

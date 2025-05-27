@@ -12,7 +12,9 @@ from compress.experiments import load_vision_model, get_cifar10_modifier
 from compress.utils import get_all_convs_and_linears
 
 
-def compute_layerwise_energy_curves(model: torch.nn.Module, layers: list[str]) -> list[tuple[str, np.ndarray]]:
+def compute_layerwise_energy_curves(
+    model: torch.nn.Module, layers: list[str]
+) -> list[tuple[str, np.ndarray]]:
     named_modules = dict(model.named_modules())
     results: list[tuple[str, np.ndarray]] = []
     for key in layers:
@@ -31,7 +33,12 @@ def compute_layerwise_energy_curves(model: torch.nn.Module, layers: list[str]) -
     return results
 
 
-def plot_energy_collage(layer_energies: list[tuple[str, np.ndarray]], output_path: Path):
+def plot_energy_collage(
+    layer_energies: list[tuple[str, np.ndarray]], output_path: Path
+):
+    # Use larger font size for titles and labels
+    plt.rcParams.update({"font.size": 16})
+
     n = len(layer_energies)
     cols = 3
     rows = (n + cols - 1) // cols
@@ -42,7 +49,7 @@ def plot_energy_collage(layer_energies: list[tuple[str, np.ndarray]], output_pat
             name, energy = layer_energies[idx]
             ax = axes[idx]
             ax.plot(range(len(energy)), energy, marker="o", markersize=2, linewidth=1)
-            ax.set_title(name, fontsize=18)
+            ax.set_title(name, fontsize=24)
             ax.set_ylim(0, 1.05)
             ax.set_xlim(0, len(energy) - 1)
             ax.tick_params(labelbottom=False, labelleft=False)
@@ -57,14 +64,18 @@ def plot_energy_collage(layer_energies: list[tuple[str, np.ndarray]], output_pat
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pretrained_path", type=Path, required=True)
-    parser.add_argument("--output_plot", type=Path, default=Path("sv_energy_selected_layers.pdf"))
+    parser.add_argument(
+        "--output_plot", type=Path, default=Path("sv_energy_selected_layers.pdf")
+    )
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    device = torch.device("cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu"
+    )
     model = load_vision_model(
         "resnet20",
         pretrained_path=str(args.pretrained_path),
@@ -88,5 +99,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

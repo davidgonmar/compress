@@ -15,7 +15,7 @@ from compress.experiments import (
     cifar10_mean,
     cifar10_std,
 )
-from compress.factorization.utils import matrix_approx_rank
+from compress import seed_everything
 
 
 def parse_args():
@@ -23,12 +23,12 @@ def parse_args():
         description="Finetune ResNet on CIFAR-10 with Hoyer regularization and configurable hyperparameters"
     )
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
-    parser.add_argument("--step_size", type=int, default=60)
-    parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--step_size", type=int, default=80)
+    parser.add_argument("--gamma", type=float, default=0.1)
     parser.add_argument("--model_name", type=str, default="resnet20")
     parser.add_argument("--pretrained_path", type=str, default="resnet20.pth")
     parser.add_argument(
@@ -43,7 +43,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-
+    seed_everything(0)
     train_transform = transforms.Compose(
         [
             transforms.RandomCrop(32, padding=4),
@@ -91,7 +91,7 @@ def main():
     )
 
     params_and_reshapers = extract_weights_and_reshapers(
-        model, cls_list=(torch.nn.Conv2d,), keywords={"weight"}
+        model, cls_list=(torch.nn.Conv2d, torch.nn.Linear), keywords={"weight"}
     )
     regularizer = SingularValuesRegularizer(
         metric="squared_hoyer_sparsity",
@@ -128,23 +128,6 @@ def main():
             f"Epoch {epoch+1}/{args.epochs}, Train Loss: {train_loss:.4f}, Reg Loss: {reg_loss:.4f}"
         )
         print(f"Learning Rate after epoch {epoch+1}: {current_lr:.5f}")
-        print("Approximate ranks per layer:")
-
-        def _mul(shape):
-            res = 1
-            for d in shape:
-                res *= d
-            return res
-
-        ranks = {}
-        for name, module in model.named_modules():
-            if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-                approx = matrix_approx_rank(module.weight)
-                total = _mul(module.weight.shape)
-                print(
-                    f"{name}: rank {approx} / {module.weight.shape[0]}, total elems {total}"
-                )
-                ranks[name] = {"rank": approx, "total": total}
 
         model.eval()
         val_loss, correct = 0.0, 0
@@ -168,7 +151,6 @@ def main():
             "val_loss": val_loss,
             "accuracy": acc,
             "learning_rate": current_lr,
-            "layer_ranks": ranks,
         }
         log_data.append(epoch_log)
 
