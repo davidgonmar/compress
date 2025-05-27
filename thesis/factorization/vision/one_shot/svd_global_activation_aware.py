@@ -53,7 +53,7 @@ train_set = datasets.CIFAR10(
     root="data", train=True, transform=transform, download=True
 )
 subset_train_set = torch.utils.data.Subset(
-    train_set, torch.randint(0, len(train_set), (128,))
+    train_set, torch.randint(0, len(train_set), (512,))
 )
 train_loader = DataLoader(subset_train_set, batch_size=128, shuffle=True)
 

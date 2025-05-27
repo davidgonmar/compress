@@ -15,7 +15,7 @@ import json
 from compress import seed_everything
 from compress.layer_fusion import resnet20_fuse_pairs
 from compress.utils import get_all_convs_and_linears
-
+import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -28,7 +28,6 @@ parser.add_argument(
 parser.add_argument("--metric", type=str, default="flops")
 parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
-
 
 seed_everything(args.seed)
 
@@ -43,15 +42,23 @@ model = load_vision_model(
     model_args={"num_classes": 10},
 ).to(device)
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+results_root = os.path.join(script_dir, "results")
+pretrained_base = os.path.splitext(os.path.basename(args.pretrained_path))[0]
+model_dir = os.path.join(results_root, pretrained_base)
+os.makedirs(model_dir, exist_ok=True)
+
 transform = transforms.Compose(
     [
         transforms.ToTensor(),
         transforms.Normalize(cifar10_mean, cifar10_std),
     ]
 )
+
 test_dataset = datasets.CIFAR10(
     root="data", train=False, transform=transform, download=True
 )
+
 test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 
 train_set = datasets.CIFAR10(
@@ -66,7 +73,9 @@ eval_results = evaluate_vision_model(model, test_loader)
 n_params_orig = sum(p.numel() for p in model.parameters())
 flops_orig = count_model_flops(model, (1, 3, 32, 32), formatted=False)
 print(
-    f"[original] Loss: {eval_results['loss']:.4f}, Acc: {eval_results['accuracy']:.4f}, Params: {n_params_orig}, FLOPs: {flops_orig}"
+    f"[original] Loss: {eval_results['loss']:.4f}, "
+    f"Acc: {eval_results['accuracy']:.4f}, "
+    f"Params: {n_params_orig}, FLOPs: {flops_orig}"
 )
 
 results = []
@@ -98,7 +107,7 @@ ratios = [
 for ratio in ratios:
     model_lr = to_low_rank_global(
         model,
-        sample_input=torch.randn(1, 3, 32, 32).float().cuda(),
+        sample_input=torch.randn(1, 3, 32, 32).float().to(device),
         ratio_to_keep=ratio,
         bn_keys=resnet20_fuse_pairs,
         inplace=False,
@@ -110,8 +119,15 @@ for ratio in ratios:
     flops_raw = count_model_flops(model_lr, (1, 3, 32, 32), formatted=False)
     eval_lr = evaluate_vision_model(model_lr.to(device), test_loader)
     print(
-        f"[ratio={ratio:.2f}] Loss: {eval_lr['loss']:.4f}, Acc: {eval_lr['accuracy']:.4f}, Param‐keep: {n_params_lr/n_params_orig:.4f}, FLOPs: {flops_formatted}"
+        f"[ratio={ratio:.2f}] Loss: {eval_lr['loss']:.4f}, "
+        f"Acc: {eval_lr['accuracy']:.4f}, "
+        f"Param-keep: {n_params_lr/n_params_orig:.4f}, "
+        f"FLOPs: {flops_formatted}"
     )
+
+    output_path = os.path.join(model_dir, f"{args.metric}_{ratio:.2f}.pth")
+    torch.save(model_lr, output_path)
+
     results.append(
         {
             "metric_value": ratio,
@@ -120,6 +136,7 @@ for ratio in ratios:
             "params_ratio": n_params_lr / n_params_orig,
             "flops_ratio": flops_raw["total"] / flops_orig["total"],
             "metric_name": args.metric,
+            "output_path": output_path,
         }
     )
 

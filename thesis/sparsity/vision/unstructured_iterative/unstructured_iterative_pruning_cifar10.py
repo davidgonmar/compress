@@ -165,6 +165,8 @@ def main():
         policies = unstructured_resnet20_policy_dict(
             intra_metric=Metric(name="sparsity_ratio", value=ratio),
         )
+        del policies["linear"]
+        del policies["conv1"]
 
         if args.method == "magnitude_weights":
             pruner = WeightMagnitudeIntraGroupPruner(
@@ -224,11 +226,15 @@ def main():
             "accuracy": post_prune["accuracy"],
             "loss": post_prune["loss"],
             "sparsity": get_sparsity_information(model),
+            "target_sparsity_ratio": ratio,
         }
 
         epochs_stats = []
+        epochs_this_iter = (
+            args.epochs_per_iter * 2 if it == args.n_iters else args.epochs_per_iter
+        )
         for epoch in tqdm(
-            range(1, args.epochs_per_iter + 1),
+            range(1, epochs_this_iter + 1),
             desc=f"  Finetune Iter {it}",
             leave=False,
         ):

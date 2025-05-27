@@ -4,6 +4,7 @@ import argparse
 
 REG_WEIGHTS = [0.001, 0.002, 0.003, 0.004, 0.005]
 
+
 def load_accuracy(log_path):
     try:
         with open(log_path, "r") as f:
@@ -12,10 +13,15 @@ def load_accuracy(log_path):
     except Exception:
         return None
 
+
 def main():
     parser = argparse.ArgumentParser(description="Generate LaTeX tabular from logs.")
-    parser.add_argument("--results_dir", type=str, required=True, help="Directory with log JSON files.")
-    parser.add_argument("--output", type=str, required=True, help="Path to save LaTeX table.")
+    parser.add_argument(
+        "--results_dir", type=str, required=True, help="Directory with log JSON files."
+    )
+    parser.add_argument(
+        "--output", type=str, required=True, help="Path to save LaTeX table."
+    )
     args = parser.parse_args()
 
     rows = []
@@ -38,6 +44,6 @@ def main():
         f.write("\\bottomrule\n")
         f.write("\\end{tabular}\n")
 
+
 if __name__ == "__main__":
     main()
-

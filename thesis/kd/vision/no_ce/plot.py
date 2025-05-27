@@ -41,7 +41,7 @@ def main():
         linestyle="-",
         linewidth=3,
         color="tab:blue",
-        label="Accuracy"
+        label="Accuracy",
     )
 
     plt.title("Training Accuracy over Epochs", fontsize=20)
@@ -59,4 +59,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
