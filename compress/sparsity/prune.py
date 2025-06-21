@@ -829,8 +829,8 @@ class ActivationMagnitudeIntraGroupPruner:
 
 
 def get_sparsity_information(model: nn.Module) -> dict:
-    nz_total = 0 
-    total = 0 
+    nz_total = 0
+    total = 0
 
     stack = [model]
     while stack:
@@ -848,9 +848,10 @@ def get_sparsity_information(model: nn.Module) -> dict:
     sparsity_ratio = 1.0 - nz_total / total if total else 0.0
     return {
         "nonzero_params": nz_total,
-        "total_params":   total,
+        "total_params": total,
         "sparsity_ratio": sparsity_ratio,
     }
+
 
 def get_sparsity_information_str(dic: dict) -> str:
 
@@ -859,6 +860,7 @@ def get_sparsity_information_str(dic: dict) -> str:
         f"Total params: {dic['total_params']}, "
         f"Sparsity ratio: {dic['sparsity_ratio']:.2%}"
     )
+
 
 def merge_pruned_modules(model: nn.Module) -> nn.Module:
     """
