@@ -579,3 +579,16 @@ def get_activations_transformers(model, dataloader, specs):
         activations[name] = torch.cat(activations[name], dim=0)
 
     return activations
+
+
+def separate_params(model: nn.Module):
+    quant_params = []
+    for mod in model.modules():
+        if isinstance(mod, IntAffineQuantizationInfo):
+            quant_params.extend(
+                p for p in mod.parameters(recurse=False) if p.requires_grad
+            )
+
+    quant_set = set(quant_params)
+    others = [p for p in model.parameters() if p.requires_grad and p not in quant_set]
+    return {"quant_params": quant_params, "others": others}
