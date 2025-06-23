@@ -274,13 +274,20 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
 
 
 class LSQQuantize(torch.autograd.Function):
+    # zero_point might be None
     @staticmethod
-    def forward(ctx, x, scale, info):
-        assert info.zero_point is None, "Zero point is not supported"
+    def forward(ctx, x, scale, zero_point, info):
+        if zero_point is None:
+            zero_point = info.zero_point
+        assert zero_point is None, "Zero point is not supported"
         assert (
             info.scale is scale
         ), "Scale must be the same as the one used in calibration"
-        ctx.save_for_backward(x, scale)
+        
+        if zero_point is not None:
+            ctx.save_for_backward(x, scale, zero_point)
+        else:
+            ctx.save_for_backward(x, scale)
         ctx.qmin = info.qmin
         ctx.qmax = info.qmax
         ctx.spec = info.spec
@@ -288,35 +295,45 @@ class LSQQuantize(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        x, scale = ctx.saved_tensors
-        qmin, qmax = ctx.qmin, ctx.qmax
-        spec = ctx.spec
+        if len(ctx.saved_tensors) == 3:
+            x, scale, zero_point = ctx.saved_tensors
+        else:
+            x, scale = ctx.saved_tensors
+            zero_point = None
 
-        # print(x.shape, scale.shape, grad_output.shape,ctx.spec.grouper.group(x).shape)
-        x_grouped = spec.grouper.group(x)
-        v_s = x_grouped / scale
-        # print(grad_output)
-        mask = (v_s >= qmin) & (v_s <= qmax)
-        x_grad = ctx.spec.grouper.group(grad_output) * mask.float()
-        s_grad = (
-            torch.where(
-                v_s <= qmin,
-                qmin,
-                torch.where(qmax <= v_s, qmax, -v_s + torch.round(v_s).detach()),
-            )
-            * ctx.spec.grouper.group(grad_output)
-        ).sum(dim=0)
-        """
-        # rescale as the paper mentions
-        rescaling = 1 / math.sqrt((x.numel() * (qmax - qmin)))
-        """
-        # the previous is for the per-tensor case
-        # generically, we need to rescale by the number of elements in the group
-        numels_grp = x_grouped.shape[0]  # shape[1] is the number of groups
+        if zero_point is None:
+            qmin, qmax = ctx.qmin, ctx.qmax
+            spec = ctx.spec
 
-        s_grad = s_grad * (1 / math.sqrt(numels_grp * (qmax - qmin)))
-        # print(s_grad)
-        return ctx.spec.grouper.ungroup(x_grad, x), s_grad, None
+            # print(x.shape, scale.shape, grad_output.shape,ctx.spec.grouper.group(x).shape)
+            x_grouped = spec.grouper.group(x)
+            v_s = x_grouped / scale
+            # print(grad_output)
+            mask = (v_s >= qmin) & (v_s <= qmax)
+            x_grad = ctx.spec.grouper.group(grad_output) * mask.float()
+            s_grad = (
+                torch.where(
+                    v_s <= qmin,
+                    qmin,
+                    torch.where(qmax <= v_s, qmax, -v_s + torch.round(v_s).detach()),
+                )
+                * ctx.spec.grouper.group(grad_output)
+            ).sum(dim=0)
+
+            """
+            # rescale as the paper mentions
+            rescaling = 1 / math.sqrt((x.numel() * (qmax)))
+            """
+            # the previous is for the per-tensor case
+            # generalizing this, we need to rescale by the number of elements in the group
+            numels_grp = x_grouped.shape[0]  # shape[1] is the number of groups
+
+            s_grad = s_grad * (1 / math.sqrt(numels_grp * (qmax)))
+            # print(s_grad)
+            return ctx.spec.grouper.ungroup(x_grad, x), s_grad, None, None
+        
+        else:
+            raise NotImplementedError("Zero point is not supported")
 
 
 def _forward_lsq(
@@ -329,10 +346,10 @@ def _forward_lsq(
 ):
     if self.online:
         info = calibrate(x, self.input_spec)
-        x = LSQQuantize.apply(x, info.scale, info)
+        x = LSQQuantize.apply(x, info.scale, info.zero_point, info)
     else:
-        x = LSQQuantize.apply(x, self.input_info.scale, self.input_info)
-    w = LSQQuantize.apply(weight, self.weight_info.scale, self.weight_info)
+        x = LSQQuantize.apply(x, self.input_info.scale, self.input_info.zero_point, self.input_info)
+    w = LSQQuantize.apply(weight, self.weight_info.scale, self.weight_info.zero_point, self.weight_info)
     return functional(x, w, bias, **kwargs)
 
 
