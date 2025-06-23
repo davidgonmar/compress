@@ -107,6 +107,7 @@ class IntAffineQuantizationMode(Enum):
         "STATISTICS_AWARE_BINNING_ASYMMETRIC"  # extension from the above
     )
     ENTROPY_SYMMETRIC = "ENTROPY_SYMMETRIC"
+    LSQ_INITIALIZATION = "LSQ_INITIALIZATION"
 
 
 class IntAffineQuantizationSpec:

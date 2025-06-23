@@ -5,6 +5,7 @@ from compress.quantization.common import (
     IntAffineQuantizationMode,
     PerTensor,
 )
+import math
 
 
 # ========================
@@ -161,6 +162,14 @@ def calibrate(
         return IntAffineQuantizationInfo(
             spec, torch.tensor(scale).to(x.device).detach(), zero_point
         )
+    if spec.quant_mode == IntAffineQuantizationMode.LSQ_INITIALIZATION:
+        # Learned Step Size Quantization init: s = 2 * E[|x|] / sqrt(Q)
+        xm = spec.grouper.group(x)
+        E_abs = xm.abs().mean(0)
+        Qp = float(spec.qmax)
+        scale = 2 * E_abs / math.sqrt(Qp)
+        zero_point = None
+        return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
     percentile = spec.mode_args.get("percentile", 1.0)
     assert (
@@ -185,5 +194,6 @@ def calibrate(
         xmax = quantile(xm.abs(), percentile, dim=0)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         zero_point = None
-
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
+
+    raise ValueError(f"Unsupported quantization mode: {spec.quant_mode}")
