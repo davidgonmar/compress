@@ -202,6 +202,7 @@ class LowRankConv2d(nn.Module):
         self.groups = groups
         self.rank = rank
         self.input_channels = in_channels
+        self.in_channels = in_channels
         self.kernel_size = kernel_size
         self.out_channels = out_channels
 

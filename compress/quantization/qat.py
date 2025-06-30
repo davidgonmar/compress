@@ -283,7 +283,7 @@ class LSQQuantize(torch.autograd.Function):
         assert (
             info.scale is scale
         ), "Scale must be the same as the one used in calibration"
-        
+
         if zero_point is not None:
             ctx.save_for_backward(x, scale, zero_point)
         else:
@@ -331,7 +331,7 @@ class LSQQuantize(torch.autograd.Function):
             s_grad = s_grad * (1 / math.sqrt(numels_grp * (qmax)))
             # print(s_grad)
             return ctx.spec.grouper.ungroup(x_grad, x), s_grad, None, None
-        
+
         else:
             raise NotImplementedError("Zero point is not supported")
 
@@ -348,8 +348,12 @@ def _forward_lsq(
         info = calibrate(x, self.input_spec)
         x = LSQQuantize.apply(x, info.scale, info.zero_point, info)
     else:
-        x = LSQQuantize.apply(x, self.input_info.scale, self.input_info.zero_point, self.input_info)
-    w = LSQQuantize.apply(weight, self.weight_info.scale, self.weight_info.zero_point, self.weight_info)
+        x = LSQQuantize.apply(
+            x, self.input_info.scale, self.input_info.zero_point, self.input_info
+        )
+    w = LSQQuantize.apply(
+        weight, self.weight_info.scale, self.weight_info.zero_point, self.weight_info
+    )
     return functional(x, w, bias, **kwargs)
 
 
