@@ -362,11 +362,15 @@ def to_low_rank_global(
         hook = module.register_forward_hook(hook_fn)
         hooks.append(hook)
 
+    prev_state = model.training
+    model.eval()
     with torch.no_grad():
         model(rand_inp)
 
     for hook in hooks:
         hook.remove()
+
+    model.train(prev_state)
 
     assert len(sizes) == len(
         modules_to_replace
@@ -590,11 +594,17 @@ def to_low_rank_global2(
         hooks.append(module.register_forward_hook(_hook_fn))
 
     rand_inp = sample_input.to(next(model.parameters()).device)
+
+    prev_state = model.training
+
+    model.eval()
     with torch.no_grad():
         model(rand_inp)
 
     for h in hooks:
         h.remove()
+
+    model.train(prev_state)
 
     assert len(sizes) == len(
         modules_to_replace
@@ -761,7 +771,10 @@ def to_low_rank_manual_activation_aware(
         hook = module.register_forward_hook(hook_fn)
         hooks.append(hook)
 
+    prev_state = model.training
+    model.eval()
     with torch.no_grad():
+
         for batch in tqdm(dataloader, desc="Getting activations"):
             if isinstance(batch, dict):
                 inputs = {
@@ -778,6 +791,8 @@ def to_low_rank_manual_activation_aware(
 
     for hook in hooks:
         hook.remove()
+
+    model.train(prev_state)
 
     # get the cholesky decomposition of the covariance matrix of each activation im2col'ed in case of conv2d
     chols = {}
@@ -878,6 +893,9 @@ def to_low_rank_activation_aware_global(
         hook = module.register_forward_hook(functools.partial(hook_fn, name))
         hooks.append(hook)
 
+    prev_state = model.training
+
+    model.eval()
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Getting activations"):
             if isinstance(batch, dict):
@@ -892,6 +910,8 @@ def to_low_rank_activation_aware_global(
                     next(model.parameters()).device
                 ), targets.to(next(model.parameters()).device)
                 model(inputs)
+
+    model.train(prev_state)
 
     for hook in hooks:
         hook.remove()
