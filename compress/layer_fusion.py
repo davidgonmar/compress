@@ -95,14 +95,12 @@ def fuse_batch_norm_inference(
 
     if isinstance(conv, LowRankConv2d):
         w_conv_fuse = conv.w1
-        w_conv_fuse_bias = conv.bias
-
         dummy_conv = nn.Conv2d(
             in_channels=conv.rank,
             out_channels=conv.out_channels,
             kernel_size=(1, 1),
-            stride=conv.stride,
-            padding=conv.padding,
+            stride=1,
+            padding=0,
             dilation=conv.dilation,
             groups=conv.groups,
             bias=True,
@@ -113,13 +111,19 @@ def fuse_batch_norm_inference(
         dummy_conv.weight.data.copy_(w_conv_fuse.detach())
         if conv.bias is not None:
             dummy_conv.bias.data.copy_(conv.bias.detach())
-
+        else:
+            dummy_conv.bias.data.copy_(
+                torch.zeros(
+                    conv.out_channels, device=conv.w1.device, dtype=conv.w1.dtype
+                )
+            )
         w, b = get_new_params(dummy_conv, bn)
 
         if conv.bias is None:
-            conv.bias = torch.zeros(
-                conv.out_channels, device=conv.w1.device, dtype=conv.w1.dtype
+            conv.bias = nn.Parameter(
+                torch.empty(conv.out_channels, device=w.device, dtype=w.dtype)
             )
+
         conv.bias.data.copy_(b.detach())
 
         conv.w1.data.copy_(w.detach())

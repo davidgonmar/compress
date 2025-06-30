@@ -323,6 +323,7 @@ def count_model_flops(
     """
     state_dict = model.state_dict()
     assert backward is False, "Backward pass is not supported yet"
+    prev_state = model.training
     model.eval()
     start_counting()
     x = torch.zeros(input_size).cuda().to(dtype)
@@ -343,6 +344,7 @@ def count_model_flops(
         res = format_count_model_flops_results(res)
 
     model.load_state_dict(state_dict)
+    model.train(prev_state)
     return res
 
 
