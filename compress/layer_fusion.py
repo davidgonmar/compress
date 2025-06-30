@@ -7,6 +7,7 @@ import torch.nn as nn
 from compress.utils import unzip
 from typing import List, Tuple, Callable
 import torch
+from compress.factorization.low_rank_ops import LowRankConv2d
 
 
 def fuse_conv_bn(
@@ -46,6 +47,7 @@ def fuse_conv_bn(
         conv = convs_dict[conv_key]
         bn = bns_dict[bn_key]
 
+        # if conv is a LowRankConv2d, then we need to fuse the internal conv and bn
         fused_conv = fuse_impl(conv, bn, conv_key, bn_key)
 
         parent_module = model
@@ -86,10 +88,43 @@ def get_new_params(conv: nn.Conv2d, bn: nn.BatchNorm2d):
 def fuse_batch_norm_inference(
     conv: nn.Conv2d, bn: nn.BatchNorm2d, conv_name: str, bn_name: str
 ) -> nn.Conv2d:
-    if not isinstance(conv, nn.Conv2d):
+    if not isinstance(conv, (nn.Conv2d, LowRankConv2d)):
         raise TypeError(f"Expected nn.Conv2d, got {type(conv)}")
     if not isinstance(bn, nn.BatchNorm2d):
         raise TypeError(f"Expected nn.BatchNorm2d, got {type(bn)}")
+
+    if isinstance(conv, LowRankConv2d):
+        w_conv_fuse = conv.w1
+        w_conv_fuse_bias = conv.bias
+
+        dummy_conv = nn.Conv2d(
+            in_channels=conv.rank,
+            out_channels=conv.out_channels,
+            kernel_size=(1, 1),
+            stride=conv.stride,
+            padding=conv.padding,
+            dilation=conv.dilation,
+            groups=conv.groups,
+            bias=True,
+            device=conv.w1.device,
+            dtype=conv.w1.dtype,
+        )
+
+        dummy_conv.weight.data.copy_(w_conv_fuse.detach())
+        if conv.bias is not None:
+            dummy_conv.bias.data.copy_(conv.bias.detach())
+
+        w, b = get_new_params(dummy_conv, bn)
+
+        if conv.bias is None:
+            conv.bias = torch.zeros(
+                conv.out_channels, device=conv.w1.device, dtype=conv.w1.dtype
+            )
+        conv.bias.data.copy_(b.detach())
+
+        conv.w1.data.copy_(w.detach())
+
+        return conv
 
     w, b = get_new_params(conv, bn)
 

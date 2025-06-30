@@ -395,7 +395,8 @@ def get_resnet20_recipe_quant(
                 input_specs[k] = IntAffineQuantizationSpec(
                     nbits=8,
                     signed=k == "conv1",
-                    quant_mode=quant_mode_override or IntAffineQuantizationMode.SYMMETRIC,
+                    quant_mode=quant_mode_override
+                    or IntAffineQuantizationMode.SYMMETRIC,
                     percentile=clip_percentile,
                     grouper=_get_grouper(k, False),
                 )
@@ -403,7 +404,8 @@ def get_resnet20_recipe_quant(
                 weight_specs[k] = IntAffineQuantizationSpec(
                     nbits=8,
                     signed=True,
-                    quant_mode=quant_mode_override or IntAffineQuantizationMode.SYMMETRIC,
+                    quant_mode=quant_mode_override
+                    or IntAffineQuantizationMode.SYMMETRIC,
                     percentile=clip_percentile,
                     grouper=_get_grouper(k, True),
                 )
@@ -440,14 +442,16 @@ def get_resnet20_recipe_quant(
                 input_specs[k] = IntAffineQuantizationSpec(
                     nbits=8,
                     signed=True,
-                    quant_mode=quant_mode_override or IntAffineQuantizationMode.ASYMMETRIC,
+                    quant_mode=quant_mode_override
+                    or IntAffineQuantizationMode.ASYMMETRIC,
                     percentile=clip_percentile,
                     grouper=_get_grouper(k, False),
                 )
                 weight_specs[k] = IntAffineQuantizationSpec(
                     nbits=8,
                     signed=True,
-                    quant_mode=quant_mode_override or IntAffineQuantizationMode.ASYMMETRIC,
+                    quant_mode=quant_mode_override
+                    or IntAffineQuantizationMode.ASYMMETRIC,
                     percentile=clip_percentile,
                     grouper=_get_grouper(k, True),
                 )
