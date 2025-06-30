@@ -205,7 +205,7 @@ quant_specs = get_recipe_quant(args.model_name)(
     bits_activation=args.nbits,
     bits_weight=args.nbits,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
-    clip_percentile=0.995,
+    clip_percentile=99.5,
     symmetric=True,
 )
 student = prepare_for_qat(

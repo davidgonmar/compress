@@ -46,13 +46,13 @@ w_spec = IntAffineQuantizationSpec(
     nbits=8,
     signed=True,
     quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-    percentile=0.995,
+    percentile=99.5,
 )
 a_spec = IntAffineQuantizationSpec(
     nbits=8,
     signed=True,
     quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-    percentile=0.995,
+    percentile=99.5,
 )
 replace_linear_with_quant(model, w_spec, a_spec)
 

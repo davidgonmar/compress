@@ -478,7 +478,7 @@ def get_quant_keys(model_name: str):
     recp = get_recipe_quant(model_name)(
         bits_activation=8,
         bits_weight=8,
-        clip_percentile=0.995,
+        clip_percentile=99.5,
         leave_edge_layers_8_bits=False,
         symmetric=False,
     )

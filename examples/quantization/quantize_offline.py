@@ -70,7 +70,7 @@ activations = get_activations(
     spec=get_recipe_quant(args.model_name)(
         bits_activation=8,
         bits_weight=8,
-        clip_percentile=0.995,
+        clip_percentile=99.5,
         leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
         symmetric=False,
     ),
@@ -80,7 +80,7 @@ for w_bits, act_bits in product(bit_widths, bit_widths):
     specs = get_recipe_quant(args.model_name)(
         bits_activation=act_bits,
         bits_weight=w_bits,
-        clip_percentile=0.995,
+        clip_percentile=99.5,
         leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
         symmetric=False,
     )

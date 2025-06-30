@@ -147,7 +147,7 @@ quant_specs = get_recipe_quant("resnet20")(
     bits_activation=args.nbits,
     bits_weight=args.nbits,
     leave_edge_layers_8_bits=True,
-    clip_percentile=0.995,
+    clip_percentile=99.5,
     symmetric=True,
 )
 student = prepare_for_qat(

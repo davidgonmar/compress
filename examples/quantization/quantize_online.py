@@ -89,7 +89,7 @@ for w_bits, act_bits in product(bit_widths, bit_widths):
     )(
         bits_activation=act_bits,
         bits_weight=w_bits,
-        clip_percentile=0.995,
+        clip_percentile=99.5,
         leave_edge_layers_8_bits=args.leave_edge_layers_8_bits,
         symmetric=False,
     )
