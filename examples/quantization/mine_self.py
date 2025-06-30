@@ -75,7 +75,7 @@ specs = get_resnet18_recipe_quant(
     bits_activation=args.nbits,
     bits_weight=args.nbits,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
-    clip_percentile=0.99,
+    clip_percentile=99,
     symmetric=True,
 )
 model = prepare_for_qat(

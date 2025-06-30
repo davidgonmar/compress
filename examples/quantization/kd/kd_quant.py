@@ -57,7 +57,7 @@ parser = argparse.ArgumentParser("PyTorch CIFAR10 QAT with KD only")
 parser.add_argument("--load_from", type=str, required=False)
 parser.add_argument("--bits_schedule", type=str, default="8*8")
 parser.add_argument("--epochs_schedule", type=str, default="10")
-parser.add_argument("--clip_percentile", type=float, default=0.99)
+parser.add_argument("--clip_percentile", type=float, default=99)
 args = parser.parse_args()
 
 args.leave_edge_layers_8_bits = True

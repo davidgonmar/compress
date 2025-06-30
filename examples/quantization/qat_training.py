@@ -108,7 +108,7 @@ specs = get_recipe_quant(args.model_name)(
     bits_activation=args.nbits_activations,
     bits_weight=args.nbits_weights,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
-    clip_percentile=0.99,
+    clip_percentile=99,
     symmetric=True,
 )
 

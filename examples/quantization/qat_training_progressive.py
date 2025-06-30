@@ -81,7 +81,7 @@ specs = get_recipe_quant(args.model_name)(
     bits_activation=current_bits,
     bits_weight=current_bits,
     leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
-    clip_percentile=0.99,
+    clip_percentile=99,
     symmetric=True,
 )
 
@@ -114,7 +114,7 @@ for epoch in range(args.epochs):
             bits_activation=current_bits,
             bits_weight=current_bits,
             leave_edge_layers_8_bits=args.leave_last_layer_8_bits,
-            clip_percentile=0.99,
+            clip_percentile=99,
             symmetric=True,
         )
         requantize_lsq(model, specs=specs)

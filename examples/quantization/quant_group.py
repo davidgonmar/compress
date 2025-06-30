@@ -110,14 +110,14 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
             w_linear_bits,
             signed_options[0],
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=0.995,
+            percentile=99.5,
             grouper=PerTensor,
         ),
         IntAffineQuantizationSpec(
             i_linear_bits,
             signed_options[0],
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=0.995,
+            percentile=99.5,
             grouper=PerTensor,
         ),
     )
@@ -128,13 +128,13 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
             w_conv_bits,
             signed_options[0],
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=0.995,
+            percentile=99.5,
         ),
         IntAffineQuantizationSpec(
             i_conv_bits,
             signed_options[0],
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=0.995,
+            percentile=99.5,
             grouper=ConvWeightsPerOutChannel,
         ),
     )
@@ -146,14 +146,14 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
             nbits=8,
             signed=True,
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=0.995,
+            percentile=99.5,
         )
         # first layer key is "conv1" for resnet18
         specs["conv1"]["input"] = IntAffineQuantizationSpec(
             nbits=8,
             signed=True,
             quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-            percentile=0.995,
+            percentile=99.5,
             grouper=ConvWeightsPerOutChannel,
         )
 
@@ -163,14 +163,14 @@ for w_linear_bits, w_conv_bits, i_linear_bits, i_conv_bits in product(
                 nbits=8,
                 signed=True,
                 quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-                percentile=0.995,
+                percentile=99.5,
             )
             # first layer key is "conv1" for resnet18
             specs["conv1"]["weight"] = IntAffineQuantizationSpec(
                 nbits=8,
                 signed=True,
                 quant_mode=IntAffineQuantizationMode.SYMMETRIC,
-                percentile=0.995,
+                percentile=99.5,
             )
 
     quanted = to_quantized_online(

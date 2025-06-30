@@ -126,7 +126,7 @@ parser.add_argument(
 parser.add_argument(
     "--clip_percentile",
     type=float,
-    default=0.99,  # cuts low 0.5% and high 0.5% of the values
+    default=99,  # cuts low 0.5% and high 0.5% of the values
     help="percentile for clipping",
 )
 

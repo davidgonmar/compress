@@ -136,7 +136,7 @@ class IntAffineQuantizationSpec:
             IntAffineQuantizationMode.ASYMMETRIC,
         ]:
             if "percentile" not in self.mode_args:
-                self.mode_args["percentile"] = 1.0
+                self.mode_args["percentile"] = 100.0
 
     @property
     def qmin(self):
