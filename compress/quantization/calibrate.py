@@ -180,8 +180,8 @@ def calibrate(
 
     if spec.quant_mode == IntAffineQuantizationMode.ASYMMETRIC:
         xm = spec.grouper.group(x)
-        lower_percentile = (1 - percentile) / 2
-        upper_percentile = (1 + percentile) / 2
+        lower_percentile = (100.0 - percentile) / 2
+        upper_percentile = (100.0 + percentile) / 2
         xmin = quantile(xm, lower_percentile / 100, dim=0)  # shape (n_groups)
         xmax = quantile(xm, upper_percentile / 100, dim=0)
         scale = (xmax - xmin) / (spec.qmax - spec.qmin)
