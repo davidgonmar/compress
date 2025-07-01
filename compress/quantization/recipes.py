@@ -251,3 +251,16 @@ def get_recipe_quant(model_name: str):
     if model_name == "resnet20":
         return resnet20_recipe_quant
     raise ValueError(f"Unknown model name: {model_name}")
+
+
+def get_quant_keys(model_name: str):
+    recp = get_recipe_quant(model_name)(
+        bits_activation=8,
+        bits_weight=8,
+        leave_edge_layers_8_bits=False,
+        quant_args={
+            "quant_mode": IntAffineQuantizationMode.ASYMMETRIC,
+            "percentile": 99.5,
+        },
+    )
+    return recp.keys()
