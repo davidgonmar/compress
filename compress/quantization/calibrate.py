@@ -191,7 +191,7 @@ def calibrate(
     if spec.quant_mode == IntAffineQuantizationMode.SYMMETRIC:
         xm = spec.grouper.group(x)
         # print(x.max(), x.min())
-        xmax = quantile(xm.abs(), percentile, dim=0)
+        xmax = quantile(xm.abs(), percentile / 100, dim=0)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         zero_point = None
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
