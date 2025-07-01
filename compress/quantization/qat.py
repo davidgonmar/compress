@@ -18,7 +18,6 @@ from collections import defaultdict
 import math
 from functools import partial
 
-
 # ============================================================
 # ============= REGULAR QUANTIZATION AWARE TRAINING ==========
 # ============================================================
@@ -304,11 +303,8 @@ class LSQQuantize(torch.autograd.Function):
         if zero_point is None:
             qmin, qmax = ctx.qmin, ctx.qmax
             spec = ctx.spec
-
-            # print(x.shape, scale.shape, grad_output.shape,ctx.spec.grouper.group(x).shape)
             x_grouped = spec.grouper.group(x)
             v_s = x_grouped / scale
-            # print(grad_output)
             mask = (v_s >= qmin) & (v_s <= qmax)
             x_grad = ctx.spec.grouper.group(grad_output) * mask.float()
             s_grad = (
@@ -636,9 +632,6 @@ def snap_loss_model_activations(
     return loss / len(activations)
 
 
-import torch.nn as nn
-
-
 class ActivationCatcher:
     def __init__(self, layer_types=(nn.ReLU, nn.Linear), include_inputs=False):
         self.layer_types = layer_types
@@ -717,9 +710,6 @@ class SnapRegularizer:
 # ===========================================================================
 # ============= MUTUAL INFORMATION REGULARIZATION ==========================
 # ===========================================================================
-
-
-import torch
 
 
 def safe_logdet(cov):
