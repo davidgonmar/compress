@@ -107,7 +107,7 @@ def quantile(tensor, q, dim=None, keepdim=False):
 def calibrate(
     x: torch.Tensor,
     spec: IntAffineQuantizationSpec,
-):  
+):
     if spec.quant_mode in [
         IntAffineQuantizationMode.STATISTICS_AWARE_BINNING_ASYMMETRIC,
         IntAffineQuantizationMode.STATISTICS_AWARE_BINNING_SYMMETRIC,

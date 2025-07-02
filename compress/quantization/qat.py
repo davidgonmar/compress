@@ -23,6 +23,43 @@ from functools import partial
 # ============================================================
 
 
+class EMAInfoObserver(nn.Module):
+    def __init__(self, spec, averaging_constant: float = 0.01):
+        super().__init__()
+        self.spec = spec
+        self.averaging_constant = averaging_constant
+        self.info = None
+        self.initialized = False
+        self.frozen = False
+
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor):
+        if self.frozen or not self.training:
+            assert self.initialized, "Observer not initialized"
+            return self.info
+
+        info = calibrate(x, self.spec)
+
+        if not self.initialized:
+            self.add_module("info", info)
+            self.initialized = True
+        else:
+            self.info.scale.mul_(1 - self.averaging_constant).add_(
+                info.scale * self.averaging_constant
+            )
+            if info.zero_point is not None:
+                self.info.zero_point.mul_(1 - self.averaging_constant).add_(
+                    info.zero_point * self.averaging_constant
+                )
+        return self.info
+
+    def freeze(self):
+        self.frozen = True
+
+    def unfreeze(self):
+        self.frozen = False
+
+
 def _qat_prepare(
     self,
     layer: nn.Module,
@@ -37,6 +74,8 @@ def _qat_prepare(
         if layer.bias is not None
         else None
     )
+    if not self.online:
+        self.input_observer = EMAInfoObserver(input_spec)
 
 
 def _forward_qat(
@@ -47,7 +86,10 @@ def _forward_qat(
     functional: callable,
     **kwargs,
 ):
-    x = fake_quantize(x, calibrate(x, self.input_spec))
+    if not self.online:
+        x = fake_quantize(x, self.input_observer(x))
+    else:
+        x = fake_quantize(x, calibrate(x, self.input_spec))
     w = fake_quantize(weight, calibrate(weight, self.weight_spec))
     return functional(x, w, bias, **kwargs)
 
@@ -73,8 +115,10 @@ class QATLinear(nn.Module):
         weight_spec: IntAffineQuantizationSpec,
         input_spec: IntAffineQuantizationSpec,
         original_layer: nn.Linear,
+        online: bool = False,
     ):
         super().__init__()
+        self.online = online
         _extract_kwargs_from_orig_layer(
             self,
             ["in_features", "out_features", "bias"],
@@ -113,8 +157,10 @@ class QATConv2d(nn.Module):
         weight_spec: IntAffineQuantizationSpec,
         input_spec: IntAffineQuantizationSpec,
         original_layer: nn.Conv2d,
+        online: bool = False,
     ):
         super().__init__()
+        self.online = online
         _extract_kwargs_from_orig_layer(
             self,
             [
@@ -195,8 +241,10 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
         input_spec: IntAffineQuantizationSpec,
         original_conv_layer: nn.Conv2d,
         original_bn_layer: nn.BatchNorm2d,
+        online: bool = False,
     ):
         super().__init__()
+        self.online = online
         self.conv = original_conv_layer
         self.bn = original_bn_layer
         self.weight_spec, self.input_spec = weight_spec, input_spec
