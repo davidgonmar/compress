@@ -248,6 +248,8 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
         self.conv = original_conv_layer
         self.bn = original_bn_layer
         self.weight_spec, self.input_spec = weight_spec, input_spec
+        if not self.online:
+            self.input_observer = EMAInfoObserver(input_spec)
 
         _extract_kwargs_from_orig_layer(
             self,
