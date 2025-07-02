@@ -28,7 +28,6 @@ class EMAInfoObserver(nn.Module):
         super().__init__()
         self.spec = spec
         self.averaging_constant = averaging_constant
-        self.info = None
         self.initialized = False
         self.frozen = False
 
