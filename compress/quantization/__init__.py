@@ -261,13 +261,17 @@ def prepare_for_qat(
         for part in parent_path:
             parent_module = getattr(parent_module, part)
         mod = module
+        online = method_args.get("online", False)
         if not use_lsq:
             if isinstance(module, (nn.Linear, nn.LazyLinear)):
-                mod = QATLinear(specs[name]["weight"], specs[name]["input"], module)
+                mod = QATLinear(
+                    specs[name]["weight"], specs[name]["input"], module, online=online
+                )
             elif isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
-                mod = QATConv2d(specs[name]["weight"], specs[name]["input"], module)
+                mod = QATConv2d(
+                    specs[name]["weight"], specs[name]["input"], module, online=online
+                )
         elif use_lsq:
-            online = method_args.get("online", False)
             if isinstance(module, (nn.Linear, nn.LazyLinear)):
                 mod = LSQLinear(
                     specs[name]["weight"],
