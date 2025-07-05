@@ -1,6 +1,6 @@
 import torch
-from compress.common.functional import (
-    hoyer_sparsity,
+from compress.functional import (
+    l1_l2_ratio,
     scad,
 )
 from typing import Dict, Any, Type, Callable
@@ -17,8 +17,8 @@ from compress.sparsity.sparse_ops import (
 )
 
 
-_vmapped_hoyer_sparsity = torch.vmap(
-    hoyer_sparsity,
+_vmapped_l1_l2_ratio = torch.vmap(
+    l1_l2_ratio,
     in_dims=0,  # batch over dimension 0 of the input
     out_dims=0,  # collect the scalar outputs into dim 0 of a vector
 )  # (n_groups, m_elements_per_group) -> (n_groups,)
@@ -33,7 +33,7 @@ class L1L2IntraRatioRegularizer:
         self, param: torch.Tensor, grouper: Type[OutChannelGroupingGrouperConv2d]
     ) -> torch.Tensor:
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-        return _vmapped_hoyer_sparsity(grouped, normalize=False)
+        return _vmapped_l1_l2_ratio(grouped, normalize=False)
 
 
 class SCADIntraRegularizer:
@@ -55,16 +55,14 @@ class L1L2InterRatioRegularizer:
     ) -> torch.Tensor:
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
         l2 = (lambda x: torch.sqrt(torch.sum(x**2, dim=-1)))(grouped)
-        return hoyer_sparsity(l2, False)  # (n_groups,)
+        return l1_l2_ratio(l2, False)  # (n_groups,)
 
 
-def hoyer_sparsity_for_all_modules(
+def l1_l2_ratio_for_all_modules(
     param: torch.Tensor, grouper: Type[OutChannelGroupingGrouperConv2d], **kwargs
 ) -> torch.Tensor:
     grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-    return _vmapped_hoyer_sparsity(
-        grouped, **kwargs
-    )  # (n_groups, m_elements_per_group)
+    return _vmapped_l1_l2_ratio(grouped, **kwargs)  # (n_groups, m_elements_per_group)
 
 
 def get_regularizer_for_all_layers(
@@ -188,7 +186,7 @@ class L1L2ActivationInterRegularizer:
             ], "For Linear layers, the activation should have only one batch axis, got {}".format(
                 batch_axes
             )
-        return hoyer_sparsity(norm, normalize=False)  # scalar
+        return l1_l2_ratio(norm, normalize=False)  # scalar
 
 
 class SparsityActivationRegularizer:

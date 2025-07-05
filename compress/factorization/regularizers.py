@@ -1,7 +1,7 @@
 import torch
-from compress.common.functional import (
-    hoyer_sparsity,
-    squared_hoyer_sparsity,
+from compress.functional import (
+    l1_l2_ratio,
+    squared_l1_l2_ratio,
     DEFAULT_NORMALIZE,
     scad,
 )
@@ -48,18 +48,18 @@ def safe_svals(input: torch.Tensor) -> torch.Tensor:
     return SafeSvals.apply(input)
 
 
-def singular_values_hoyer_sparsity(
+def singular_values_l1_l2_ratio(
     input: torch.Tensor, normalize=DEFAULT_NORMALIZE
 ) -> torch.Tensor:
     singular_values = safe_svals(input)
-    return hoyer_sparsity(singular_values, normalize)
+    return l1_l2_ratio(singular_values, normalize)
 
 
-def singular_values_squared_hoyer_sparsity(
+def singular_values_squared_l1_l2_ratio(
     input: torch.Tensor, normalize=DEFAULT_NORMALIZE
 ) -> torch.Tensor:
     singular_values = safe_svals(input)
-    return squared_hoyer_sparsity(singular_values, normalize)
+    return squared_l1_l2_ratio(singular_values, normalize)
 
 
 def singular_values_scad(
@@ -96,8 +96,8 @@ def orthogonal_regularizer(
 # Pairs (fn, sgn) where sgn is -1 if the metric should be minimized, 1 if maximized
 _regularizers = {
     "entropy": lambda **kwargs: (lambda x, **kwargs: singular_values_entropy(x), -1.0),
-    "hoyer_sparsity": lambda **kwargs: (
-        lambda x, **kwargs: singular_values_hoyer_sparsity(
+    "l1_l2_ratio": lambda **kwargs: (
+        lambda x, **kwargs: singular_values_l1_l2_ratio(
             x, kwargs.get("normalize", DEFAULT_NORMALIZE)
         ),
         -1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else 1.0,
@@ -108,8 +108,8 @@ _regularizers = {
         ),
         -1.0,
     ),
-    "squared_hoyer_sparsity": lambda **kwargs: (
-        lambda x, **kwargs: singular_values_squared_hoyer_sparsity(
+    "squared_l1_l2_ratio": lambda **kwargs: (
+        lambda x, **kwargs: singular_values_squared_l1_l2_ratio(
             x, kwargs.get("normalize", DEFAULT_NORMALIZE)
         ),
         -1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else 1.0,
