@@ -5,7 +5,9 @@ import torch
 DEFAULT_NORMALIZE = False
 
 
-def hoyer_sparsity(input: torch.Tensor, normalize=DEFAULT_NORMALIZE) -> torch.Tensor:
+def l1_l2_ratio(
+    input: torch.Tensor, normalize=DEFAULT_NORMALIZE
+) -> torch.Tensor:  # aka hoyer sparsity
     # Metric to measure sparsity of the singular values. Taken from https://arxiv.org/abs/cs/0408058.
     # The paper introduces it in its normalized form (from 0 to 1, where 1 is the most sparse), but it can also be used in its non-normalized form (R^+, where 0 is the most sparse).
     n = input.numel()
@@ -21,10 +23,10 @@ def hoyer_sparsity(input: torch.Tensor, normalize=DEFAULT_NORMALIZE) -> torch.Te
     )
 
 
-def squared_hoyer_sparsity(
+def squared_l1_l2_ratio(
     input: torch.Tensor, normalize=DEFAULT_NORMALIZE
 ) -> torch.Tensor:
-    return hoyer_sparsity(input, normalize) ** 2
+    return l1_l2_ratio(input, normalize) ** 2
 
 
 _reductions = {

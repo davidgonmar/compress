@@ -111,12 +111,13 @@ class LowRankLinear(nn.Module):
 
     def from_linear_activation(
         linear: nn.Linear,
-        act_cov_mat_chol: torch.Tensor,  # shape (in_features, in_features). Result of cholesky factorization of the input activations covariance matrix (X @ X^T) = L @ L^T
+        whitening_matrix: torch.Tensor,  # shape (in_features, in_features)
+        whitening_matrix_inverse: torch.Tensor,  # shape (in_features, in_features)
         keep_metric: dict[str, float],
     ):
         # adapted from https://arxiv.org/abs/2403.07378
         W, b = linear.weight, linear.bias
-        U, S, V_T = torch.linalg.svd(W @ act_cov_mat_chol, full_matrices=True)
+        U, S, V_T = torch.linalg.svd(W @ whitening_matrix, full_matrices=True)
         rank = 0
         if keep_metric["name"] == "rank_ratio_to_keep":
             rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
@@ -142,9 +143,8 @@ class LowRankLinear(nn.Module):
         if mem_low_rank >= mem_orig:
             return linear
 
-        act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
         W0 = U[:, :rank] @ S
-        W1 = V_T[:rank, :] @ act_cov_mat_cholinv
+        W1 = V_T[:rank, :] @ whitening_matrix_inverse
         low_rank_linear = LowRankLinear(
             linear.weight.shape[1],
             linear.weight.shape[0],
@@ -278,14 +278,15 @@ class LowRankConv2d(nn.Module):
 
     def from_conv2d_activation(
         conv2d: nn.Conv2d,
-        act_cov_mat_chol: torch.Tensor,  # shape (i * h * w)^2. Result of cholesky factorization of the input activations covariance matrix (X @ X^T) = L @ L^T
+        whitening_matrix: torch.Tensor,  # shape (i * h * w, i * h * w)
+        whitening_matrix_inverse: torch.Tensor,  # shape (i * h * w, i * h * w)
         keep_metric: dict[str, float],
     ):
         # adapted from https://arxiv.org/abs/2403.07378
         W, b = conv2d.weight, conv2d.bias
         o, i, h, w = W.shape
         U, S, V_T = torch.linalg.svd(
-            act_cov_mat_chol @ W.permute(1, 2, 3, 0).reshape(i * h * w, o),
+            whitening_matrix_inverse @ W.permute(1, 2, 3, 0).reshape(i * h * w, o),
             full_matrices=True,
         )
         rank = 0
@@ -304,12 +305,11 @@ class LowRankConv2d(nn.Module):
         mem_low_rank = rank * (i * h * w + o)
         if mem_low_rank >= mem_orig:
             return conv2d
-        act_cov_mat_cholinv = torch.linalg.inv(act_cov_mat_chol)
         W0 = (
             ((U[:, :rank] @ S).reshape(i, h, w, rank).permute(3, 0, 1, 2)).reshape(
                 rank, -1
             )
-            @ act_cov_mat_cholinv.T
+            @ whitening_matrix.T
         ).reshape(
             rank, i, h, w
         )  # shape = (rank, i, h, w)

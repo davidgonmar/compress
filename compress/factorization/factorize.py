@@ -1,10 +1,8 @@
 import torch.nn as nn
-from typing import Callable
 from tqdm import tqdm
 from compress.factorization.low_rank_ops import LowRankLinear, LowRankConv2d
-from compress.common import (
+from compress.utils import (
     gather_submodules,
-    default_should_do,
     keys_passlist_should_do,
     cls_passlist_should_do,
 )
@@ -13,7 +11,9 @@ import copy
 import torch
 from typing import Dict
 import functools
-from dataclasses import dataclass
+from .lp_utils import maximize_energy
+from compress.utils import replace_with_factory
+from compress.utils import is_conv2d, is_linear
 
 
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
@@ -28,18 +28,14 @@ def conv2d_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
 
 
 _module_to_reshaper = {
-    (nn.Linear, "weight"): default_tensor_to_matrix_reshape,
-    (nn.LazyLinear, "weight"): default_tensor_to_matrix_reshape,
-    (nn.Conv2d, "weight"): conv2d_to_matrix_reshape,
+    (nn.Linear): default_tensor_to_matrix_reshape,
+    (nn.LazyLinear): default_tensor_to_matrix_reshape,
+    (nn.Conv2d): conv2d_to_matrix_reshape,
 }
 
 
-def extract_weights_and_reshapers(
-    model, cls_list, additional_check=lambda *args: True, keywords="weight"
-):
-    params = extract_weights(
-        model, cls_list, additional_check, keywords, ret_module=True
-    )
+def extract_weights_and_reshapers(model, cls_list, additional_check=lambda *args: True):
+    params = extract_weights(model, cls_list, additional_check, ret_module=True)
     modules_and_names = [(name, module) for (name, module), param in params]
     reshapers_status = [
         (
@@ -65,7 +61,7 @@ def extract_weights_and_reshapers(
         )
 
     return [
-        (param, _module_to_reshaper[(module.__class__, name.split(".")[-1])])
+        (param, _module_to_reshaper[(module.__class__)])
         for (name, module), param in params
     ]
 
@@ -130,12 +126,80 @@ def all_same_params_ratio(
     return di
 
 
+# ==========================================================================================================
+# These functions generate a vector with the costs of keeping a certain rank R approximation for each layer.
+# ==========================================================================================================
+def generate_cost_flops_linear(weight_shape: tuple, out_shape: tuple) -> torch.Tensor:
+    # A decomposed linear layer has shapes W_0 in [O, R] and W_1 in [R, I], input in [B, I] and output in [B, O]
+    # flops(R) = min(B * R * (I + O), B * I * O)
+    R = torch.arange(1, min(weight_shape[0], weight_shape[1]) + 1, 1)
+    O, I = weight_shape
+    B = out_shape[0]
+    return B * torch.min(R * (I + O), I * O)
+
+
+def generate_cost_flops_conv2d(filter_shape: tuple, out_shape: tuple):
+    # A factorized convolution has shape
+    # W_0 in [R, C_in, H_k, W_k] and W_1 in [C_out, R, 1, 1]
+    # flops_1(R) = B * R * H_out * W_out * C_in * H_k * W_k + B * C_out * R * H_out * W_out = B * R * H_out * W_out * (C_in * H_k * W_k + C_out)
+    # flops_2(R) = B * C_out * H_out * W_out * C_in * H_k * W_k
+    # flops(R) = min(flops_1(R), flops_2(R))
+    R = torch.arange(
+        1,
+        min(filter_shape[0], filter_shape[1] * filter_shape[2] * filter_shape[3]) + 1,
+        1,
+    )
+    C_out, C_in, H_k, W_k = filter_shape
+    B, H_out, W_out = out_shape[0], out_shape[2], out_shape[3]
+    return B * torch.min(
+        R * H_out * W_out * (C_in * H_k * W_k + C_out),
+        C_out * H_out * W_out * H_k * W_k * C_in,
+    )
+
+
+def generate_cost_params_linear(weight_shape: tuple) -> torch.Tensor:
+    # A decomposed linear layer has shapes W_0 in [O, R] and W_1 in [R, I]
+    # params(R) = min(R * (I + O), I * O)
+    r_vec = torch.arange(1, min(weight_shape[0], weight_shape[1]) + 1, 1)
+    O, I = weight_shape
+    return torch.min(
+        r_vec * (I + O),
+        I * O,
+    )
+
+
+def generate_cost_params_conv2d(filter_shape: tuple) -> torch.Tensor:
+    # A decomposed convolution has shapes W_0 in [R, C_in, H_k, W_k] and W_1 in [C_out, R, 1, 1]
+    # params_1(R) = R * (C_in * H_k * W_k + C_out)
+    # params_2(R) = C_out * C_in * H_k * W_k
+    R = torch.arange(
+        1,
+        min(filter_shape[0], filter_shape[1] * filter_shape[2] * filter_shape[3]) + 1,
+        1,
+    )
+
+    C_out, C_in, H_k, W_k = filter_shape
+    return torch.min(
+        R * (C_in * H_k * W_k + C_out),
+        C_out * C_in * H_k * W_k,
+    )
+
+
 def to_low_rank_manual(
     model: nn.Module,
     inplace=True,
     cfg_dict: Dict[str, Dict[str, float]] = None,
-    verbose=False,
 ):
+    """
+    Converts a model to low-rank by replacing its linear and convolutional layers with low-rank approximations.
+
+    Args:
+        model (nn.Module): The model to convert.
+        inplace (bool): If True, modifies the model in place. If False, returns a copy of the model with low-rank layers.
+        cfg_dict (Dict[str, Dict[str, float]]): A dictionary where keys are module names and values are dictionaries with configuration parameters for low-rank approximation.
+    Returns:
+        nn.Module: The modified model with low-rank layers.
+    """
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -144,201 +208,41 @@ def to_low_rank_manual(
         should_do=keys_passlist_should_do(cfg_dict.keys()),
     )
 
-    for name, module in tqdm(
-        modules_to_replace, desc="Replacing modules", disable=not verbose
-    ):
-        parent_module = model
-        *parent_path, attr_name = name.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-        setattr(
-            parent_module,
-            attr_name,
-            (
-                LowRankLinear.from_linear(
-                    module,
-                    cfg_dict[name],
-                )
-                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-                else (
-                    LowRankConv2d.from_conv2d(
-                        module,
-                        cfg_dict[name],
-                    )
-                    if isinstance(module, nn.Conv2d)
-                    or isinstance(module, nn.LazyConv2d)
-                    else module
-                )
-            ),
-        )
+    def factory_fn(name, module):
+        if is_linear(module):
+            return LowRankLinear.from_linear(module, cfg_dict[name])
+        elif is_conv2d(module):
+            return LowRankConv2d.from_conv2d(module, cfg_dict[name])
+        else:
+            return module
+
+    replace_with_factory(model, modules_to_replace, factory_fn)
     return model
 
 
-def plot_singular_values(model: nn.Module, should_do: Callable = default_should_do):
-    import matplotlib.pyplot as plt
-
-    mods_and_reshapers = extract_weights_and_reshapers(
-        model, cls_list=[nn.Linear, nn.Conv2d]
-    )[:2]
-    num_plots = len(mods_and_reshapers)
-
-    if num_plots == 0:
-        print("No applicable layers found for singular value decomposition.")
-        return
-
-    cols = min(3, num_plots)  # Max 3 columns for readability
-    rows = (num_plots + cols - 1) // cols  # Compute rows needed
-
-    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
-    axes = axes.flatten() if num_plots > 1 else [axes]
-
-    for i, (param, reshaper) in enumerate(mods_and_reshapers):
-        weight = param.data
-        reshaped_weight = reshaper(weight)
-        U, S, V = torch.svd(reshaped_weight)
-        # nornmalize singular values
-        S = S / S[0]
-
-        axes[i].plot(S.cpu().numpy())
-        axes[i].set_xlabel("Singular value index")
-        axes[i].set_ylabel("Singular value")
-        axes[i].set_title(f"Layer {i + 1}")
-
-    for j in range(i + 1, len(axes)):
-        fig.delaxes(axes[j])
-
-    plt.suptitle("Singular values of the model")
-    plt.tight_layout()
-    plt.show()
-    print("Done plotting singular values")
-
-
-def maximize_energy_pulp(
-    cum_energy_vectors, cumulative_cost_vectors, total_cost, minimize=False
-):
-    import pulp
-
-    # We are given N vectors of cumulative energies and of cumulative vectors. We want to, by selecting a (cumulative)
-    # subset of indices from each vector (cumulative in the sense that if j is chosen, all(j' < j) are also chosen), maximize
-    # the sum of energies at the selected indices such that the sum of the cumulative costs at the selected indices is less than or equal to the total cost.
-
-    # Let x_{i, j} be a binary variable indicating whether the j-th index in the i-th vector is selected.
-    # Then, we want to maximize sum_{i, j} x_{i, j} * cum_energy_vectors[i][j] subject to the constraints:
-    # 1. sum_{j} x_{i, j} = 1 for all i
-    # 2. sum_{i, j} j * x_{i, j} * cost_vectors[i][j] <= total_cost
-
-    prob = (
-        pulp.LpProblem("MaximizeEnergy", pulp.LpMaximize)
-        if not minimize
-        else pulp.LpProblem("MinimizeEnergy", pulp.LpMinimize)
-    )
-
-    selection_vars = {}
-    for vec_idx, vec in enumerate(cum_energy_vectors):
-        for idx in range(len(vec)):
-            selection_vars[(vec_idx, idx)] = pulp.LpVariable(
-                f"x_{vec_idx}_{idx}", cat="Binary"
-            )
-    prob += pulp.lpSum(
-        selection_vars[(vec_idx, idx)] * cum_energy_vectors[vec_idx][idx].item()
-        for vec_idx, vec in enumerate(cum_energy_vectors)
-        for idx in range(len(vec))
-    )
-
-    prob += (
-        pulp.lpSum(
-            selection_vars[(vec_idx, idx)]
-            * cumulative_cost_vectors[vec_idx][idx].item()
-            for vec_idx, vec in enumerate(cum_energy_vectors)
-            for idx in range(len(vec))
-        )
-        <= total_cost
-    )
-    for vec_idx, vec in enumerate(cum_energy_vectors):
-        prob += (
-            pulp.lpSum(selection_vars[(vec_idx, idx)] for idx in range(len(vec))) == 1
-        )
-
-    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=60))
-
-    selected_indices = {}
-    for vec_idx, vec in enumerate(cum_energy_vectors):
-        sel = [pulp.value(selection_vars[(vec_idx, idx)]) for idx in range(len(vec))]
-        selected_indices[vec_idx] = torch.argmax(torch.tensor(sel)).item()
-
-    print("Time to solve:", prob.solutionTime)
-    print("Status:", pulp.LpStatus[prob.status])
-    print("Objective value:", pulp.value(prob.objective))
-    print("Exhausted metric:")
-    # prints the total used cost
-    print(
-        sum(
-            cumulative_cost_vectors[i][selected_indices[i]].item()
-            for i in range(len(cum_energy_vectors))
-        )
-    )
-    return selected_indices
-
-
-def generate_cost_flops_linear(mat, size):
-    # generates a vector of length s.shape[0]
-    # where each element is the cost of selecting the corresponding singular value
-    # in the context of a linear layer
-
-    # a decomposed linear layer has shapes W_o in [O, R] and W_i in [R, I]
-    # flops(R) = B * I * R + O * R
-
-    r_vec = torch.arange(1, min(mat.shape[0], mat.shape[1]) + 1, 1)
-    i, o = mat.shape
-    return r_vec * (i + o)
-
-
-def generate_cost_flops_conv2d(mat, out_size):
-    # a separated convolution requires
-    # flops(R) = R * C_in * H_k * W_k * H_out * W_out + C_out * R * H_out * W_out = R * H_out * W_out * (C_in * H_k * W_k + C_out)
-
-    R = torch.arange(
-        1, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]) + 1, 1
-    )
-
-    C_out, C_in, H_k, W_k = mat.shape
-    H_out, W_out = out_size[2], out_size[3]
-
-    return R * H_out * W_out * (C_in * H_k * W_k + C_out)
-
-
-def generate_cost_params_linear(mat, size):
-    # instead of flops, takes into account the number of parameters
-    # a decomposed linear layer has shapes W_o in [O, R] and W_i in [R, I]
-    # params(R) = R * (I + O)
-    r_vec = torch.arange(1, min(mat.shape[0], mat.shape[1]) + 1, 1)
-    i, o = mat.shape
-    return r_vec * (i + o)
-
-
-def generate_cost_params_conv2d(mat, out_size):
-    # instead of flops, takes into account the number of parameters
-    # a separated convolution requires
-    # params(R) = R * C_in * H_k * W_k + C_out * R
-    R = torch.arange(
-        1, min(mat.shape[0], mat.shape[1] * mat.shape[2] * mat.shape[3]) + 1, 1
-    )
-
-    C_out, C_in, H_k, W_k = mat.shape
-    return R * (C_in * H_k * W_k + C_out)
-
-
-# Given a total rank ratio, estimates the rank ratio for each layer
-def to_low_rank_global(
+def to_low_rank_auto(
     model: nn.Module,
+    metric: str,
     ratio_to_keep,
     keys,
     sample_input,
     bn_keys=None,
-    metric="flops",
     inplace=True,
-    **kwargs,
 ):
+    """
+    Converts a model to low-rank by replacing its linear and convolutional layers with low-rank approximations.
+    Args:
+        model (nn.Module): The model to convert.
+        metric (str): The metric to use for low-rank approximation. Can be "rank", "flops", or "params".
+        ratio_to_keep (float): The ratio of the metric to keep (e.g., 0.5 means keep 50% of the metric).
+        keys (list): A list of keys to identify the modules to replace.
+        sample_input (torch.Tensor): A sample input tensor to the model, used to determine output sizes of layers.
+        bn_keys (list, optional): A list of tuples containing (conv_name, bn_name) pairs for batch normalization layers. Defaults to None.
+        inplace (bool): If True, modifies the model in place. If False, returns a copy of the model with low-rank layers.
+    Returns:
+        nn.Module: The modified model with low-rank layers.
+    """
+
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -385,7 +289,8 @@ def to_low_rank_global(
             weight = module.weight.detach()
             reshapeds.append(weight)
         elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
-            reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
+            C_o, C_i, H_k, W_k = module.weight.shape
+            reshaped = module.weight.reshape(C_o, C_i * H_k * W_k)
             weight = reshaped.detach()
             reshapeds.append(reshaped)
         else:
@@ -429,40 +334,34 @@ def to_low_rank_global(
     mods = [mod for _, mod in modules_to_replace]
     # costs
     if metric == "rank":
-        costs = [torch.arange(0, len(energy), 1) for energy in cum_energies]
+        costs = [torch.arange(1, len(energy) + 1, 1) for energy in cum_energies]
         costs = [torch.cumsum(cost, 0) for cost in costs]
     elif metric == "flops":
         costs = [
             (
-                generate_cost_flops_linear(w, out_size)
+                generate_cost_flops_linear(w.shape, out_size)
                 if isinstance(mod, nn.Linear)
-                else generate_cost_flops_conv2d(w, out_size)
+                else generate_cost_flops_conv2d(w.shape, out_size)
             )
-            / 1000000
             for w, out_size, mod in zip(ws, sizes, mods)
         ]
     elif metric == "params":
         costs = [
             (
-                generate_cost_params_linear(w, out_size)
+                generate_cost_params_linear(w.shape, out_size)
                 if isinstance(mod, nn.Linear)
-                else generate_cost_params_conv2d(w, out_size)
+                else generate_cost_params_conv2d(w.shape, out_size)
             )
             for w, out_size, mod in zip(ws, sizes, mods)
         ]
-
-    # print("lengths of costs")
-    # print([len(cost) for cost in cum_costs])
-    # print("lengths of energies")
-    # print([len(energy) for energy in cum_energies])
     if metric == "rank":
-        n_rank_to_keep = sum(len(energy) for energy in cum_energies) * ratio_to_keep
+        n_to_keep = sum(len(energy) for energy in cum_energies) * ratio_to_keep
     elif metric == "flops":
-        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
+        n_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
     elif metric == "params":
-        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
+        n_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
 
-    selected_indices = maximize_energy_pulp(cum_energies, costs, n_rank_to_keep)
+    selected_indices = maximize_energy(cum_energies, costs, n_to_keep)
 
     selected_indices_per_module = {}
     for i, (name, module) in enumerate(modules_to_replace):
@@ -472,278 +371,26 @@ def to_low_rank_global(
         else:
             selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
 
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+    def factory_fn(name, module):
         parent_module = model
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-        # print("Replacing", name, "ratio=", selected_indices_per_module[name])
-        setattr(
-            parent_module,
-            attr_name,
-            (
-                LowRankLinear.from_linear(
-                    module,
-                    keep_metric={
-                        "name": "rank_ratio_to_keep",
-                        "value": selected_indices_per_module[name],
-                    },
-                )
-                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-                else LowRankConv2d.from_conv2d(
-                    module,
-                    keep_metric={
-                        "name": "rank_ratio_to_keep",
-                        "value": selected_indices_per_module[name],
-                    },
-                )
-            ),
-        )
-
-    return model
-
-
-@dataclass
-class TaylorEstimationInfo:
-    mean_grads: Dict[str, torch.Tensor]
-    mean_grads_squareds: Dict[str, torch.Tensor]
-
-
-def get_taylor_estimation_info(
-    model: nn.Module, dataloader: torch.utils.data.DataLoader
-) -> TaylorEstimationInfo:
-    device = next(model.parameters()).device
-    criterion = nn.CrossEntropyLoss(reduction="sum")
-
-    sum_grads = {
-        n: torch.zeros_like(p, device=device) for n, p in model.named_parameters()
-    }
-    sum_grads_sq = {
-        n: torch.zeros_like(p, device=device) for n, p in model.named_parameters()
-    }
-
-    model.eval()
-    for batch in tqdm(dataloader, desc="Accumulating grads"):
-        model.zero_grad()
-        if isinstance(batch, dict):
-            batch = {k: v.to(device) for k, v in batch.items()}
-            assert (
-                batch["input_ids"].shape[0] == 1
-            ), "Batch size should be 1 for Fisher estimation"
-            outputs = model(batch["input_ids"], attention_mask=batch["attention_mask"])
-            loss = criterion(outputs.logits, batch["label"])
-        else:
-            inputs, targets = batch
-            assert inputs.shape[0] == 1, "Batch size should be 1 for Fisher estimation"
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-        loss.backward()
-        with torch.no_grad():
-            for name, param in model.named_parameters():
-                g = param.grad.detach()
-                sum_grads[name] += g
-                sum_grads_sq[name] += g.pow(2)
-
-    N = len(dataloader)
-    mean_grads = {n: g / N for n, g in sum_grads.items()}
-    mean_grads_squareds = {n: g2 / N for n, g2 in sum_grads_sq.items()}
-
-    model.zero_grad()
-    model.eval()
-
-    return TaylorEstimationInfo(
-        mean_grads=mean_grads, mean_grads_squareds=mean_grads_squareds
-    )
-
-
-def to_low_rank_global2(
-    model: nn.Module,
-    dataloader,
-    taylor_estimation_info: TaylorEstimationInfo,
-    keys,
-    sample_input,
-    ratio_to_keep,
-    metric: str = "flops",
-    inplace: bool = True,
-    **kwargs,
-):
-    """
-    Taylor-based global low-rank compression (version 2) with the same cost logic
-    used in `to_low_rank_global`.  *Energy logic is untouched.*
-    """
-    import copy
-    import torch
-    from tqdm import tqdm
-
-    if not inplace:
-        model = copy.deepcopy(model)
-
-    # --- gather candidate modules -------------------------------------------------
-    modules_to_replace = gather_submodules(
-        model,
-        should_do=keys_passlist_should_do(keys),
-    )
-
-    # --- record output shapes needed to estimate FLOPs/params ---------------------
-    sizes, hooks = [], []
-
-    def _hook_fn(module, _inp, output):
-        if isinstance(module, (nn.Conv2d, nn.LazyConv2d, nn.Linear, nn.LazyLinear)):
-            sizes.append(output.shape)
-        else:  # should never happen
-            raise ValueError("Unsupported module type inside _hook_fn")
-
-    for _name, module in modules_to_replace:
-        hooks.append(module.register_forward_hook(_hook_fn))
-
-    rand_inp = sample_input.to(next(model.parameters()).device)
-
-    prev_state = model.training
-
-    model.eval()
-    with torch.no_grad():
-        model(rand_inp)
-
-    for h in hooks:
-        h.remove()
-
-    model.train(prev_state)
-
-    assert len(sizes) == len(
-        modules_to_replace
-    ), "`sizes` and `modules_to_replace` length mismatch"
-
-    cum_energies = []
-    ws, mods = [], []
-
-    for name, module in modules_to_replace:
-        # store raw weights for cost estimation later
-        ws.append(module.weight.detach())
-        mods.append(module)
-
-        if isinstance(module, (nn.Linear, nn.LazyLinear)):
-            weight = module.weight.detach()
-        else:  # Conv2d / LazyConv2d
-            weight = _module_to_reshaper[(module.__class__, "weight")](module.weight)
-
-        U, S, V = torch.linalg.svd(weight)
-        k = min(U.shape[1], V.shape[0])
-        U, V, S = U[:, :k], V[:k, :], S[:k]
-
-        gradsq = taylor_estimation_info.mean_grads_squareds[name + ".weight"]
-        if isinstance(module, (nn.Conv2d, nn.LazyConv2d)):
-            gradsq = _module_to_reshaper[(module.__class__, "weight")](gradsq)
-
-        # = sigma_i u_i v_i^t
-        # todo -- efficiently compute this
-        sum_sigma_u_v = torch.zeros((k, *gradsq.shape), device=gradsq.device)
-        for i in range(k):
-            sum_sigma_u_v[i] = S[i] * torch.outer(U[:, i], V[i, :])
-
-        cum_sum_sigma_u_v = torch.cumsum(sum_sigma_u_v, dim=0)
-        cum_sum_sigma_u_v_inv = cum_sum_sigma_u_v[-1] - cum_sum_sigma_u_v
-
-        uvgrads = torch.einsum("kmn,mn -> k", cum_sum_sigma_u_v_inv**2, gradsq)
-
-        cum_energies.append(uvgrads)
-
-    if metric == "rank":
-        costs = [torch.cumsum(torch.arange(len(e)), 0) for e in cum_energies]
-    elif metric == "flops":
-        costs = [
-            (
-                generate_cost_flops_linear(w, out_size)
-                if isinstance(m, (nn.Linear, nn.LazyLinear))
-                else generate_cost_flops_conv2d(w, out_size)
-            )
-            / 1_000_000
-            for w, out_size, m in zip(ws, sizes, mods)
-        ]
-    elif metric == "params":
-        costs = [
-            (
-                generate_cost_params_linear(w, out_size)
-                if isinstance(m, (nn.Linear, nn.LazyLinear))
-                else generate_cost_params_conv2d(w, out_size)
-            )
-            for w, out_size, m in zip(ws, sizes, mods)
-        ]
-    else:
-        raise ValueError(f"Unsupported metric: {metric}")
-
-    if metric == "rank":
-        total_budget = sum(len(e) for e in cum_energies) * ratio_to_keep
-    else:
-        total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
-
-    selected_indices = maximize_energy_pulp(
-        cum_energies, costs, total_budget, minimize=True
-    )
-
-    selected_indices_per_module = {
-        name: (
-            1.0
-            if selected_indices[i] == -1
-            else selected_indices[i] / len(cum_energies[i])
-        )
-        for i, (name, _module) in enumerate(modules_to_replace)
-    }
-
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
-        parent_module = model
-        *parent_path, attr = name.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
         keep_ratio = selected_indices_per_module[name]
-
-        replacement = (
-            LowRankLinear.from_linear(
-                module, keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio}
+        if is_linear(module):
+            return LowRankLinear.from_linear(
+                module,
+                keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio},
             )
-            if isinstance(module, (nn.Linear, nn.LazyLinear))
-            else LowRankConv2d.from_conv2d(
-                module, keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio}
+        elif is_conv2d(module):
+            return LowRankConv2d.from_conv2d(
+                module,
+                keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio},
             )
-        )
-        setattr(parent_module, attr, replacement)
+        else:
+            return module
 
-    return model
-
-
-def merge_back(model: nn.Module, inplace=True):
-    if not inplace:
-        model = copy.deepcopy(model)
-
-    def _sd(mod, name):
-        return isinstance(mod, LowRankLinear) or isinstance(mod, LowRankConv2d)
-
-    modules_to_replace = gather_submodules(
-        model,
-        should_do=_sd,
-    )
-    # print("mods to replace", list(modules_to_replace))
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
-        parent_module = model
-        *parent_path, attr_name = name.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
-        setattr(
-            parent_module,
-            attr_name,
-            (
-                LowRankLinear.to_linear(module)
-                if isinstance(module, LowRankLinear)
-                else (
-                    LowRankConv2d.to_conv2d(module)
-                    if isinstance(module, LowRankConv2d)
-                    else module
-                )
-            ),
-        )
-
+    replace_with_factory(model, modules_to_replace, factory_fn)
     return model
 
 
@@ -753,6 +400,7 @@ def to_low_rank_manual_activation_aware(
     inplace=True,
     cfg_dict=None,
 ):
+
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -1044,7 +692,7 @@ def to_low_rank_activation_aware_global(
     elif metric == "params":
         n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
 
-    selected_indices = maximize_energy_pulp(cum_energies, costs, n_rank_to_keep)
+    selected_indices = maximize_energy(cum_energies, costs, n_rank_to_keep)
     selected_indices_per_module = {}
     for i, (name, module) in enumerate(modules_to_replace):
         selected_idx = selected_indices[i]
