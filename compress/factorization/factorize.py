@@ -131,7 +131,10 @@ def all_same_params_ratio(
 
 
 def to_low_rank_manual(
-    model: nn.Module, inplace=True, cfg_dict: Dict[str, Dict[str, float]] = None
+    model: nn.Module,
+    inplace=True,
+    cfg_dict: Dict[str, Dict[str, float]] = None,
+    verbose=False,
 ):
     if not inplace:
         model = copy.deepcopy(model)
@@ -141,12 +144,13 @@ def to_low_rank_manual(
         should_do=keys_passlist_should_do(cfg_dict.keys()),
     )
 
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+    for name, module in tqdm(
+        modules_to_replace, desc="Replacing modules", disable=not verbose
+    ):
         parent_module = model
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-
         setattr(
             parent_module,
             attr_name,
@@ -961,12 +965,11 @@ def to_low_rank_activation_aware_global(
     cum_energies = []
     for name, module in modules_to_replace:
         if isinstance(module, nn.Linear):
-            weight = module.weight.detach()  # shape (Cout, Cin)
+            weight = module.weight.detach().T  # shape (Cout, Cin)
         elif isinstance(module, nn.Conv2d):
             reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
-            weight = reshaped.detach().T  # shape (Cout, Cin * H_k * W_k)
-
-        aa = weight @ chols[module]
+            weight = reshaped.detach()  # shape (Cout, Cin * H_k * W_k)
+        aa = chols[module] @ weight
 
         # shape (Cout, Cin * H_k * W_k) @ (Cin * H_k * W_k, Cin * H_k * W_k) = (Cout, Cin * H_k * W_k) if conv
         # or (Cout, Cin) if linear
