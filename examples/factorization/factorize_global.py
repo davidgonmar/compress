@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from compress.factorization.factorize import (
-    to_low_rank_global,
+    to_low_rank_auto,
 )
 from compress.flops import count_model_flops
 from compress.experiments import (
@@ -25,7 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = load_vision_model(
     "resnet20",
-    pretrained_path="cifar10_resnet20_hoyer_finetuned.pth",
+    pretrained_path="resnet20.pth",
     strict=True,
     modifier_before_load=get_cifar10_modifier("resnet20"),
     modifier_after_load=None,
@@ -78,7 +78,7 @@ ratios = [
     0.95,
 ]
 for ratio in ratios:
-    model_lr = to_low_rank_global(
+    model_lr = to_low_rank_auto(
         model,
         sample_input=torch.randn((1, 3, 32, 32)).to(torch.float32).cuda(),
         ratio_to_keep=ratio,

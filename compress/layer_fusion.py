@@ -1,4 +1,4 @@
-from compress.common import (
+from compress.utils import (
     gather_submodules,
     keys_passlist_should_do,
 )
