@@ -6,7 +6,6 @@ from compress.factorization.factorize import (
     all_same_svals_energy_ratio,
     all_same_params_ratio,
     all_same_rank_ratio,
-    plot_singular_values,
 )
 from compress.flops import count_model_flops
 from compress.experiments import (
@@ -20,9 +19,7 @@ import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--load_from", type=str, default="cifar10_resnet20_hoyer_finetuned.pth"
-)
+parser.add_argument("--load_from", type=str, default="resnet20.pth")
 parser.add_argument("--vision-model", type=str, default="resnet20")
 parser.add_argument("--keep_edge_layer", action="store_true")
 parser.add_argument("--metric", type=str, default="energy")
@@ -116,9 +113,7 @@ params_ratio = [
     0.9,
 ]
 
-plot_singular_values(
-    model,
-)
+
 for x in (
     energies
     if args.metric == "energy"

@@ -14,6 +14,8 @@ import functools
 from .lp_utils import maximize_energy
 from compress.utils import replace_with_factory
 from compress.utils import is_conv2d, is_linear
+import math
+from typing import Callable
 
 
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
@@ -135,7 +137,7 @@ def generate_cost_flops_linear(weight_shape: tuple, out_shape: tuple) -> torch.T
     R = torch.arange(1, min(weight_shape[0], weight_shape[1]) + 1, 1)
     O, I = weight_shape
     B = out_shape[0]
-    return B * torch.min(R * (I + O), I * O)
+    return B * torch.minimum(R * (I + O), torch.tensor(I * O))
 
 
 def generate_cost_flops_conv2d(filter_shape: tuple, out_shape: tuple):
@@ -151,9 +153,9 @@ def generate_cost_flops_conv2d(filter_shape: tuple, out_shape: tuple):
     )
     C_out, C_in, H_k, W_k = filter_shape
     B, H_out, W_out = out_shape[0], out_shape[2], out_shape[3]
-    return B * torch.min(
+    return B * torch.minimum(
         R * H_out * W_out * (C_in * H_k * W_k + C_out),
-        C_out * H_out * W_out * H_k * W_k * C_in,
+        torch.tensor(C_out * H_out * W_out * H_k * W_k * C_in),
     )
 
 
@@ -162,9 +164,9 @@ def generate_cost_params_linear(weight_shape: tuple) -> torch.Tensor:
     # params(R) = min(R * (I + O), I * O)
     r_vec = torch.arange(1, min(weight_shape[0], weight_shape[1]) + 1, 1)
     O, I = weight_shape
-    return torch.min(
+    return torch.minimum(
         r_vec * (I + O),
-        I * O,
+        torch.tensor(I * O),
     )
 
 
@@ -179,16 +181,168 @@ def generate_cost_params_conv2d(filter_shape: tuple) -> torch.Tensor:
     )
 
     C_out, C_in, H_k, W_k = filter_shape
-    return torch.min(
+    return torch.minimum(
         R * (C_in * H_k * W_k + C_out),
-        C_out * C_in * H_k * W_k,
+        torch.tensor(C_out * C_in * H_k * W_k),
     )
+
+
+def get_rank_to_keep_from_rank_ratio(
+    X: torch.tensor, S: torch.Tensor, rank_ratio: float
+):
+    # truncates towards 0
+    assert 0.0 <= rank_ratio <= 1.0, "rank_ratio must be in [0, 1]"
+    k = math.ceil(S.shape[0] * rank_ratio)
+    return max(k, 1)
+
+
+def get_rank_to_keep_from_energy_ratio(
+    X: torch.Tensor, S: torch.Tensor, energy_ratio: float
+) -> int:
+    assert 0.0 <= energy_ratio <= 1.0
+    sq = S.pow(2)
+    cum_energy = sq.cumsum(dim=0)
+    total_energy = cum_energy[-1]
+    threshold = energy_ratio * total_energy
+    idx = torch.searchsorted(cum_energy, threshold)
+    return idx.item() + 1
+
+
+def get_rank_to_keep_from_param_number_ratio(
+    X: torch.Tensor,
+    S: torch.Tensor,
+    param_number_ratio: float,
+):
+    assert X.ndim == 2, "X must be 2-dimensional"
+    assert S.ndim == 1, "Singular values must be 1-dimensional"
+    m, n = X.shape
+    # A in R^{m x r}
+    # B in R^{r x n}
+    # So keeping a rank involves a total of m + n parameters
+    params_per_rank_kept = torch.arange(1, S.shape[0] + 1).float() * (m + n)
+    rel_params_per_rank_kept = params_per_rank_kept / params_per_rank_kept[-1]
+    rank_to_keep = torch.searchsorted(
+        rel_params_per_rank_kept, param_number_ratio
+    )  # rank_to_keep is the number of ranks to keep
+    return rank_to_keep.item() + 1
+
+
+rank_to_keep_name_to_fn = {
+    "rank_ratio_to_keep": get_rank_to_keep_from_rank_ratio,
+    "svals_energy_ratio_to_keep": get_rank_to_keep_from_energy_ratio,
+    "params_ratio_to_keep": get_rank_to_keep_from_param_number_ratio,
+}
+
+
+def reshape_linear(w: torch.Tensor) -> torch.Tensor:
+    assert w.dim() == 2, "Weight tensor must be 2D for linear layers"
+    return w.T
+
+
+def reshape_conv2d(w: torch.Tensor) -> torch.Tensor:
+    assert w.dim() == 4, "Weight tensor must be 4D for convolutional layers"
+    C_o, C_i, H_k, W_k = w.shape
+    return w.reshape(C_o, C_i * H_k * W_k).T  # reshape to [C_o, C_i * H_k * W_k]
+
+
+def get_reshape(module: nn.Module) -> callable:
+    """
+    Returns a function to reshape the weights of the module.
+    """
+    if is_linear(module):
+        return reshape_linear
+    elif is_conv2d(module):
+        return reshape_conv2d
+    else:
+        raise ValueError("Module should be either Linear or Conv2d")
+
+
+def decompose_params(w: torch.Tensor):
+    U, S, V_T = torch.linalg.svd(w, full_matrices=True)  # complete SVD
+    return U, S, V_T
+
+
+def crop_svd(U, S, V_T, rank):
+    return U[:, :rank], S[:rank], V_T[:rank, :]
+
+
+def get_factors(U, S, V_T):
+    W0 = U @ torch.diag(S)
+    W1 = V_T
+    return W0, W1
+
+
+def should_do_low_rank(W, rank):
+    # it can be proved that rank is memory efficient <=> rank is compute efficient
+    m, n = W.shape
+    cost_base = m * n
+    cost_low_rank = (m + n) * rank
+    return cost_low_rank < cost_base
+
+
+def factorize_linear(module, get_rank: Callable, factors=None):
+    W = module.weight.T  # shape (in, out)
+    if factors is None:
+        U, S, V_T = decompose_params(W)
+    else:
+        U, S, V_T = factors
+    rank = get_rank(W, U, S, V_T)
+    if not should_do_low_rank(W, rank):
+        return module
+    U, S, V_T = crop_svd(U, S, V_T, rank)
+    W0, W1 = get_factors(U, S, V_T)  # shape (in, rank), (out, rank)
+    low_rank_linear = LowRankLinear(
+        module.in_features,
+        module.out_features,
+        rank,
+        bias=module.bias is not None,
+    ).to(module.weight.device)
+    low_rank_linear.w0.data.copy_(W0)
+    low_rank_linear.w1.data.copy_(W1)
+    if module.bias is not None:
+        low_rank_linear.bias.data.copy_(module.bias)
+    return low_rank_linear
+
+
+def factorize_conv2d(module, get_rank: Callable, factors=None):
+    W = module.weight
+    C_o, C_i, H_k, W_k = W.shape
+    reshaped = W.reshape(C_o, C_i * H_k * W_k).T
+    if factors is None:
+        U, S, V_T = decompose_params(reshaped)
+    else:
+        U, S, V_T = factors
+    rank = get_rank(W, U, S, V_T)
+    if not should_do_low_rank(reshaped, rank):
+        return module
+    U, S, V_T = crop_svd(
+        U, S, V_T, rank
+    )  # [C_i * H_k * W_k, rank], [rank], [rank, C_o]
+    W0, W1 = get_factors(U, S, V_T)  # shape (C_i * H_k * W_k, rank), (rank, C_o)
+    W1 = W1.T.reshape(C_o, rank, 1, 1)
+    W0 = W0.T.reshape(rank, C_i, H_k, W_k)
+    low_rank_conv2d = LowRankConv2d(
+        module.in_channels,
+        module.out_channels,
+        (H_k, W_k),
+        rank,
+        stride=module.stride,
+        padding=module.padding,
+        dilation=module.dilation,
+        groups=module.groups,
+        bias=module.bias is not None,
+    ).to(module.weight.device)
+    low_rank_conv2d.w0.data.copy_(W0)
+    low_rank_conv2d.w1.data.copy_(W1)
+    if module.bias is not None:
+        low_rank_conv2d.bias.data.copy_(module.bias)
+    return low_rank_conv2d
 
 
 def to_low_rank_manual(
     model: nn.Module,
     inplace=True,
-    cfg_dict: Dict[str, Dict[str, float]] = None,
+    cfg_dict: Dict[str, Dict[str, float]] = {},
 ):
     """
     Converts a model to low-rank by replacing its linear and convolutional layers with low-rank approximations.
@@ -210,17 +364,28 @@ def to_low_rank_manual(
 
     def factory_fn(name, module):
         if is_linear(module):
-            return LowRankLinear.from_linear(module, cfg_dict[name])
+            return factorize_linear(
+                module,
+                lambda W, U, S, V_T: rank_to_keep_name_to_fn[cfg_dict[name]["name"]](
+                    W, S, cfg_dict[name]["value"]
+                ),
+            )
         elif is_conv2d(module):
-            return LowRankConv2d.from_conv2d(module, cfg_dict[name])
+            return factorize_conv2d(
+                module,
+                lambda W, U, S, V_T: rank_to_keep_name_to_fn[cfg_dict[name]["name"]](
+                    W, S, cfg_dict[name]["value"]
+                ),
+            )
         else:
             return module
 
+    modules_to_replace = {name: module for name, module in modules_to_replace}
     replace_with_factory(model, modules_to_replace, factory_fn)
     return model
 
 
-def to_low_rank_auto(
+def to_low_rank_global(
     model: nn.Module,
     metric: str,
     ratio_to_keep,
@@ -250,7 +415,6 @@ def to_low_rank_auto(
         model,
         should_do=keys_passlist_should_do(keys),
     )
-    reshapeds = []
 
     rand_inp = sample_input.to(next(model.parameters()).device)
 
@@ -284,25 +448,20 @@ def to_low_rank_auto(
         modules_to_replace
     ), "Sizes and modules to replace do not match"
 
-    def _get_cumulative_energies(module):
-        if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
-            weight = module.weight.detach()
-            reshapeds.append(weight)
-        elif isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
-            C_o, C_i, H_k, W_k = module.weight.shape
-            reshaped = module.weight.reshape(C_o, C_i * H_k * W_k)
-            weight = reshaped.detach()
-            reshapeds.append(reshaped)
-        else:
-            return None
+    reshaped_params = {
+        name: get_reshape(module)(module.weight.detach())
+        for name, module in modules_to_replace
+    }
+    factors = {
+        name: decompose_params(reshaped) for name, reshaped in reshaped_params.items()
+    }
 
-        vals = torch.linalg.svdvals(weight)
-        return torch.cumsum(vals**2, 0) / torch.sum(vals**2)  # range [0, 1]
+    cum_energies = {
+        name: (cs := torch.cumsum(factor[1] ** 2, dim=0)) / cs[-1]
+        for name, factor in factors.items()
+    }
 
-    cum_energies = [
-        _get_cumulative_energies(module) for _, module in modules_to_replace
-    ]
-
+    cum_energies = [cum_energies[name] for name, _ in modules_to_replace]
     if bn_keys:
         bn_stats = []
         # bn_keys is a collection of (conv_name, bn_name) pairs
@@ -348,9 +507,9 @@ def to_low_rank_auto(
     elif metric == "params":
         costs = [
             (
-                generate_cost_params_linear(w.shape, out_size)
+                generate_cost_params_linear(w.shape)
                 if isinstance(mod, nn.Linear)
-                else generate_cost_params_conv2d(w.shape, out_size)
+                else generate_cost_params_conv2d(w.shape)
             )
             for w, out_size, mod in zip(ws, sizes, mods)
         ]
@@ -363,42 +522,155 @@ def to_low_rank_auto(
 
     selected_indices = maximize_energy(cum_energies, costs, n_to_keep)
 
-    selected_indices_per_module = {}
-    for i, (name, module) in enumerate(modules_to_replace):
-        selected_idx = selected_indices[i]
-        if selected_idx == -1:
-            selected_indices_per_module[name] = 1.0
-        else:
-            selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
+    selected_indices_per_module = {
+        name: s for (name, _), s in zip(modules_to_replace, selected_indices)
+    }
 
     def factory_fn(name, module):
         parent_module = model
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-        keep_ratio = selected_indices_per_module[name]
+
         if is_linear(module):
-            return LowRankLinear.from_linear(
+            return factorize_linear(
                 module,
-                keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio},
+                lambda W, U, S, V_T: selected_indices_per_module[name],
+                factors=factors[name],
             )
         elif is_conv2d(module):
-            return LowRankConv2d.from_conv2d(
+            return factorize_conv2d(
                 module,
-                keep_metric={"name": "rank_ratio_to_keep", "value": keep_ratio},
+                lambda W, U, S, V_T: selected_indices_per_module[name],
+                factors=factors[name],
             )
         else:
             return module
 
+    modules_to_replace = {name: module for name, module in modules_to_replace}
     replace_with_factory(model, modules_to_replace, factory_fn)
     return model
 
 
+def obtain_whitening_matrix_cholesky(
+    acts: torch.Tensor,
+    module: nn.Module,
+):
+    """
+    Computes the whitening matrix for the given activations and module.
+    The whitening matrix is computed as the Cholesky decomposition of the covariance matrix of the activations.
+    """
+    if isinstance(module, nn.Conv2d):
+        # Input should be of shape (B, Cin, H, W)
+        assert acts.dim() == 4
+        im2coled = nn.functional.unfold(
+            acts,
+            kernel_size=module.kernel_size,
+            padding=module.padding,
+            stride=module.stride,
+        )  # shape (B, Cin * H_k * W_k, H_out * W_out)
+        im2coled = im2coled.permute(0, 2, 1).reshape(
+            im2coled.shape[0] * im2coled.shape[2], -1
+        )
+    elif isinstance(module, nn.Linear):
+        # Input should be of shape (B, Cin)
+        assert acts.dim() == 2
+        im2coled = acts
+    else:
+        raise ValueError("Module should be either Conv2d or Linear")
+
+    m = im2coled.T @ im2coled
+    m = m.double()
+    try:
+        chol = torch.linalg.cholesky(m)
+    except RuntimeError:
+        eigenvalues = torch.linalg.eigvalsh(m)
+        m = (-eigenvalues[0] + 1e-6) * torch.eye(m.shape[0]).to(m.device) + m
+        chol = torch.linalg.cholesky(m)
+    inv = torch.inverse(chol)
+    return inv.float(), chol.float()
+
+
+obtain_whitening_matrix = obtain_whitening_matrix_cholesky
+
+
+def factorize_linear_whitened(
+    module,
+    get_rank: Callable,
+    data_whitening_matrix,
+    data_whitening_matrix_inverse,
+    factors=None,
+):
+    W = module.weight.T
+    if factors is None:
+        U, S, V_T = decompose_params(data_whitening_matrix_inverse @ W)
+    else:
+        U, S, V_T = factors
+    rank = get_rank(W, U, S, V_T)
+    if not should_do_low_rank(W, rank):
+        return module
+    U, S, V_T = crop_svd(U, S, V_T, rank)
+    W0, W1 = get_factors(U, S, V_T)  # shape (in, rank), (out, rank)
+    W0 = data_whitening_matrix @ W0
+
+    low_rank_linear = LowRankLinear(
+        module.in_features,
+        module.out_features,
+        rank,
+        bias=module.bias is not None,
+    ).to(module.weight.device)
+    low_rank_linear.w0.data.copy_(W0)
+    low_rank_linear.w1.data.copy_(W1)
+    if module.bias is not None:
+        low_rank_linear.bias.data.copy_(module.bias)
+    return low_rank_linear
+
+
+def factorize_conv2d_whitened(
+    module,
+    get_rank: Callable,
+    data_whitening_matrix,
+    data_whitening_matrix_inverse,
+    factors=None,
+):
+    W = module.weight
+    C_o, C_i, H_k, W_k = W.shape
+    reshaped = W.reshape(C_o, C_i * H_k * W_k).T
+    # print(data_whitening_matrix_inverse @ data_whitening_matrix)
+    if factors is None:
+        U, S, V_T = decompose_params(data_whitening_matrix_inverse @ reshaped)
+    else:
+        U, S, V_T = factors
+    rank = get_rank(W, U, S, V_T)
+    if not should_do_low_rank(reshaped, rank):
+        return module
+    U, S, V_T = crop_svd(
+        U, S, V_T, rank
+    )  # [C_i * H_k * W_k, rank], [rank], [rank, C_o]
+    W0, W1 = get_factors(U, S, V_T)  # [C_i * H_k * W_k, rank], [rank, C_o]
+    W0 = data_whitening_matrix @ W0
+    W1 = W1.T.reshape(C_o, rank, 1, 1)
+    W0 = W0.T.reshape(rank, C_i, H_k, W_k)
+    low_rank_conv2d = LowRankConv2d(
+        module.in_channels,
+        module.out_channels,
+        (H_k, W_k),
+        rank,
+        stride=module.stride,
+        padding=module.padding,
+        dilation=module.dilation,
+        groups=module.groups,
+        bias=module.bias is not None,
+    ).to(module.weight.device)
+    low_rank_conv2d.w0.data.copy_(W0)
+    low_rank_conv2d.w1.data.copy_(W1)
+    if module.bias is not None:
+        low_rank_conv2d.bias.data.copy_(module.bias)
+    return low_rank_conv2d
+
+
 def to_low_rank_manual_activation_aware(
-    model: nn.Module,
-    dataloader,
-    inplace=True,
-    cfg_dict=None,
+    model: nn.Module, dataloader, inplace=True, cfg_dict={}
 ):
 
     if not inplace:
@@ -447,61 +719,40 @@ def to_low_rank_manual_activation_aware(
     model.train(prev_state)
 
     # get the cholesky decomposition of the covariance matrix of each activation im2col'ed in case of conv2d
-    chols = {}
-    for module, act in acts.items():
-        if isinstance(module, nn.Conv2d):
-            # Input should be of shape (B, Cin, H, W)
+    whit = {
+        name: obtain_whitening_matrix(acts[module], module)
+        for name, module in modules_to_replace
+    }
 
-            assert act.dim() == 4
-            im2coled = nn.functional.unfold(
-                act,
-                kernel_size=module.kernel_size,
-                padding=module.padding,
-                stride=module.stride,
-            )  # shape (B, Cin * H_k * W_k, H_out * W_out)
-            # shape (B * H_out * W_out, Cin * H_k * W_k)
-            im2coled = im2coled.permute(0, 2, 1).reshape(
-                im2coled.shape[0] * im2coled.shape[2], -1
-            )
-        elif isinstance(module, nn.Linear):
-            # Input should be of shape (B, Cin)
-            assert act.dim() == 2
-            im2coled = act
-        else:
-            raise ValueError("Module should be either Conv2d or Linear")
-
-        m = im2coled.T @ im2coled
-        m = m.double()
-        try:
-            chol = torch.linalg.cholesky(m)
-
-        except RuntimeError:
-            eigenvalues = torch.linalg.eigvalsh(m)
-            m = (-eigenvalues[0] + 1e-6) * torch.eye(m.shape[0]).to(m.device) + m
-            chol = torch.linalg.cholesky(m)
-
-        chols[module] = chol.float()
-
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+    def factory_fn(name, module):
         parent_module = model
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
 
-        setattr(
-            parent_module,
-            attr_name,
-            (
-                LowRankLinear.from_linear_activation(
-                    module, chols[module], cfg_dict[name]
-                )
-                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-                else LowRankConv2d.from_conv2d_activation(
-                    module, chols[module], cfg_dict[name]
-                )
-            ),
-        )
+        if is_linear(module):
+            return factorize_linear_whitened(
+                module,
+                lambda W, U, S, V_T: rank_to_keep_name_to_fn[cfg_dict[name]["name"]](
+                    W, S, cfg_dict[name]["value"]
+                ),
+                whit[name][0],
+                whit[name][1],
+            )
+        elif is_conv2d(module):
+            return factorize_conv2d_whitened(
+                module,
+                lambda W, U, S, V_T: rank_to_keep_name_to_fn[cfg_dict[name]["name"]](
+                    W, S, cfg_dict[name]["value"]
+                ),
+                whit[name][0],
+                whit[name][1],
+            )
+        else:
+            return module
 
+    modules_to_replace = {name: module for name, module in modules_to_replace}
+    replace_with_factory(model, modules_to_replace, factory_fn)
     return model
 
 
@@ -567,57 +818,16 @@ def to_low_rank_activation_aware_global(
 
     for hook in hooks:
         hook.remove()
-
-    # get the cholesky decomposition of the covariance matrix of each activation im2col'ed in case of conv2d
-    chols = {}
-    for name, module in modules_to_replace:
-        act = acts[name]
-        if isinstance(module, nn.Conv2d):
-            # Input should be of shape (B, Cin, H, W)
-
-            assert act.dim() == 4
-            im2coled = nn.functional.unfold(
-                act,
-                kernel_size=module.kernel_size,
-                padding=module.padding,
-                stride=module.stride,
-            )  # shape (B, Cin * H_k * W_k, H_out * W_out)
-            # shape (B * H_out * W_out, Cin * H_k * W_k)
-            im2coled = im2coled.permute(0, 2, 1).reshape(
-                im2coled.shape[0] * im2coled.shape[2], -1
-            )
-        elif isinstance(module, nn.Linear):
-            # Input should be of shape (B, Cin)
-            assert act.dim() == 2
-
-            im2coled = act
-        else:
-            raise ValueError("Module should be either Conv2d or Linear")
-
-        m = im2coled.T @ im2coled
-        m = m.double()
-        try:
-            chol = torch.linalg.cholesky(m)
-
-        except RuntimeError:
-            print("Cholesky failed, using eigvalsh")
-            eigenvalues = torch.linalg.eigvalsh(m)
-            m = (-eigenvalues[0] + 1e-6) * torch.eye(m.shape[0]).to(m.device) + m
-            chol = torch.linalg.cholesky(m)
-
-        chols[module] = chol.float()
-        # if conv, chols is of shape [Cin * H_k * W_k, Cin * H_k * W_k]
-        # if linear, chols is of shape [Cin, Cin]
+    whit = {
+        name: obtain_whitening_matrix(acts[name], module)
+        for name, module in modules_to_replace
+    }
 
     # energies
     cum_energies = []
     for name, module in modules_to_replace:
-        if isinstance(module, nn.Linear):
-            weight = module.weight.detach().T  # shape (Cout, Cin)
-        elif isinstance(module, nn.Conv2d):
-            reshaped = _module_to_reshaper[(module.__class__, "weight")](module.weight)
-            weight = reshaped.detach()  # shape (Cout, Cin * H_k * W_k)
-        aa = chols[module] @ weight
+        reshaped = get_reshape(module)(module.weight.detach())
+        aa = whit[name][1] @ reshaped
 
         # shape (Cout, Cin * H_k * W_k) @ (Cin * H_k * W_k, Cin * H_k * W_k) = (Cout, Cin * H_k * W_k) if conv
         # or (Cout, Cin) if linear
@@ -655,17 +865,16 @@ def to_low_rank_activation_aware_global(
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
 
     if metric == "rank":
-        costs = [torch.arange(0, len(energy), 1) for energy in cum_energies]
+        costs = [torch.arange(1, len(energy) + 1, 1) for energy in cum_energies]
         costs = [torch.cumsum(cost, 0) for cost in costs]
 
     elif metric == "flops":
         costs = [
             (
-                generate_cost_flops_linear(w, out_size)
+                generate_cost_flops_linear(w.shape, out_size)
                 if len(out_size) == 2
-                else generate_cost_flops_conv2d(w, out_size)
+                else generate_cost_flops_conv2d(w.shape, out_size)
             )
-            / 1000000
             for w, out_size in zip(
                 ws, [outs[name].shape for name, _ in modules_to_replace]
             )
@@ -674,9 +883,9 @@ def to_low_rank_activation_aware_global(
     elif metric == "params":
         costs = [
             (
-                generate_cost_params_linear(w, out_size)
+                generate_cost_params_linear(w.shape)
                 if len(out_size) == 2
-                else generate_cost_params_conv2d(w, out_size)
+                else generate_cost_params_conv2d(w.shape)
             )
             for w, out_size in zip(
                 ws, [outs[name].shape for name, _ in modules_to_replace]
@@ -694,40 +903,32 @@ def to_low_rank_activation_aware_global(
 
     selected_indices = maximize_energy(cum_energies, costs, n_rank_to_keep)
     selected_indices_per_module = {}
-    for i, (name, module) in enumerate(modules_to_replace):
-        selected_idx = selected_indices[i]
-        if selected_idx == -1:
-            selected_indices_per_module[name] = 1.0
-        else:
-            selected_indices_per_module[name] = selected_idx / len(cum_energies[i])
+    for (name, _), s in zip(modules_to_replace, selected_indices):
+        selected_indices_per_module[name] = s
 
-    for name, module in tqdm(modules_to_replace, desc="Replacing modules"):
+    def factory_fn(name, module):
         parent_module = model
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
 
-        metric = {
-            "name": "rank_ratio_to_keep",
-            "value": selected_indices_per_module[name],
-        }
-        # print("Replacing", name, "ratio=", selected_indices_per_module[name])
-        setattr(
-            parent_module,
-            attr_name,
-            (
-                LowRankLinear.from_linear_activation(
-                    module,
-                    chols[module],
-                    metric,
-                )
-                if isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear)
-                else LowRankConv2d.from_conv2d_activation(
-                    module,
-                    chols[module],
-                    metric,
-                )
-            ),
-        )
+        if is_linear(module):
+            return factorize_linear_whitened(
+                module,
+                lambda W, U, S, V_T: selected_indices_per_module[name],
+                whit[name][0],
+                whit[name][1],
+            )
+        elif is_conv2d(module):
+            return factorize_conv2d_whitened(
+                module,
+                lambda W, U, S, V_T: selected_indices_per_module[name],
+                whit[name][0],
+                whit[name][1],
+            )
+        else:
+            return module
 
+    modules_to_replace = {name: module for name, module in modules_to_replace}
+    replace_with_factory(model, modules_to_replace, factory_fn)
     return model

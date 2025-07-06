@@ -55,118 +55,10 @@ class LowRankLinear(nn.Module):
         self.w1 = nn.Parameter(torch.randn(rank, out_features))
         self.bias = nn.Parameter(torch.randn(out_features)) if bias else None
 
-    @staticmethod
-    def from_linear(
-        linear: nn.Linear,
-        keep_metric: dict[str, float],
-        keep_singular_values_separated: bool = False,
-    ):
-        # Original linear -> O = X @ W.T + b
-        # Low rank linear -> W = U @ S @ V_T -> O = X @ (U @ S @ V_T).T + b = (X @ W1.T) @ W0.T + b
-        W, b = linear.weight, linear.bias
-        U, S, V_T = torch.linalg.svd(W, full_matrices=True)  # complete SVD
-
-        rank = 0
-        if keep_metric["name"] == "rank_ratio_to_keep":
-            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
-            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "params_ratio_to_keep":
-            rank = _get_params_number_ratio_to_keep(W, S, keep_metric["value"])
-        else:
-            raise ValueError(
-                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
-            )
-        S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
-        out_f, in_f = W.shape
-        assert S.shape == (rank, rank)
-        assert U.shape == (out_f, out_f)
-        assert V_T.shape == (in_f, in_f)
-
-        # first check if it is worth it
-        mem_orig = W.numel()
-        mem_low_rank = rank * (in_f + out_f)
-        if mem_low_rank >= mem_orig:
-            return linear
-        W0 = (
-            U[:, :rank] @ S if not keep_singular_values_separated else U[:, :rank]
-        )  # in R^{OUT x RANK}
-        W1 = V_T[:rank, :]  # in R^{RANK x IN}
-        low_rank_linear = LowRankLinear(
-            linear.weight.shape[1],
-            linear.weight.shape[0],
-            rank,
-            bias=linear.bias is not None,
-        )
-        low_rank_linear.w0.data = W0
-        low_rank_linear.w1.data = W1
-        if b is not None and linear.bias is not None:
-            low_rank_linear.bias.data = b
-        else:
-            low_rank_linear.bias = None
-        if keep_singular_values_separated:
-            low_rank_linear.S = nn.Parameter(S)
-        low_rank_linear.keep_singular_values_separated = keep_singular_values_separated
-        return low_rank_linear
-
-    def from_linear_activation(
-        linear: nn.Linear,
-        whitening_matrix: torch.Tensor,  # shape (in_features, in_features)
-        whitening_matrix_inverse: torch.Tensor,  # shape (in_features, in_features)
-        keep_metric: dict[str, float],
-    ):
-        # adapted from https://arxiv.org/abs/2403.07378
-        W, b = linear.weight, linear.bias
-        U, S, V_T = torch.linalg.svd(W @ whitening_matrix, full_matrices=True)
-        rank = 0
-        if keep_metric["name"] == "rank_ratio_to_keep":
-            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
-            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "params_ratio_to_keep":
-            raise NotImplementedError(
-                "params_ratio_to_keep not implemented for linear activation"
-            )
-        else:
-            raise ValueError(
-                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
-            )
-        S = torch.diag(S[:rank])
-        out_f, in_f = W.shape
-        assert S.shape == (rank, rank)
-        assert U.shape == (out_f, out_f)
-        assert V_T.shape == (in_f, in_f)
-
-        # check if it is worth it
-        mem_orig = W.numel()
-        mem_low_rank = rank * (in_f + out_f)
-        if mem_low_rank >= mem_orig:
-            return linear
-
-        W0 = U[:, :rank] @ S
-        W1 = V_T[:rank, :] @ whitening_matrix_inverse
-        low_rank_linear = LowRankLinear(
-            linear.weight.shape[1],
-            linear.weight.shape[0],
-            rank,
-            bias=linear.bias is not None,
-        )
-
-        low_rank_linear.w0.data = W0
-        low_rank_linear.w1.data = W1
-        if b is not None and linear.bias is not None:
-            low_rank_linear.bias.data = b
-        else:
-            low_rank_linear.bias = None
-        low_rank_linear.keep_singular_values_separated = False
-        return low_rank_linear
-
     def forward(self, x: torch.Tensor):
-        # X in R^{BATCH x IN}, W0 in R^{OUT x RANK}, W1 in R^{RANK x IN}
+        # X in R^{BATCH x IN}, W0 in R^{IN x RANK}, W1 in R^{RANK x OUT}
         w0, w1 = self.w0, self.w1
-        if self.keep_singular_values_separated:
-            w0 = w0 @ self.S
-        return torch.nn.functional.linear(x @ w1.t(), w0, bias=self.bias)
+        return torch.nn.functional.linear(x @ w0, w1.t(), bias=self.bias)
 
     def __repr__(self):
         return f"LowRankLinear(in_features={self.w0.shape[0]}, out_features={self.w1.shape[1]}, rank={self.w0.shape[1]}, bias={self.bias is not None})"
@@ -193,7 +85,9 @@ class LowRankConv2d(nn.Module):
         bias: bool = True,
     ):
         super(LowRankConv2d, self).__init__()
-        self.w0 = nn.Parameter(torch.randn(rank, in_channels, kernel_size, kernel_size))
+        H_k = kernel_size[0] if isinstance(kernel_size, tuple) else kernel_size
+        W_k = kernel_size[1] if isinstance(kernel_size, tuple) else kernel_size
+        self.w0 = nn.Parameter(torch.randn(rank, in_channels, H_k, W_k))
         self.w1 = nn.Parameter(torch.randn(out_channels, rank, 1, 1))
         self.bias = nn.Parameter(torch.randn(out_channels)) if bias else None
         self.stride = stride
@@ -205,139 +99,6 @@ class LowRankConv2d(nn.Module):
         self.in_channels = in_channels
         self.kernel_size = kernel_size
         self.out_channels = out_channels
-
-    @staticmethod
-    def from_conv2d(
-        conv2d: nn.Conv2d,
-        keep_metric: dict[str, float],
-        keep_singular_values_separated: bool = False,
-    ):
-        # Original conv2d -> O = conv2d(W, X)
-        # Low rank conv2d -> O = conv2d(W1, conv2d(W0, X))
-        W, b = conv2d.weight, conv2d.bias
-        o, i, h, w = W.shape
-        U, S, V_T = torch.linalg.svd(
-            W.permute(1, 2, 3, 0).reshape(i * h * w, o), full_matrices=True
-        )
-        rank = 0
-        if keep_metric["name"] == "rank_ratio_to_keep":
-            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
-            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "params_ratio_to_keep":
-            rank = _get_params_number_ratio_to_keep(
-                W.permute(1, 2, 3, 0).reshape(i * h * w, o), S, keep_metric["value"]
-            )
-        else:
-            raise ValueError(
-                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep', 'params_ratio_to_keep']"
-            )
-
-        # first check if it is worth it
-        mem_orig = W.numel()
-        mem_low_rank = rank * (i * h * w + o)
-        if mem_low_rank >= mem_orig:
-            return conv2d
-        W0 = (
-            (
-                (U[:, :rank] @ torch.diag(S[:rank]))
-                .reshape(i, h, w, rank)
-                .permute(3, 0, 1, 2)
-            )
-            if not keep_singular_values_separated
-            else (U[:, :rank].reshape(i, h, w, rank).permute(3, 0, 1, 2))
-        )  # shape = (rank, i, h, w)
-        W1 = (
-            V_T[:rank, :].reshape(rank, o, 1, 1).permute(1, 0, 2, 3)
-        )  # shape = (o, rank, 1, 1)
-        low_rank_conv2d = LowRankConv2d(
-            conv2d.in_channels,
-            conv2d.out_channels,
-            conv2d.kernel_size[0],
-            rank,
-            stride=conv2d.stride[0],
-            padding=conv2d.padding[0],
-            dilation=conv2d.dilation[0],
-            groups=conv2d.groups,
-            bias=conv2d.bias is not None,
-        )
-        low_rank_conv2d.w0.data = W0
-        low_rank_conv2d.w1.data = W1
-
-        if b is not None and conv2d.bias is not None:
-            low_rank_conv2d.bias.data = b
-        else:
-            low_rank_conv2d.bias = None
-
-        if keep_singular_values_separated:
-            low_rank_conv2d.S = nn.Parameter(S[:rank])
-
-        low_rank_conv2d.keep_singular_values_separated = keep_singular_values_separated
-
-        return low_rank_conv2d
-
-    def from_conv2d_activation(
-        conv2d: nn.Conv2d,
-        whitening_matrix: torch.Tensor,  # shape (i * h * w, i * h * w)
-        whitening_matrix_inverse: torch.Tensor,  # shape (i * h * w, i * h * w)
-        keep_metric: dict[str, float],
-    ):
-        # adapted from https://arxiv.org/abs/2403.07378
-        W, b = conv2d.weight, conv2d.bias
-        o, i, h, w = W.shape
-        U, S, V_T = torch.linalg.svd(
-            whitening_matrix_inverse @ W.permute(1, 2, 3, 0).reshape(i * h * w, o),
-            full_matrices=True,
-        )
-        rank = 0
-        if keep_metric["name"] == "rank_ratio_to_keep":
-            rank = _get_rank_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "svals_energy_ratio_to_keep":
-            rank = _get_svals_energy_ratio_to_keep(S, keep_metric["value"])
-        elif keep_metric["name"] == "params_ratio_to_keep":
-            raise ValueError(
-                "keep_metric must be one of ['rank_ratio_to_keep', 'svals_energy_ratio_to_keep']"
-            )
-        S = torch.diag(S[:rank])  # in R^{MIN(IN, OUT) x MIN(IN, OUT)}
-
-        # check if it is worth it
-        mem_orig = W.numel()
-        mem_low_rank = rank * (i * h * w + o)
-        if mem_low_rank >= mem_orig:
-            return conv2d
-        W0 = (
-            ((U[:, :rank] @ S).reshape(i, h, w, rank).permute(3, 0, 1, 2)).reshape(
-                rank, -1
-            )
-            @ whitening_matrix.T
-        ).reshape(
-            rank, i, h, w
-        )  # shape = (rank, i, h, w)
-        W1 = (
-            V_T[:rank, :].reshape(rank, o, 1, 1).permute(1, 0, 2, 3)
-        )  # shape = (o, rank, 1, 1)
-        low_rank_conv2d = LowRankConv2d(
-            conv2d.in_channels,
-            conv2d.out_channels,
-            conv2d.kernel_size[0],
-            rank,
-            stride=conv2d.stride[0],
-            padding=conv2d.padding[0],
-            dilation=conv2d.dilation[0],
-            groups=conv2d.groups,
-            bias=conv2d.bias is not None,
-        )
-        low_rank_conv2d.w0.data = W0
-        low_rank_conv2d.w1.data = W1
-
-        if b is not None and conv2d.bias is not None:
-            low_rank_conv2d.bias.data = b
-        else:
-            low_rank_conv2d.bias = None
-
-        low_rank_conv2d.keep_singular_values_separated = False
-
-        return low_rank_conv2d
 
     def get_weights_as_matrices(self, w, keyword):
         # inverse permutation of (3, 0, 1, 2) is  (1, 2, 3, 0), of (1, 0, 2, 3) is (1, 0, 2, 3)
@@ -353,9 +114,6 @@ class LowRankConv2d(nn.Module):
 
     def forward(self, x: torch.Tensor):
         w0, w1 = self.w0, self.w1
-        if self.keep_singular_values_separated:
-            # print(w0.shape, self.S.shape)
-            w0 = w0 * self.S.reshape(-1, 1, 1, 1)
         conv_out = torch.nn.functional.conv2d(
             x,
             w0,

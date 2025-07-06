@@ -52,6 +52,5 @@ def maximize_energy(
     selected_indices = {}
     for vec_idx, vec in enumerate(cum_energy_vectors):
         sel = [pulp.value(selection_vars[(vec_idx, idx)]) for idx in range(len(vec))]
-        selected_indices[vec_idx] = torch.argmax(torch.tensor(sel)).item()
-
-    return selected_indices
+        selected_indices[vec_idx] = torch.argmax(torch.tensor(sel)).item() + 1
+    return [selected_indices[i] for i in range(len(selected_indices))]
