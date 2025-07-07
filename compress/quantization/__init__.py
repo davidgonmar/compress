@@ -36,11 +36,10 @@ from compress.quantization.common import (
     LinearPerRow,
     LinearWeightsPerOutChannel,
 )
-from compress.common import (
+from compress.utils import (
     gather_submodules,
     default_should_do,
     cls_passlist_should_do,
-    combine_should_do,
     keys_passlist_should_do,
 )
 
