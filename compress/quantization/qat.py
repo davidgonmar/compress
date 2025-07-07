@@ -299,11 +299,11 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
                 groups=conv.groups,
             )
             conv_orig_simulated = conv_out / w_scale.reshape(
-                -1, 1, 1, 1
+                1, -1, 1, 1
             )  # simulate the conv output with the original weight
             if conv.bias is not None:
                 conv_orig_simulated = conv_orig_simulated + conv.bias.reshape(
-                    -1, 1, 1, 1
+                    1, -1, 1, 1
                 )
             # now we apply the batch norm
             return self.bn(
@@ -671,11 +671,11 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
                 groups=conv.groups,
             )
             conv_orig_simulated = conv_out / w_scale.reshape(
-                -1, 1, 1, 1
+                1, -1, 1, 1
             )  # simulate the conv output with the original weight
             if conv.bias is not None:
                 conv_orig_simulated = conv_orig_simulated + conv.bias.reshape(
-                    -1, 1, 1, 1
+                    1, -1, 1, 1
                 )
             # now we apply the batch norm
             return self.bn(
