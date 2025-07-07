@@ -266,6 +266,9 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
             },
         )
 
+        assert bn.track_running_stats, "BatchNorm must track running stats"
+        assert bn.affine, "BatchNorm must be affine"
+
         obj.conv.weight.data.copy_(conv.weight.data)
         if conv.bias is not None:
             obj.conv.bias.data.copy_(conv.bias.data)
@@ -286,6 +289,23 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         return obj
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training:
+            # update running stats
+            w_masked = self.conv.weight * self.weight_mask
+            b_masked = (
+                self.conv.bias * self.bias_mask if self.conv.bias is not None else None
+            )
+            _x = F.conv2d(
+                x,
+                w_masked,
+                b_masked,
+                stride=self.conv_params["stride"],
+                padding=self.conv_params["padding"],
+                dilation=self.conv_params["dilation"],
+                groups=self.conv_params["groups"],
+            )
+            self.bn(_x)
+
         w_fused, b_fused = get_new_params(self.conv, self.bn)
         w_fused.retain_grad()
         b_fused.retain_grad()
@@ -293,7 +313,6 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         self._cached_bias = b_fused
         w_pruned = w_fused * self.weight_mask
         b_pruned = b_fused * self.bias_mask
-
         return F.conv2d(
             x,
             w_pruned,
