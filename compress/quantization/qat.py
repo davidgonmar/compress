@@ -271,12 +271,13 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
-        x_quant = (
-            fake_quantize(x, self.input_observer(x))
-            if not self.online
-            else fake_quantize(x, calibrate(x, self.input_spec))
-        )
+
         if self.training:
+            x_quant = (
+                fake_quantize(x, self.input_observer(x))
+                if not self.online
+                else fake_quantize(x, calibrate(x, self.input_spec))
+            )
             conv = self.conv
             bn = self.bn
             w = conv.weight
@@ -647,6 +648,16 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
     def forward(self, x: torch.Tensor):
         # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
         if self.training:
+            if self.online:
+                info = calibrate(x, self.input_spec)
+                x = LSQQuantize.apply(x, info.scale, info.zero_point, info)
+            else:
+                x = LSQQuantize.apply(
+                    x,
+                    self.input_info.scale,
+                    self.input_info.zero_point,
+                    self.input_info,
+                )
             conv = self.conv
             bn = self.bn
             w = conv.weight
