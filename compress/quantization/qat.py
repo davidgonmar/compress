@@ -241,6 +241,7 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
         original_conv_layer: nn.Conv2d,
         original_bn_layer: nn.BatchNorm2d,
         online: bool = False,
+        bn_track_running_stats: bool = False,
     ):
         super().__init__()
         self.online = online
@@ -249,7 +250,7 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
         self.weight_spec, self.input_spec = weight_spec, input_spec
         if not self.online:
             self.input_observer = EMAInfoObserver(input_spec)
-
+        self.bn_track_running_stats = bn_track_running_stats
         _extract_kwargs_from_orig_layer(
             self,
             [
@@ -272,7 +273,7 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
     def forward(self, x: torch.Tensor):
         # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
 
-        if self.training:
+        if self.training and self.bn_track_running_stats:
             x_quant = (
                 fake_quantize(x, self.input_observer(x))
                 if not self.online
@@ -613,6 +614,7 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
         bn: nn.BatchNorm2d,
         data_batch: torch.Tensor = None,
         online: bool = False,
+        bn_track_running_stats: bool = False,
     ):
         super().__init__()
         self.conv = conv2d
@@ -632,6 +634,7 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
             ["num_features", "eps", "momentum"],
             bn,
         )
+        self.bn_track_running_stats = bn_track_running_stats
 
         self.weight_spec = weight_spec
         self.input_spec = input_spec
@@ -647,7 +650,7 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
-        if self.training:
+        if self.training and self.bn_track_running_stats:
             if self.online:
                 info = calibrate(x, self.input_spec)
                 x = LSQQuantize.apply(x, info.scale, info.zero_point, info)
