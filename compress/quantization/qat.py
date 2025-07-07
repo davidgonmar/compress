@@ -270,22 +270,58 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        w = self.conv.weight
-        b = self.conv.bias
-
-        w, b = _get_bn_and_conv_weight(self.conv, self.bn)
-
-        return _forward_qat(
-            self,
-            x,
-            w,
-            b,
-            nn.functional.conv2d,
-            stride=self.conv.stride,
-            padding=self.conv.padding,
-            dilation=self.conv.dilation,
-            groups=self.conv.groups,
+        # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
+        x_quant = (
+            fake_quantize(x, self.input_observer(x))
+            if not self.online
+            else fake_quantize(x, calibrate(x, self.input_spec))
         )
+        if self.training:
+            conv = self.conv
+            bn = self.bn
+            w = conv.weight
+            eps = bn.eps
+            w_scale = bn.weight / torch.sqrt(
+                bn.running_var + eps
+            )  # shape [out_channels]
+            # we simulate qat forward with running mean/var (as those will be used during inference)
+            w_simulated = w * w_scale.reshape(-1, 1, 1, 1)
+            w_quant = fake_quantize(
+                w_simulated, calibrate(w_simulated, self.weight_spec)
+            )  # quantize the simulated weight
+            conv_out = nn.functional.conv2d(
+                x_quant,
+                w_quant,
+                bias=None,
+                stride=conv.stride,
+                padding=conv.padding,
+                dilation=conv.dilation,
+                groups=conv.groups,
+            )
+            conv_orig_simulated = conv_out / w_scale.reshape(
+                -1, 1, 1, 1
+            )  # simulate the conv output with the original weight
+            if conv.bias is not None:
+                conv_orig_simulated = conv_orig_simulated + conv.bias.reshape(
+                    -1, 1, 1, 1
+                )
+            # now we apply the batch norm
+            return self.bn(
+                conv_orig_simulated,
+            )
+        else:
+            w, b = _get_bn_and_conv_weight(self.conv, self.bn)
+            return _forward_qat(
+                self,
+                x,
+                w,
+                b,
+                nn.functional.conv2d,
+                stride=self.conv.stride,
+                padding=self.conv.padding,
+                dilation=self.conv.dilation,
+                groups=self.conv.groups,
+            )
 
     to_conv2d = partial(
         _to_float,
@@ -609,18 +645,56 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
             self.input_spec = input_spec
 
     def forward(self, x: torch.Tensor):
-        w, b = _get_bn_and_conv_weight(self.conv, self.bn)
-        return _forward_lsq(
-            self,
-            x,
-            w,
-            b,
-            nn.functional.conv2d,
-            stride=self.conv.stride,
-            padding=self.conv.padding,
-            dilation=self.conv.dilation,
-            groups=self.conv.groups,
-        )
+        # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
+        if self.training:
+            conv = self.conv
+            bn = self.bn
+            w = conv.weight
+            eps = bn.eps
+            w_scale = bn.weight / torch.sqrt(bn.running_var + eps)
+            # shape [out_channels]
+            # we simulate qat forward with running mean/var (as those will be used during inference)
+            w_simulated = w * w_scale.reshape(-1, 1, 1, 1)
+            w_quant = LSQQuantize.apply(
+                w_simulated,
+                self.weight_info.scale,
+                self.weight_info.zero_point,
+                self.weight_info,
+            )  # quantize the simulated weight
+            conv_out = nn.functional.conv2d(
+                x,
+                w_quant,
+                bias=None,
+                stride=conv.stride,
+                padding=conv.padding,
+                dilation=conv.dilation,
+                groups=conv.groups,
+            )
+            conv_orig_simulated = conv_out / w_scale.reshape(
+                -1, 1, 1, 1
+            )  # simulate the conv output with the original weight
+            if conv.bias is not None:
+                conv_orig_simulated = conv_orig_simulated + conv.bias.reshape(
+                    -1, 1, 1, 1
+                )
+            # now we apply the batch norm
+            return self.bn(
+                conv_orig_simulated,
+            )
+
+        else:
+            w, b = _get_bn_and_conv_weight(self.conv, self.bn)
+            return _forward_lsq(
+                self,
+                x,
+                w,
+                b,
+                nn.functional.conv2d,
+                stride=self.conv.stride,
+                padding=self.conv.padding,
+                dilation=self.conv.dilation,
+                groups=self.conv.groups,
+            )
 
     @property
     def weight(self):
