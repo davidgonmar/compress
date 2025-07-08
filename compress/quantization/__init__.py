@@ -21,6 +21,7 @@ from compress.quantization.qat import (
     AutoBitAllocationLinear,
     FusedQATConv2dBatchNorm2d,
     FusedLSQConv2dBatchNorm2d,
+    qat_freeze_bn_running_stats,
 )
 
 import torch.nn.functional as F

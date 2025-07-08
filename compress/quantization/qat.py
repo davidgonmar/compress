@@ -241,7 +241,7 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
         original_conv_layer: nn.Conv2d,
         original_bn_layer: nn.BatchNorm2d,
         online: bool = False,
-        bn_track_running_stats: bool = False,
+        bn_track_running_stats: bool = True,
     ):
         super().__init__()
         self.online = online
@@ -614,7 +614,7 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
         bn: nn.BatchNorm2d,
         data_batch: torch.Tensor = None,
         online: bool = False,
-        bn_track_running_stats: bool = False,
+        bn_track_running_stats: bool = True,
     ):
         super().__init__()
         self.conv = conv2d
@@ -722,6 +722,12 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
             f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
             f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
         )
+
+
+def qat_freeze_bn_running_stats(model: nn.Module):
+    for module in model.modules():
+        if isinstance(module, (FusedLSQConv2dBatchNorm2d, FusedQATConv2dBatchNorm2d)):
+            module.bn_track_running_stats = False
 
 
 # ============================================================
