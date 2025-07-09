@@ -594,6 +594,38 @@ def obtain_whitening_matrix_cholesky(
 obtain_whitening_matrix = obtain_whitening_matrix_cholesky
 
 
+def obtain_whitening_matrix_svd(
+    acts: torch.Tensor,
+    module: nn.Module,
+):
+    if isinstance(module, nn.Conv2d):
+        assert acts.dim() == 4
+        im2coled = nn.functional.unfold(
+            acts,
+            kernel_size=module.kernel_size,
+            padding=module.padding,
+            stride=module.stride,
+        )
+        im2coled = im2coled.permute(0, 2, 1).reshape(
+            im2coled.shape[0] * im2coled.shape[2], -1
+        )
+    elif isinstance(module, nn.Linear):
+        assert acts.dim() == 2
+        im2coled = acts
+    else:
+        raise ValueError("Module should be either Conv2d or Linear")
+
+    U, S, Vh = torch.linalg.svd(im2coled, full_matrices=False)
+    keep = S > 1e-6
+    if not torch.any(keep):
+        raise RuntimeError("All singular values ≈ 0; cannot whiten.")
+
+    S_nz = S[keep]
+    V_nz = Vh[keep, :]
+
+    return V_nz @ torch.diag(1 / S_nz), torch.diag(torch.sqrt(S_nz)) @ V_nz.T
+
+
 def factorize_linear_whitened(
     module,
     get_rank: Callable,
