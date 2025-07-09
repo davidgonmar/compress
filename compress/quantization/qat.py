@@ -317,7 +317,12 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
             else:
                 # first, update bn
                 with torch.no_grad():
-                    convres = self.conv(x)
+                    _x = (
+                        fake_quantize(x, self.input_observer(x))
+                        if not self.online
+                        else fake_quantize(x, calibrate(x, self.input_spec))
+                    )
+                    convres = self.conv(_x)
                     self.bn(convres)
                 # then, just the regular path
                 w, b = _get_bn_and_conv_weight(self.conv, self.bn)
@@ -723,7 +728,17 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
             else:
                 # first, update bn
                 with torch.no_grad():
-                    convres = self.conv(x)
+                    if self.online:
+                        info = calibrate(x, self.input_spec)
+                        _x = LSQQuantize.apply(x, info.scale, info.zero_point, info)
+                    else:
+                        _x = LSQQuantize.apply(
+                            x,
+                            self.input_info.scale,
+                            self.input_info.zero_point,
+                            self.input_info,
+                        )
+                    convres = self.conv(_x)
                     self.bn(convres)
                 # then, just the regular path
                 w, b = _get_bn_and_conv_weight(self.conv, self.bn)
