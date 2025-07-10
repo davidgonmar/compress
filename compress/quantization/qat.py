@@ -274,7 +274,6 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
-
         if self.training and self.bn_track_running_stats:
             if self.use_fast_bn_path:
                 x_quant = (
@@ -314,29 +313,42 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
                 return self.bn(
                     conv_orig_simulated,
                 )
-            else:
+            else:  # slow path
                 # first, update bn
+                x = (
+                    fake_quantize(x, self.input_observer(x))
+                    if not self.online
+                    else fake_quantize(x, calibrate(x, self.input_spec))
+                )
                 with torch.no_grad():
-                    _x = (
-                        fake_quantize(x, self.input_observer(x))
-                        if not self.online
-                        else fake_quantize(x, calibrate(x, self.input_spec))
-                    )
-                    convres = self.conv(_x)
+                    convres = self.conv(x)
                     self.bn(convres)
-                # then, just the regular path
-                w, b = _get_bn_and_conv_weight(self.conv, self.bn)
-                return _forward_qat(
-                    self,
+                # pass with running var
+                running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
+                w_scale = self.bn.weight / running_std  # shape [out_channels]
+                conv_out = nn.functional.conv2d(
                     x,
-                    w,
-                    b,
-                    nn.functional.conv2d,
+                    self.conv.weight * w_scale.reshape(-1, 1, 1, 1),
+                    bias=None,
                     stride=self.conv.stride,
                     padding=self.conv.padding,
                     dilation=self.conv.dilation,
                     groups=self.conv.groups,
                 )
+                # compute BATCH statistics
+                batch_mean = conv_out.mean(dim=(0, 2, 3))
+                batch_var = conv_out.var(dim=(0, 2, 3), unbiased=False)
+                batch_std = torch.sqrt(batch_var + self.bn.eps)
+                scale_to_batch = running_std / batch_std
+                conv_out_rescaled = conv_out * scale_to_batch.reshape(
+                    1, -1, 1, 1
+                )  # scaled to batch stats
+                # bias
+                fused_bias = (
+                    self.bn.bias - self.bn.weight * batch_mean / batch_std
+                ).reshape(1, -1, 1, 1)
+                # now we apply the batch norm
+                return conv_out_rescaled + fused_bias
         else:
             w, b = _get_bn_and_conv_weight(self.conv, self.bn)
             return _forward_qat(
@@ -727,33 +739,44 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
                 )
             else:
                 # first, update bn
+                if self.online:
+                    info = calibrate(x, self.input_spec)
+                    x = LSQQuantize.apply(x, info.scale, info.zero_point, info)
+                else:
+                    x = LSQQuantize.apply(
+                        x,
+                        self.input_info.scale,
+                        self.input_info.zero_point,
+                        self.input_info,
+                    )
                 with torch.no_grad():
-                    if self.online:
-                        info = calibrate(x, self.input_spec)
-                        _x = LSQQuantize.apply(x, info.scale, info.zero_point, info)
-                    else:
-                        _x = LSQQuantize.apply(
-                            x,
-                            self.input_info.scale,
-                            self.input_info.zero_point,
-                            self.input_info,
-                        )
-                    convres = self.conv(_x)
+                    convres = self.conv(x)
                     self.bn(convres)
-                # then, just the regular path
-                w, b = _get_bn_and_conv_weight(self.conv, self.bn)
-                return _forward_lsq(
-                    self,
+
+                # pass with running var
+                running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
+                w_scale = self.bn.weight / running_std  # shape [out_channels]
+                conv_out = nn.functional.conv2d(
                     x,
-                    w,
-                    b,
-                    nn.functional.conv2d,
+                    self.conv.weight * w_scale.reshape(-1, 1, 1, 1),
+                    bias=None,
                     stride=self.conv.stride,
                     padding=self.conv.padding,
                     dilation=self.conv.dilation,
                     groups=self.conv.groups,
                 )
-
+                # compute BATCH statistics
+                batch_mean = conv_out.mean(dim=(0, 2, 3))
+                batch_var = conv_out.var(dim=(0, 2, 3), unbiased=False)
+                batch_std = torch.sqrt(batch_var + self.bn.eps)
+                scale_to_batch = running_std / batch_std
+                conv_out_rescaled = conv_out * scale_to_batch.reshape(1, -1, 1, 1)
+                # bias
+                fused_bias = (
+                    self.bn.bias - self.bn.weight * batch_mean / batch_std
+                ).reshape(1, -1, 1, 1)
+                # now we apply the batch norm
+                return conv_out_rescaled + fused_bias
         else:
             w, b = _get_bn_and_conv_weight(self.conv, self.bn)
             return _forward_lsq(
