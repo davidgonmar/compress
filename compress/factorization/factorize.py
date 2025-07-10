@@ -621,9 +621,12 @@ def obtain_whitening_matrix_svd(
         raise RuntimeError("All singular values ≈ 0; cannot whiten.")
 
     S_nz = S[keep]
-    V_nz = Vh[keep, :]
+    V_nz = Vh[keep, :].T
 
-    return V_nz @ torch.diag(1 / S_nz), torch.diag(torch.sqrt(S_nz)) @ V_nz.T
+    return V_nz @ torch.diag(1 / S_nz), torch.diag(S_nz) @ V_nz.T
+
+
+obtain_whitening_matrix = obtain_whitening_matrix_svd
 
 
 def factorize_linear_whitened(
