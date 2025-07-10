@@ -316,9 +316,24 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
                     if not self.online
                     else fake_quantize(x, calibrate(x, self.input_spec))
                 )
+                conv_out_float_weight = torch.nn.functional.conv2d(
+                    x,
+                    self.conv.weight,
+                    bias=None,
+                    stride=self.conv.stride,
+                    padding=self.conv.padding,
+                    dilation=self.conv.dilation,
+                    groups=self.conv.groups,
+                )
                 with torch.no_grad():
-                    conv_out_float_weight = self.conv(x)
-                    self.bn(conv_out_float_weight)
+                    if self.conv.bias is not None:
+                        conv_out_for_bn = (
+                            self.conv.bias.reshape(1, -1, 1, 1) + conv_out_float_weight
+                        )
+                    else:
+                        conv_out_for_bn = conv_out_float_weight
+                    # update batch norm stats
+                    self.bn(conv_out_for_bn)
                 # pass with running var
                 running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
                 w_scale = self.bn.weight / running_std  # shape [out_channels]
@@ -745,9 +760,24 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
                         self.input_info.zero_point,
                         self.input_info,
                     )
+                conv_out_float_weight = torch.nn.functional.conv2d(
+                    x,
+                    self.conv.weight,
+                    bias=None,
+                    stride=self.conv.stride,
+                    padding=self.conv.padding,
+                    dilation=self.conv.dilation,
+                    groups=self.conv.groups,
+                )
                 with torch.no_grad():
-                    conv_out_float_weight = self.conv(x)
-                    self.bn(conv_out_float_weight)
+                    if self.conv.bias is not None:
+                        conv_out_for_bn = (
+                            self.conv.bias.reshape(1, -1, 1, 1) + conv_out_float_weight
+                        )
+                    else:
+                        conv_out_for_bn = conv_out_float_weight
+                    # update batch norm stats
+                    self.bn(conv_out_for_bn)
 
                 # pass with running var
                 running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
