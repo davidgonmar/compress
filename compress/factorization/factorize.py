@@ -591,9 +591,6 @@ def obtain_whitening_matrix_cholesky(
     return inv.float(), chol.float()
 
 
-obtain_whitening_matrix = obtain_whitening_matrix_cholesky
-
-
 def obtain_whitening_matrix_svd(
     acts: torch.Tensor,
     module: nn.Module,
@@ -624,9 +621,6 @@ def obtain_whitening_matrix_svd(
     V_nz = Vh[keep, :].T
 
     return V_nz @ torch.diag(1 / S_nz), torch.diag(S_nz) @ V_nz.T
-
-
-obtain_whitening_matrix = obtain_whitening_matrix_svd
 
 
 def obtain_whitening_matrix_eigh(
@@ -661,7 +655,23 @@ def obtain_whitening_matrix_eigh(
     return V @ torch.diag(1 / x_svals), torch.diag(x_svals) @ V.T
 
 
-obtain_whitening_matrix = obtain_whitening_matrix_eigh
+def obtain_whitening_matrix(
+    acts: torch.Tensor,
+    module: nn.Module,
+    method: str = "eigh",
+):
+    """
+    Computes the whitening matrix for the given activations and module.
+    The method can be "cholesky", "svd", or "eigh". "cholesky" will return non-precise results if the covariance matrix is not positive definite.
+    """
+    if method == "cholesky":
+        return obtain_whitening_matrix_cholesky(acts, module)
+    elif method == "svd":
+        return obtain_whitening_matrix_svd(acts, module)
+    elif method == "eigh":
+        return obtain_whitening_matrix_eigh(acts, module)
+    else:
+        raise ValueError("Method must be one of 'cholesky', 'svd', or 'eigh'.")
 
 
 def factorize_linear_whitened(
@@ -740,7 +750,11 @@ def factorize_conv2d_whitened(
 
 
 def to_low_rank_manual_activation_aware(
-    model: nn.Module, dataloader, inplace=True, cfg_dict={}
+    model: nn.Module,
+    dataloader,
+    inplace=True,
+    cfg_dict={},
+    data_whitening_impl="eigh",
 ):
 
     if not inplace:
@@ -790,7 +804,7 @@ def to_low_rank_manual_activation_aware(
 
     # get the cholesky decomposition of the covariance matrix of each activation im2col'ed in case of conv2d
     whit = {
-        name: obtain_whitening_matrix(acts[module], module)
+        name: obtain_whitening_matrix(acts[module], module, method=data_whitening_impl)
         for name, module in modules_to_replace
     }
 
@@ -835,6 +849,7 @@ def to_low_rank_activation_aware_global(
     bn_keys=None,
     metric="flops",
     inplace=True,
+    data_whitening_impl="eigh",
 ):
     if not inplace:
         model = copy.deepcopy(model)
@@ -889,7 +904,7 @@ def to_low_rank_activation_aware_global(
     for hook in hooks:
         hook.remove()
     whit = {
-        name: obtain_whitening_matrix(acts[name], module)
+        name: obtain_whitening_matrix(acts[name], module, method=data_whitening_impl)
         for name, module in modules_to_replace
     }
 
