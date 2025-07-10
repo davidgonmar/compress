@@ -629,6 +629,41 @@ def obtain_whitening_matrix_svd(
 obtain_whitening_matrix = obtain_whitening_matrix_svd
 
 
+def obtain_whitening_matrix_eigh(
+    acts: torch.Tensor,
+    module: nn.Module,
+):
+    if isinstance(module, nn.Conv2d):
+        assert acts.dim() == 4
+        im2coled = nn.functional.unfold(
+            acts,
+            kernel_size=module.kernel_size,
+            padding=module.padding,
+            stride=module.stride,
+        )
+        im2coled = im2coled.permute(0, 2, 1).reshape(
+            im2coled.shape[0] * im2coled.shape[2], -1
+        )
+    elif isinstance(module, nn.Linear):
+        assert acts.dim() == 2
+        im2coled = acts
+    else:
+        raise ValueError("Module should be either Conv2d or Linear")
+
+    m = im2coled.T @ im2coled
+    eigenvalues, eigenvectors = torch.linalg.eigh(m)
+    x_svals = torch.sqrt(eigenvalues)
+    V = eigenvectors
+    keep = x_svals > 1e-6
+    x_svals = x_svals[keep]
+    V = V[:, keep]
+
+    return V @ torch.diag(1 / x_svals), torch.diag(x_svals) @ V.T
+
+
+obtain_whitening_matrix = obtain_whitening_matrix_eigh
+
+
 def factorize_linear_whitened(
     module,
     get_rank: Callable,
