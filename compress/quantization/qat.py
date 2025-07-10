@@ -317,8 +317,8 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
                     else fake_quantize(x, calibrate(x, self.input_spec))
                 )
                 with torch.no_grad():
-                    convres = self.conv(x)
-                    self.bn(convres)
+                    conv_out_float_weight = self.conv(x)
+                    self.bn(conv_out_float_weight)
                 # pass with running var
                 running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
                 w_scale = self.bn.weight / running_std  # shape [out_channels]
@@ -332,8 +332,8 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
                     groups=self.conv.groups,
                 )
                 # compute BATCH statistics
-                batch_mean = conv_out.mean(dim=(0, 2, 3))
-                batch_var = conv_out.var(dim=(0, 2, 3), unbiased=False)
+                batch_mean = conv_out_float_weight.mean(dim=(0, 2, 3))
+                batch_var = conv_out_float_weight.var(dim=(0, 2, 3), unbiased=False)
                 batch_std = torch.sqrt(batch_var + self.bn.eps)
                 scale_to_batch = running_std / batch_std
                 conv_out_rescaled = conv_out * scale_to_batch.reshape(
@@ -746,8 +746,8 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
                         self.input_info,
                     )
                 with torch.no_grad():
-                    convres = self.conv(x)
-                    self.bn(convres)
+                    conv_out_float_weight = self.conv(x)
+                    self.bn(conv_out_float_weight)
 
                 # pass with running var
                 running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
@@ -762,8 +762,8 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
                     groups=self.conv.groups,
                 )
                 # compute BATCH statistics
-                batch_mean = conv_out.mean(dim=(0, 2, 3))
-                batch_var = conv_out.var(dim=(0, 2, 3), unbiased=False)
+                batch_mean = conv_out_float_weight.mean(dim=(0, 2, 3))
+                batch_var = conv_out_float_weight.var(dim=(0, 2, 3), unbiased=False)
                 batch_std = torch.sqrt(batch_var + self.bn.eps)
                 scale_to_batch = running_std / batch_std
                 conv_out_rescaled = conv_out * scale_to_batch.reshape(1, -1, 1, 1)
