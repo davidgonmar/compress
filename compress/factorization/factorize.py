@@ -267,8 +267,8 @@ def crop_svd(U, S, V_T, rank):
 
 
 def get_factors(U, S, V_T):
-    W0 = U @ torch.diag(S)
-    W1 = V_T
+    W0 = U @ torch.diag(torch.sqrt(S))
+    W1 = torch.diag(torch.sqrt(S)) @ V_T
     return W0, W1
 
 
