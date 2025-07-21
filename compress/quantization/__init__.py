@@ -351,11 +351,14 @@ def requantize_qat(
     return model
 
 
-def get_activations_vision(model, data_loader, keys, move_to_cpu=False):
+def get_activations_vision(model, data_loader, keys):
     if isinstance(data_loader, (torch.Tensor, tuple)):
         data_loader = [data_loader]
     activations = {}
     hooks = []
+    prev_state = model.training
+
+    model.eval()
     for name, module in gather_submodules(
         model, should_do=keys_passlist_should_do(keys)
     ):
@@ -380,8 +383,9 @@ def get_activations_vision(model, data_loader, keys, move_to_cpu=False):
 
     # cat activations
     for name in activations:
-        # print(activations)
         activations[name] = torch.cat(activations[name], dim=0).cuda()
+    model.train(prev_state)
+
     return activations
 
 
