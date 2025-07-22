@@ -84,7 +84,6 @@ def build_int_affine_recipe(
             IntAffineQuantizationMode.LSQ_INITIALIZATION,
         )
 
-    symmetric_w = _validate(weight_qargs)
     symmetric_a = _validate(act_qargs)
 
     def _get_grouper(name: str, is_weight: bool):

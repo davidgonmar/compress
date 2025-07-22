@@ -12,13 +12,17 @@ from .kernels import (
     triton_quantized_int8_conv2d,
     TRITON_AVAILABLE,
 )
+import os
+
+
+USE_TRITON_KERNELS = os.getenv("USE_TRITON_KERNELS", "0") == "1"
 
 
 def is_supported_linear(
     spec_a: IntAffineQuantizationSpec,
     spec_b: IntAffineQuantizationSpec | IntAffineQuantizationInfo,
 ):
-    if not TRITON_AVAILABLE:
+    if not TRITON_AVAILABLE or not USE_TRITON_KERNELS:
         return False
     if isinstance(spec_a, IntAffineQuantizationInfo):
         spec_a = spec_a.spec
@@ -31,7 +35,7 @@ def is_supported_linear(
 def is_supported_conv2d(
     spec_a: IntAffineQuantizationSpec, spec_b: IntAffineQuantizationSpec, conv
 ):
-    if not TRITON_AVAILABLE:
+    if not TRITON_AVAILABLE or not USE_TRITON_KERNELS:
         return False
     if isinstance(spec_a, IntAffineQuantizationInfo):
         spec_a = spec_a.spec
