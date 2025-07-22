@@ -114,8 +114,6 @@ class IntAffineQuantizationSpec:
     # each group has its own parameters
 
     def __post_init__(self):
-        if self.group_dims == []:
-            self.group_dims = None
         if self.quant_mode in [
             IntAffineQuantizationMode.STATISTICS_AWARE_BINNING_SYMMETRIC,
             IntAffineQuantizationMode.STATISTICS_AWARE_BINNING_ASYMMETRIC,
@@ -124,12 +122,14 @@ class IntAffineQuantizationSpec:
                 self.signed
             ), "Statistics-aware binning only supports signed quantization"
 
-        if self.quant_mode in [
-            IntAffineQuantizationMode.SYMMETRIC,
-            IntAffineQuantizationMode.ASYMMETRIC,
-        ]:
-            if "percentile" not in self.mode_args:
-                self.mode_args["percentile"] = 100.0
+        if self.quant_mode is IntAffineQuantizationMode.SYMMETRIC:
+            if self.mode_args.get("abs_percentile", None) is None:
+                self.mode_args["abs_percentile"] = 100.0 # absmax by default
+        elif self.quant_mode is IntAffineQuantizationMode.ASYMMETRIC:
+            if self.mode_args.get("lower_percentile", None) is None:
+                self.mode_args["lower_percentile"] = 0.0
+            if self.mode_args.get("upper_percentile", None) is None:
+                self.mode_args["upper_percentile"] = 100.0
 
     @property
     def qmin(self):

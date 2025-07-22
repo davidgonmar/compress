@@ -35,7 +35,7 @@ def build_int_affine_recipe(
     leave_edge_layers_8_bits: bool = True,
     quant_args: QuantArgs = {
         "quant_mode": IntAffineQuantizationMode.SYMMETRIC,
-        "percentile": 99.5,
+        "percentile": 99.5, # percentage of values to take into account
     },
     conv_weight_grouper: AbstractGrouper = ConvWeightsPerOutChannel(),
     conv_activation_grouper: AbstractGrouper = PerTensor(),
@@ -92,9 +92,20 @@ def build_int_affine_recipe(
             return linear_weight_grouper if is_weight else linear_activation_grouper
         return conv_weight_grouper if is_weight else conv_activation_grouper
 
-    def _spec(nbits: int, signed: bool, is_weight: bool, layer: str):
+    def _spec(nbits: int, signed: bool, is_weight: bool, layer: str, only_positive: bool) -> IntAffineQuantizationSpec:
         args = weight_qargs if is_weight else act_qargs
-        extra = {k: v for k, v in args.items() if k != "quant_mode"}
+        extra = {}
+        # the goal here is to take into account "percentile" density of the param distribution
+        if args["quant_mode"] == IntAffineQuantizationMode.SYMMETRIC and not only_positive: # range is about [-max, max]
+            extra["abs_percentile"] = (100 + args.get("percentile")) / 2 # will cut at both tails abs_percentile
+        elif args["quant_mode"] == IntAffineQuantizationMode.SYMMETRIC and only_positive:  # range is about [0, max]
+            extra["abs_percentile"] = args.get("percentile") # as range is positive (after ReLU), we usually want to cut at the right tail only
+        elif args["quant_mode"] == IntAffineQuantizationMode.ASYMMETRIC and not only_positive:  # about [-max, max]
+            extra["lower_percentile"] = (100 - args.get("percentile")) / 2 # can control both tails
+            extra["upper_percentile"] = (100 + args.get("percentile")) / 2
+        elif args["quant_mode"] == IntAffineQuantizationMode.ASYMMETRIC and only_positive:  # about [0, max]
+            extra["lower_percentile"] = 0 # usually we want to cut at the right tail only
+            extra["upper_percentile"] = args.get("percentile")
         return IntAffineQuantizationSpec(
             nbits=nbits,
             signed=signed,
@@ -107,18 +118,18 @@ def build_int_affine_recipe(
     i_specs: Dict[str, IntAffineQuantizationSpec] = {}
 
     for n in layers_after_relu:
-        w_specs[n] = _spec(bits_weight, True, True, n)
-        i_specs[n] = _spec(bits_activation, not symmetric_a, False, n)
+        w_specs[n] = _spec(bits_weight, True, True, n, False)
+        i_specs[n] = _spec(bits_activation, not symmetric_a, False, n, True)
 
     for n in layers_not_after_relu:
-        w_specs[n] = _spec(bits_weight, True, True, n)
-        i_specs[n] = _spec(bits_activation, True, False, n)
+        w_specs[n] = _spec(bits_weight, True, True, n, False)
+        i_specs[n] = _spec(bits_activation, True, False, n, False)
 
     if leave_edge_layers_8_bits and edge_layers:
         for n in edge_layers:
             after = n in layers_after_relu
-            i_specs[n] = _spec(8, not (symmetric_a and after), False, n)
-            w_specs[n] = _spec(8, True, True, n)
+            i_specs[n] = _spec(8, not (symmetric_a and after), False, n, after)
+            w_specs[n] = _spec(8, True, True, n, False)
 
     return {k: {"input": i_specs[k], "weight": w_specs[k]} for k in w_specs}
 
