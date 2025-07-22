@@ -36,6 +36,8 @@ from compress.utils import (
     default_should_do,
     cls_passlist_should_do,
     keys_passlist_should_do,
+    is_conv2d,
+    is_linear,
 )
 
 
@@ -84,8 +86,6 @@ def get_quant_dict(
         model,
         should_do=cls_passlist_should_do(cl),
     )
-
-    # print([name for name, module in mods])
 
     return {
         name: {
