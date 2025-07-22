@@ -140,8 +140,8 @@ def calibrate(
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
     if spec.quant_mode == IntAffineQuantizationMode.ENTROPY_SYMMETRIC:
-        assert isinstance(
-            spec.grouper, PerTensor
+        assert (
+            isinstance(spec.grouper, PerTensor)
         ), "Entropy calibration only supports per-tensor quantization atm"
         assert spec.signed, "Entropy calibration only supports signed quantization atm"
         hist_fp32 = (
@@ -171,24 +171,29 @@ def calibrate(
         zero_point = None
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
-    percentile = spec.mode_args.get("percentile", 100)
-    assert (
-        0 < percentile <= 100
-    ), "percentile should be a float between 0 and 100. Default is 100.0 (max value), got {}".format(
-        percentile
-    )
-
+   
     if spec.quant_mode == IntAffineQuantizationMode.ASYMMETRIC:
         xm = spec.grouper.group(x)
-        lower_percentile = (100.0 - percentile) / 2
-        upper_percentile = (100.0 + percentile) / 2
-        xmin = quantile(xm, lower_percentile / 100, dim=0)  # shape (n_groups)
-        xmax = quantile(xm, upper_percentile / 100, dim=0)
+        lower_percentile = spec.mode_args.get("lower_percentile", 0.0)
+        upper_percentile = spec.mode_args.get("upper_percentile", 100.0)
+        assert (
+            0 <= lower_percentile < upper_percentile <= 100
+        ), "lower_percentile and upper_percentile should be between 0 and 100, with lower < upper. Got {}, {}".format(
+            lower_percentile, upper_percentile
+        )
+        xmin = quantile(xm, lower_percentile / 100.0, dim=0)  # shape (n_groups)
+        xmax = quantile(xm, upper_percentile / 100.0, dim=0)
         scale = (xmax - xmin) / (spec.qmax - spec.qmin)
         zero_point = torch.round(spec.qmin - xmin / scale).to(x.dtype)
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point.detach())
 
     if spec.quant_mode == IntAffineQuantizationMode.SYMMETRIC:
+        percentile = spec.mode_args.get("abs_percentile", 100.0) # data will be absolute-valued
+        assert (
+            0 < percentile <= 100
+        ), "percentile should be a float between 0 and 100. Default is 100.0 (max value), got {}".format(
+            percentile
+        )
         xm = spec.grouper.group(x)
         xmax = quantile(xm.abs(), percentile / 100, dim=0)
         scale = 2 * xmax / (spec.qmax - spec.qmin)

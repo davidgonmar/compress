@@ -75,6 +75,7 @@ class QuantizedLinear(nn.Linear):
         self.weight_info = calibrate(linear.weight, weight_spec)
         if isinstance(input_info_or_spec, IntAffineQuantizationInfo):
             self.input_info = input_info_or_spec
+            self.input_spec = input_info_or_spec.spec
             self.online_quant = False
         else:
             self.input_spec = input_info_or_spec
@@ -114,8 +115,8 @@ class QuantizedLinear(nn.Linear):
         return x
 
     def __repr__(self):
-        return f"QuantizedLinear({self.in_features}, {self.out_features}, {self.bias})"
-
+        return f"QuantizedLinear({self.in_features}, {self.out_features} | W{self.weight_spec.nbits}{'S' if self.weight_spec.signed else 'U'}:{self.weight_spec.mode_args}) | A{self.input_spec.nbits}{'S' if self.input_spec.signed else 'U'}:{self.input_spec.mode_args})"
+    
 
 class QuantizedConv2d(nn.Conv2d):
     def __init__(
@@ -164,6 +165,7 @@ class QuantizedConv2d(nn.Conv2d):
         self.weight_info = calibrate(conv2d.weight, weight_spec)
         if isinstance(input_info_or_spec, IntAffineQuantizationInfo):
             self.input_info = input_info_or_spec
+            self.input_spec = input_info_or_spec.spec
             self.online_quant = False
         else:
             self.input_spec = input_info_or_spec
@@ -210,8 +212,7 @@ class QuantizedConv2d(nn.Conv2d):
         return conv2dres
 
     def __repr__(self):
-        return f"QuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias})"
-
+        return f"QuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups} | W{self.weight_spec.nbits}{'S' if self.weight_spec.signed else 'U'}:{self.weight_spec.mode_args}) | A{self.input_spec.nbits}{'S' if self.input_spec.signed else 'U'}:{self.input_spec.mode_args})"
 
 # ================================== CODEBOOK QUANTIZATION ==================================
 
