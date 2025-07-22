@@ -3,6 +3,7 @@ from compress.quantization.common import (
     PerTensor,
     ConvWeightsPerOutChannel,
     LinearWeightsPerOutChannel,
+    AbstractGrouper,
 )
 from typing import Iterable, Mapping, Optional, Callable, Dict, Any, Union
 
@@ -36,10 +37,10 @@ def build_int_affine_recipe(
         "quant_mode": IntAffineQuantizationMode.SYMMETRIC,
         "percentile": 99.5,
     },
-    conv_weight_grouper: ConvWeightsPerOutChannel = ConvWeightsPerOutChannel(),
-    conv_activation_grouper: PerTensor = PerTensor(),
-    linear_weight_grouper: LinearWeightsPerOutChannel = LinearWeightsPerOutChannel(),
-    linear_activation_grouper: PerTensor = PerTensor(),
+    conv_weight_grouper: AbstractGrouper = ConvWeightsPerOutChannel(),
+    conv_activation_grouper: AbstractGrouper = PerTensor(),
+    linear_weight_grouper: AbstractGrouper = LinearWeightsPerOutChannel(),
+    linear_activation_grouper: AbstractGrouper = PerTensor(),
     get_layer_type: Callable[[str], str] = lambda n: (
         "linear" if "linear" in n else "conv"
     ),
@@ -130,10 +131,10 @@ def mobilenetv2_recipe_quant(
         "quant_mode": IntAffineQuantizationMode.SYMMETRIC,
         "percentile": 99.5,
     },
-    conv_weight_grouper: ConvWeightsPerOutChannel = ConvWeightsPerOutChannel(),
-    conv_activation_grouper: PerTensor = PerTensor(),
-    linear_weight_grouper: LinearWeightsPerOutChannel = LinearWeightsPerOutChannel(),
-    linear_activation_grouper: PerTensor = PerTensor(),
+    conv_weight_grouper: AbstractGrouper = ConvWeightsPerOutChannel(),
+    conv_activation_grouper: AbstractGrouper = PerTensor(),
+    linear_weight_grouper: AbstractGrouper = LinearWeightsPerOutChannel(),
+    linear_activation_grouper: AbstractGrouper = PerTensor(),
 ):
     return build_int_affine_recipe(
         bits_activation=bits_activation,
@@ -175,10 +176,10 @@ def resnet18_recipe_quant(
         "quant_mode": IntAffineQuantizationMode.SYMMETRIC,
         "percentile": 99.5,
     },
-    conv_weight_grouper: ConvWeightsPerOutChannel = ConvWeightsPerOutChannel(),
-    conv_activation_grouper: PerTensor = PerTensor(),
-    linear_weight_grouper: LinearWeightsPerOutChannel = LinearWeightsPerOutChannel(),
-    linear_activation_grouper: PerTensor = PerTensor(),
+    conv_weight_grouper: AbstractGrouper = ConvWeightsPerOutChannel(),
+    conv_activation_grouper: AbstractGrouper = PerTensor(),
+    linear_weight_grouper: AbstractGrouper = LinearWeightsPerOutChannel(),
+    linear_activation_grouper: AbstractGrouper = PerTensor(),
 ):
     return build_int_affine_recipe(
         bits_activation=bits_activation,
@@ -222,10 +223,10 @@ def resnet20_recipe_quant(
         "quant_mode": IntAffineQuantizationMode.SYMMETRIC,
         "percentile": 99.5,
     },
-    conv_weight_grouper: ConvWeightsPerOutChannel = ConvWeightsPerOutChannel(),
-    conv_activation_grouper: PerTensor = PerTensor(),
-    linear_weight_grouper: LinearWeightsPerOutChannel = LinearWeightsPerOutChannel(),
-    linear_activation_grouper: PerTensor = PerTensor(),
+    conv_weight_grouper: AbstractGrouper = ConvWeightsPerOutChannel(),
+    conv_activation_grouper: AbstractGrouper = PerTensor(),
+    linear_weight_grouper: AbstractGrouper = LinearWeightsPerOutChannel(),
+    linear_activation_grouper: AbstractGrouper = PerTensor(),
 ):
     return build_int_affine_recipe(
         bits_activation=bits_activation,

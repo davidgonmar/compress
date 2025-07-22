@@ -140,8 +140,8 @@ def calibrate(
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
     if spec.quant_mode == IntAffineQuantizationMode.ENTROPY_SYMMETRIC:
-        assert (
-            spec.grouper is PerTensor
+        assert isinstance(
+            spec.grouper, PerTensor
         ), "Entropy calibration only supports per-tensor quantization atm"
         assert spec.signed, "Entropy calibration only supports signed quantization atm"
         hist_fp32 = (
@@ -190,7 +190,6 @@ def calibrate(
 
     if spec.quant_mode == IntAffineQuantizationMode.SYMMETRIC:
         xm = spec.grouper.group(x)
-        # print(x.max(), x.min())
         xmax = quantile(xm.abs(), percentile / 100, dim=0)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         zero_point = None
