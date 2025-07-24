@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# uses option B for shortcut (seems to be the most common implementation)
 class BasicBlock(nn.Module):
     expansion = 1
 
