@@ -67,7 +67,6 @@ class ResNet(nn.Module):
         out = self.layer3(out)
         out = self.avgpool(out)
         out = torch.flatten(out, 1)
-        out = self.dropout(out)
         return self.linear(out)
 
 

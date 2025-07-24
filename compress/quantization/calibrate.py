@@ -140,8 +140,8 @@ def calibrate(
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
     if spec.quant_mode == IntAffineQuantizationMode.ENTROPY_SYMMETRIC:
-        assert (
-            isinstance(spec.grouper, PerTensor)
+        assert isinstance(
+            spec.grouper, PerTensor
         ), "Entropy calibration only supports per-tensor quantization atm"
         assert spec.signed, "Entropy calibration only supports signed quantization atm"
         hist_fp32 = (
@@ -171,7 +171,6 @@ def calibrate(
         zero_point = None
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
-   
     if spec.quant_mode == IntAffineQuantizationMode.ASYMMETRIC:
         xm = spec.grouper.group(x)
         lower_percentile = spec.mode_args.get("lower_percentile", 0.0)
@@ -188,7 +187,9 @@ def calibrate(
         return IntAffineQuantizationInfo(spec, scale.detach(), zero_point.detach())
 
     if spec.quant_mode == IntAffineQuantizationMode.SYMMETRIC:
-        percentile = spec.mode_args.get("abs_percentile", 100.0) # data will be absolute-valued
+        percentile = spec.mode_args.get(
+            "abs_percentile", 100.0
+        )  # data will be absolute-valued
         assert (
             0 < percentile <= 100
         ), "percentile should be a float between 0 and 100. Default is 100.0 (max value), got {}".format(
