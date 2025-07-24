@@ -116,7 +116,7 @@ class QuantizedLinear(nn.Linear):
 
     def __repr__(self):
         return f"QuantizedLinear({self.in_features}, {self.out_features} | W{self.weight_spec.nbits}{'S' if self.weight_spec.signed else 'U'}:{self.weight_spec.mode_args}) | A{self.input_spec.nbits}{'S' if self.input_spec.signed else 'U'}:{self.input_spec.mode_args})"
-    
+
 
 class QuantizedConv2d(nn.Conv2d):
     def __init__(
@@ -213,6 +213,7 @@ class QuantizedConv2d(nn.Conv2d):
 
     def __repr__(self):
         return f"QuantizedConv2d({self.in_channels}, {self.out_channels}, {self.kernel_size}, {self.stride}, {self.padding}, {self.dilation}, {self.groups} | W{self.weight_spec.nbits}{'S' if self.weight_spec.signed else 'U'}:{self.weight_spec.mode_args}) | A{self.input_spec.nbits}{'S' if self.input_spec.signed else 'U'}:{self.input_spec.mode_args})"
+
 
 # ================================== CODEBOOK QUANTIZATION ==================================
 

@@ -124,7 +124,7 @@ class IntAffineQuantizationSpec:
 
         if self.quant_mode is IntAffineQuantizationMode.SYMMETRIC:
             if self.mode_args.get("abs_percentile", None) is None:
-                self.mode_args["abs_percentile"] = 100.0 # absmax by default
+                self.mode_args["abs_percentile"] = 100.0  # absmax by default
         elif self.quant_mode is IntAffineQuantizationMode.ASYMMETRIC:
             if self.mode_args.get("lower_percentile", None) is None:
                 self.mode_args["lower_percentile"] = 0.0

@@ -388,26 +388,11 @@ def to_low_rank_manual(
 def to_low_rank_global(
     model: nn.Module,
     metric: str,
-    ratio_to_keep,
+    ratio_to_keep: float,
     keys,
-    sample_input,
-    bn_keys=None,
-    inplace=True,
+    sample_input: torch.Tensor,
+    inplace: bool = True,
 ):
-    """
-    Converts a model to low-rank by replacing its linear and convolutional layers with low-rank approximations.
-    Args:
-        model (nn.Module): The model to convert.
-        metric (str): The metric to use for low-rank approximation. Can be "rank", "flops", or "params".
-        ratio_to_keep (float): The ratio of the metric to keep (e.g., 0.5 means keep 50% of the metric).
-        keys (list): A list of keys to identify the modules to replace.
-        sample_input (torch.Tensor): A sample input tensor to the model, used to determine output sizes of layers.
-        bn_keys (list, optional): A list of tuples containing (conv_name, bn_name) pairs for batch normalization layers. Defaults to None.
-        inplace (bool): If True, modifies the model in place. If False, returns a copy of the model with low-rank layers.
-    Returns:
-        nn.Module: The modified model with low-rank layers.
-    """
-
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -416,94 +401,69 @@ def to_low_rank_global(
         should_do=keys_passlist_should_do(keys),
     )
 
-    rand_inp = sample_input.to(next(model.parameters()).device)
+    device = next(model.parameters()).device
+    rand_inp = sample_input.to(device)
 
-    # get output sizes of every layer
-    hooks = []
-    sizes = []
+    hooks, sizes = [], []
 
-    def hook_fn(module, input, output):
-        if isinstance(module, nn.Conv2d) or isinstance(module, nn.LazyConv2d):
-            sizes.append(output.shape)
-        elif isinstance(module, nn.Linear) or isinstance(module, nn.LazyLinear):
+    def hook_fn(module, _, output):
+        if isinstance(module, (nn.Conv2d, nn.LazyConv2d, nn.Linear, nn.LazyLinear)):
             sizes.append(output.shape)
         else:
             raise ValueError("Module should be either Conv2d or Linear")
 
-    for name, module in modules_to_replace:
-        hook = module.register_forward_hook(hook_fn)
-        hooks.append(hook)
+    for _, module in modules_to_replace:
+        hooks.append(module.register_forward_hook(hook_fn))
 
-    prev_state = model.training
+    was_training = model.training
     model.eval()
     with torch.no_grad():
-        model(rand_inp)
-
-    for hook in hooks:
-        hook.remove()
-
-    model.train(prev_state)
-
-    assert len(sizes) == len(
-        modules_to_replace
-    ), "Sizes and modules to replace do not match"
+        _ = model(rand_inp)
+    for h in hooks:
+        h.remove()
+    model.train(was_training)
 
     reshaped_params = {
         name: get_reshape(module)(module.weight.detach())
         for name, module in modules_to_replace
     }
-    factors = {
-        name: decompose_params(reshaped) for name, reshaped in reshaped_params.items()
-    }
+    factors = {name: decompose_params(mat) for name, mat in reshaped_params.items()}
 
-    cum_energies = {
-        name: (cs := torch.cumsum(factor[1] ** 2, dim=0)) / cs[-1]
-        for name, factor in factors.items()
-    }
+    cum_energies = []
+    entropies = []
+    for name, _ in modules_to_replace:
+        S = factors[name][1]
+        energy = torch.cumsum(S**2, dim=0)
+        energy /= energy[-1]
+        cum_energies.append(energy)
 
-    cum_energies = [cum_energies[name] for name, _ in modules_to_replace]
-    if bn_keys:
-        bn_stats = []
-        # bn_keys is a collection of (conv_name, bn_name) pairs
-        bn_dict = {conv_name: bn_name for conv_name, bn_name in bn_keys}
+        p = (S**2) / torch.sum(S**2)
+        H = -(p * torch.log(p + 1e-12)).sum()
+        entropies.append(H)
 
-        named_mods = model.named_modules()
-        keytomods = {k: v for k, v in named_mods}
-
-        for name, module in modules_to_replace:
-            if name in bn_dict:
-                bn_mod = keytomods[bn_dict[name]]
-                rm = bn_mod.running_mean.detach()  # shape [C]
-                rv = bn_mod.running_var.detach()  # shape [C]
-
-                # global variance = E[X^2] - E[X]^2
-                # where E[X^2] = mean(rv + rm^2), and E[X] = mean(rm)
-                global_var = (rv + rm.pow(2)).mean() - rm.mean().pow(2)
-
-                bn_stats.append(global_var)
-            else:
-                bn_stats.append(torch.tensor(1.0, device=module.weight.device))
-
-        # compute importance of each layer with avg std of BN
-        cum_energies = [
-            energy * torch.sqrt(stat) for energy, stat in zip(cum_energies, bn_stats)
-        ]
+    cum_energies = [
+        energy * torch.sqrt(w) for energy, w in zip(cum_energies, entropies)
+    ]
 
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
     mods = [mod for _, mod in modules_to_replace]
-    # costs
+
     if metric == "rank":
-        costs = [torch.arange(1, len(energy) + 1, 1) for energy in cum_energies]
-        costs = [torch.cumsum(cost, 0) for cost in costs]
+        costs = [
+            torch.cumsum(torch.arange(1, len(e) + 1, device=e.device), 0)
+            for e in cum_energies
+        ]
+        total_budget = sum(len(e) for e in cum_energies) * ratio_to_keep
     elif metric == "flops":
         costs = [
             (
-                generate_cost_flops_linear(w.shape, out_size)
+                generate_cost_flops_linear(w.shape, out_shape)
                 if isinstance(mod, nn.Linear)
-                else generate_cost_flops_conv2d(w.shape, out_size)
+                else generate_cost_flops_conv2d(w.shape, out_shape)
             )
-            for w, out_size, mod in zip(ws, sizes, mods)
+            for w, out_shape, mod in zip(ws, sizes, mods)
         ]
+        total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
     elif metric == "params":
         costs = [
             (
@@ -511,27 +471,20 @@ def to_low_rank_global(
                 if isinstance(mod, nn.Linear)
                 else generate_cost_params_conv2d(w.shape)
             )
-            for w, out_size, mod in zip(ws, sizes, mods)
+            for w, out_shape, mod in zip(ws, sizes, mods)
         ]
-    if metric == "rank":
-        n_to_keep = sum(len(energy) for energy in cum_energies) * ratio_to_keep
-    elif metric == "flops":
-        n_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
-    elif metric == "params":
-        n_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
+        total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
+    else:
+        raise ValueError(
+            f"Unknown metric '{metric}'. Choose from 'rank', 'flops', or 'params'."
+        )
 
-    selected_indices = maximize_energy(cum_energies, costs, n_to_keep)
-
+    selected_indices = maximize_energy(cum_energies, costs, total_budget)
     selected_indices_per_module = {
-        name: s for (name, _), s in zip(modules_to_replace, selected_indices)
+        name: sel for (name, _), sel in zip(modules_to_replace, selected_indices)
     }
 
     def factory_fn(name, module):
-        parent_module = model
-        *parent_path, attr_name = name.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
         if is_linear(module):
             return factorize_linear(
                 module,
@@ -547,8 +500,11 @@ def to_low_rank_global(
         else:
             return module
 
-    modules_to_replace = {name: module for name, module in modules_to_replace}
-    replace_with_factory(model, modules_to_replace, factory_fn)
+    replace_with_factory(
+        model,
+        {name: module for name, module in modules_to_replace},
+        factory_fn,
+    )
     return model
 
 
@@ -840,22 +796,22 @@ def to_low_rank_manual_activation_aware(
     return model
 
 
-# global activation aware svd
 def to_low_rank_activation_aware_global(
     model: nn.Module,
     dataloader,
     keys,
     ratio_to_keep,
-    bn_keys=None,
-    metric="flops",
-    inplace=True,
-    data_whitening_impl="eigh",
+    metric: str = "flops",
+    inplace: bool = True,
+    data_whitening_impl: str = "eigh",
 ):
     if not inplace:
         model = copy.deepcopy(model)
 
-    acts = {}
-    outs = {}
+    device = next(model.parameters()).device
+
+    acts: Dict[str, torch.Tensor] = {}
+    outs: Dict[str, torch.Tensor] = {}
     hooks = []
 
     modules_to_replace = gather_submodules(
@@ -864,139 +820,107 @@ def to_low_rank_activation_aware_global(
     )
 
     def hook_fn(name, module, input, output):
-        input = input[0] if isinstance(input, tuple) else input
-        if acts.get(name) is None:
-            acts[name] = input
+        x = input[0] if isinstance(input, tuple) else input
 
+        if name not in acts:
+            acts[name] = x.detach()
         else:
-            acts[name] = torch.cat((acts[name], input), dim=0)
+            acts[name] = torch.cat((acts[name], x.detach()), dim=0)
 
-        if outs.get(name) is None:
-            outs[name] = output
-
+        if name not in outs:
+            outs[name] = output.detach()
         else:
-            outs[name] = torch.cat((outs[name], output), dim=0)
+            outs[name] = torch.cat((outs[name], output.detach()), dim=0)
 
     for name, module in modules_to_replace:
-        hook = module.register_forward_hook(functools.partial(hook_fn, name))
-        hooks.append(hook)
+        hooks.append(module.register_forward_hook(functools.partial(hook_fn, name)))
 
     prev_state = model.training
-
     model.eval()
+
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Getting activations"):
             if isinstance(batch, dict):
-                inputs = {
-                    key: value.to(next(model.parameters()).device)
-                    for key, value in batch.items()
-                }
-                model(**inputs)
+                inputs = {k: v.to(device) for k, v in batch.items()}
+                _ = model(**inputs)
             else:
-                inputs, targets = batch
-                inputs, targets = inputs.to(
-                    next(model.parameters()).device
-                ), targets.to(next(model.parameters()).device)
-                model(inputs)
+                inputs, _ = batch if len(batch) == 2 else (batch, None)
+                inputs = inputs.to(device)
+                _ = model(inputs)
 
     model.train(prev_state)
 
-    for hook in hooks:
-        hook.remove()
+    for h in hooks:
+        h.remove()
+
     whit = {
         name: obtain_whitening_matrix(acts[name], module, method=data_whitening_impl)
         for name, module in modules_to_replace
     }
 
-    # energies
     cum_energies = []
     for name, module in modules_to_replace:
         reshaped = get_reshape(module)(module.weight.detach())
         aa = whit[name][1] @ reshaped
-
-        # shape (Cout, Cin * H_k * W_k) @ (Cin * H_k * W_k, Cin * H_k * W_k) = (Cout, Cin * H_k * W_k) if conv
-        # or (Cout, Cin) if linear
         svals = torch.linalg.svdvals(aa)
         cum_energy = torch.cumsum(svals**2, 0) / torch.sum(svals**2)
         cum_energies.append(cum_energy)
 
-    if bn_keys:
-        bn_stats = []
-        # bn_keys is a collection of (conv_name, bn_name) pairs
-        bn_dict = {conv_name: bn_name for conv_name, bn_name in bn_keys}
+    act_vars = []
+    for name, module in modules_to_replace:
+        x = acts[name].float()
+        dims = tuple(range(x.ndim))
+        ex = x.mean(dims)
+        ex2 = (x * x).mean(dims)
+        global_var = ex2 - ex.pow(2)
+        act_vars.append(global_var.mean())
 
-        named_mods = model.named_modules()
-        keytomods = {k: v for k, v in named_mods}
+    cum_energies = [
+        energy * torch.sqrt(var.to(energy.device))
+        for energy, var in zip(cum_energies, act_vars)
+    ]
 
-        for name, module in modules_to_replace:
-            if name in bn_dict:
-                bn_mod = keytomods[bn_dict[name]]
-                rm = bn_mod.running_mean.detach()  # shape [C]
-                rv = bn_mod.running_var.detach()  # shape [C]
-
-                # global variance = E[X^2] - E[X]^2
-                # where E[X^2] = mean(rv + rm^2), and E[X] = mean(rm)
-                global_var = (rv + rm.pow(2)).mean() - rm.mean().pow(2)
-
-                bn_stats.append(global_var)
-            else:
-                bn_stats.append(torch.tensor(1.0, device=module.weight.device))
-
-        # compute importance of each layer with avg std of BN
-        cum_energies = [
-            energy * torch.sqrt(stat) for energy, stat in zip(cum_energies, bn_stats)
-        ]
-    # costs
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
+    out_shapes = [outs[name].shape for name, _ in modules_to_replace]
 
     if metric == "rank":
-        costs = [torch.arange(1, len(energy) + 1, 1) for energy in cum_energies]
-        costs = [torch.cumsum(cost, 0) for cost in costs]
-
+        costs = [
+            torch.cumsum(torch.arange(1, len(e) + 1, device=e.device), 0)
+            for e in cum_energies
+        ]
+        total_budget = sum(len(e) for e in cum_energies) * ratio_to_keep
     elif metric == "flops":
         costs = [
             (
-                generate_cost_flops_linear(w.shape, out_size)
-                if len(out_size) == 2
-                else generate_cost_flops_conv2d(w.shape, out_size)
+                generate_cost_flops_linear(w.shape, oshape)
+                if len(oshape) == 2
+                else generate_cost_flops_conv2d(w.shape, oshape)
             )
-            for w, out_size in zip(
-                ws, [outs[name].shape for name, _ in modules_to_replace]
-            )
+            for w, oshape in zip(ws, out_shapes)
         ]
-
+        total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
     elif metric == "params":
         costs = [
             (
                 generate_cost_params_linear(w.shape)
-                if len(out_size) == 2
+                if len(oshape) == 2
                 else generate_cost_params_conv2d(w.shape)
             )
-            for w, out_size in zip(
-                ws, [outs[name].shape for name, _ in modules_to_replace]
-            )
+            for w, oshape in zip(ws, out_shapes)
         ]
+        total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
+    else:
+        raise ValueError(
+            f"Unknown metric '{metric}'. Choose from 'flops', 'params', 'rank'."
+        )
 
-    if metric == "rank":
-        n_rank_to_keep = sum(len(energy) for energy in cum_energies) * ratio_to_keep
+    selected_indices = maximize_energy(cum_energies, costs, total_budget)
 
-    elif metric == "flops":
-        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
-
-    elif metric == "params":
-        n_rank_to_keep = sum(cost[-1].item() for cost in costs) * ratio_to_keep
-
-    selected_indices = maximize_energy(cum_energies, costs, n_rank_to_keep)
-    selected_indices_per_module = {}
-    for (name, _), s in zip(modules_to_replace, selected_indices):
-        selected_indices_per_module[name] = s
+    selected_indices_per_module = {
+        name: sel for (name, _), sel in zip(modules_to_replace, selected_indices)
+    }
 
     def factory_fn(name, module):
-        parent_module = model
-        *parent_path, attr_name = name.split(".")
-        for part in parent_path:
-            parent_module = getattr(parent_module, part)
-
         if is_linear(module):
             return factorize_linear_whitened(
                 module,
@@ -1014,6 +938,9 @@ def to_low_rank_activation_aware_global(
         else:
             return module
 
-    modules_to_replace = {name: module for name, module in modules_to_replace}
-    replace_with_factory(model, modules_to_replace, factory_fn)
+    replace_with_factory(
+        model,
+        {name: module for name, module in modules_to_replace},
+        factory_fn,
+    )
     return model
