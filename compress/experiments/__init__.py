@@ -5,6 +5,23 @@ import torchvision  # noqa
 import compress.experiments.cifar_resnet  # noqa
 
 
+class AverageMeter:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0.0
+        self.avg = 0.0
+        self.sum = 0.0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count if self.count != 0 else 0.0
+
+
 def evaluate_vision_model(
     model: torch.nn.Module, dataloader: torch.utils.data.DataLoader, eval=True
 ) -> Dict[str, float]:
@@ -16,25 +33,23 @@ def evaluate_vision_model(
 
     device = next(model.parameters()).device
 
-    correct = 0
-    total = 0
-    loss = 0.0
-
+    loss_meter = AverageMeter()
+    acc_meter = AverageMeter()
     criterion = torch.nn.CrossEntropyLoss()
-
     for images, labels in dataloader:
         images, labels = images.to(device), labels.to(device)
 
         outputs = model(images)
-        loss += criterion(outputs, labels).item() * images.size(0)
+        loss = criterion(outputs, labels)
         _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+        correct = (predicted == labels).sum().item()
+        batch_size = labels.size(0)
+        accuracy = correct / batch_size
 
-    accuracy = correct / total
-    loss = loss / total
+        loss_meter.update(loss.item(), batch_size)
+        acc_meter.update(accuracy, batch_size)
     model.train(prev_state)
-    return {"accuracy": accuracy, "loss": loss}
+    return {"accuracy": acc_meter.avg, "loss": loss_meter.avg}
 
 
 def mobilenetv2_cifar10_modifier(model):
