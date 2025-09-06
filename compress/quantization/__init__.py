@@ -150,6 +150,7 @@ def fuse_conv_bn_qat(
     conv_name: str,
     bn_name: str,
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
+    use_fast_bn_path=False,
 ):
     if conv_name not in specs:
         raise KeyError(f"Conv layer {conv_name} not found in model")
@@ -162,6 +163,7 @@ def fuse_conv_bn_qat(
         input_spec,
         conv,
         bn,
+        use_fast_bn_path=use_fast_bn_path,
     )
 
 
@@ -173,6 +175,7 @@ def fuse_conv_bn_lsq(
     specs: Dict[str, Dict[Literal["input", "weight"], IntAffineQuantizationSpec]],
     data_batch=None,
     online=False,
+    use_fast_bn_path=False,
 ):
     if conv_name not in specs:
         raise KeyError(f"Conv layer {conv_name} not found in model")
@@ -187,6 +190,7 @@ def fuse_conv_bn_lsq(
         bn,
         data_batch=data_batch,
         online=online,
+        use_fast_bn_path=use_fast_bn_path,
     )
 
 
@@ -196,8 +200,9 @@ def prepare_for_qat(
     use_PACT=False,
     inplace=True,
     use_lsq=False,
-    method_args={},
     fuse_bn_keys=None,
+    use_fast_bn_path=False,
+    online=False,
     **kwargs,
 ):
 
@@ -231,7 +236,8 @@ def prepare_for_qat(
                     bn_name=bn_name,
                     specs=specs,
                     data_batch=activations[conv_name],
-                    online=method_args.get("online", False),
+                    online=online,
+                    use_fast_bn_path=use_fast_bn_path,
                 ),
             )
         else:
@@ -241,6 +247,7 @@ def prepare_for_qat(
                 fuse_impl=functools.partial(
                     fuse_conv_bn_qat,
                     specs=specs,
+                    use_fast_bn_path=use_fast_bn_path,
                 ),
             )
     modules_to_replace = gather_submodules(
@@ -255,7 +262,6 @@ def prepare_for_qat(
         for part in parent_path:
             parent_module = getattr(parent_module, part)
         mod = module
-        online = method_args.get("online", False)
         if not use_lsq:
             if isinstance(module, (nn.Linear, nn.LazyLinear)):
                 mod = QATLinear(
