@@ -3,6 +3,7 @@ from torch import nn
 from enum import Enum
 from abc import ABC, abstractmethod
 
+
 class AbstractGrouper(ABC):
 
     @abstractmethod

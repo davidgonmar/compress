@@ -378,6 +378,7 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
             f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
             f"{self.conv.in_channels}, {self.conv.out_channels}, {self.conv.kernel_size}, "
             f"{self.conv.stride}, {self.conv.padding}, {self.conv.dilation}, {self.conv.groups})"
+            f"frozen={self.frozen}, "
         )
 
 
