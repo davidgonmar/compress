@@ -1,3 +1,8 @@
+"""
+Triton kernels for quantized linear and conv2d.
+The conv2d one is slow in practice.
+"""
+
 import triton
 import triton.language as tl
 import torch

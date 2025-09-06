@@ -13,6 +13,7 @@ from compress.quantization.ptq import (
 
 import math
 from functools import partial
+from typing import Callable
 
 # ============================================================
 # ============= REGULAR QUANTIZATION AWARE TRAINING ==========
@@ -63,9 +64,9 @@ def _qat_prepare(
 ):
     self.weight_spec = weight_spec
     self.input_spec = input_spec
-    self.weight = nn.Parameter(layer.weight, requires_grad=False).requires_grad_(True)
+    self.weight = nn.Parameter(layer.weight.detach().clone(), requires_grad=True)
     self.bias = (
-        nn.Parameter(layer.bias, requires_grad=False).requires_grad_(True)
+        nn.Parameter(layer.bias.detach().clone(), requires_grad=True)
         if layer.bias is not None
         else None
     )
@@ -78,7 +79,7 @@ def _forward_qat(
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    functional: callable,
+    functional: Callable,
     **kwargs,
 ):
     if not self.online:
@@ -90,17 +91,16 @@ def _forward_qat(
 
 
 def _extract_kwargs_from_orig_layer(self, keys_list, orig_layer):
-    # Extract kwargs from the original layer
     for key in keys_list:
         setattr(self, key, getattr(orig_layer, key))
 
 
 def _to_float(self, kwargs_to_extract, orig_layer_cls):
-    # Extract kwargs from the original layer
     kwargs = {key: getattr(self, key) for key in kwargs_to_extract}
-    rt = orig_layer_cls(**kwargs)
-    rt.weight = self.weight
-    rt.bias = self.bias
+    rt = orig_layer_cls(**kwargs, bias=self.bias is not None)
+    rt.weight = self.weight.detach().clone()
+    if self.bias is not None:
+        rt.bias = self.bias.detach().clone()
     return rt
 
 
@@ -116,7 +116,7 @@ class QATLinear(nn.Module):
         self.online = online
         _extract_kwargs_from_orig_layer(
             self,
-            ["in_features", "out_features", "bias"],
+            ["in_features", "out_features"],
             original_layer,
         )
         _qat_prepare(self, original_layer, weight_spec, input_spec)
@@ -132,18 +132,17 @@ class QATLinear(nn.Module):
 
     to_linear = partial(
         _to_float,
-        ["in_features", "out_features", "bias"],
+        ["in_features", "out_features"],
         nn.Linear,
     )
 
-
-def __repr__(self):
-    return (
-        f"QATLinear(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
-        f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
-        f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
-        f"{self.in_features}, {self.out_features}, {self.bias})"
-    )
+    def __repr__(self):
+        return (
+            f"QATLinear(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
+            f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
+            f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
+            f"{self.in_features}, {self.out_features}, {self.bias is not None})"
+        )
 
 
 class QATConv2d(nn.Module):
@@ -166,7 +165,6 @@ class QATConv2d(nn.Module):
                 "padding",
                 "dilation",
                 "groups",
-                "bias",
             ],
             original_layer,
         )
@@ -195,7 +193,6 @@ class QATConv2d(nn.Module):
             "padding",
             "dilation",
             "groups",
-            "bias",
         ],
         nn.Conv2d,
     )
@@ -206,7 +203,7 @@ class QATConv2d(nn.Module):
             f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
             f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
             f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
-            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias is not None})"
         )
 
 
@@ -249,24 +246,6 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
             self.input_observer = EMAInfoObserver(input_spec)
         self.bn_track_running_stats = bn_track_running_stats
         self.use_fast_bn_path = use_fast_bn_path
-        _extract_kwargs_from_orig_layer(
-            self,
-            [
-                "in_channels",
-                "out_channels",
-                "kernel_size",
-                "stride",
-                "padding",
-                "dilation",
-                "groups",
-            ],
-            original_conv_layer,
-        )
-        _extract_kwargs_from_orig_layer(
-            self,
-            ["num_features", "eps", "momentum"],
-            original_bn_layer,
-        )
 
     def forward(self, x: torch.Tensor):
         # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
@@ -384,7 +363,6 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
             "padding",
             "dilation",
             "groups",
-            "bias",
         ],
         nn.Conv2d,
     )
@@ -398,8 +376,8 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
             f"FusedQATConv2dBatchNorm(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
             f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
             f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
-            f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
-            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
+            f"{self.conv.in_channels}, {self.conv.out_channels}, {self.conv.kernel_size}, "
+            f"{self.conv.stride}, {self.conv.padding}, {self.conv.dilation}, {self.conv.groups})"
         )
 
 
@@ -409,20 +387,17 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
 
 
 class LSQQuantize(torch.autograd.Function):
-    # zero_point might be None
     @staticmethod
     def forward(ctx, x, scale, zero_point, info):
-        if zero_point is None:
-            zero_point = info.zero_point
+        assert (
+            zero_point is info.zero_point
+        ), "Zero point must be the same as the one used in calibration"
         assert zero_point is None, "Zero point is not supported"
         assert (
             info.scale is scale
         ), "Scale must be the same as the one used in calibration"
 
-        if zero_point is not None:
-            ctx.save_for_backward(x, scale, zero_point)
-        else:
-            ctx.save_for_backward(x, scale)
+        ctx.save_for_backward(x, scale)
         ctx.qmin = info.qmin
         ctx.qmax = info.qmax
         ctx.spec = info.spec
@@ -430,12 +405,8 @@ class LSQQuantize(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        if len(ctx.saved_tensors) == 3:
-            x, scale, zero_point = ctx.saved_tensors
-        else:
-            x, scale = ctx.saved_tensors
-            zero_point = None
-
+        x, scale = ctx.saved_tensors
+        zero_point = None
         if zero_point is None:
             qmin, qmax = ctx.qmin, ctx.qmax
             spec = ctx.spec
@@ -452,18 +423,13 @@ class LSQQuantize(torch.autograd.Function):
                 * ctx.spec.grouper.group(grad_output)
             ).sum(dim=0)
 
-            """
-            # rescale as the paper mentions
-            rescaling = 1 / math.sqrt((x.numel() * (qmax)))
-            """
-            # the previous is for the per-tensor case
+            # the original paper rescales with scale = 1 / math.sqrt((x.numel() * (qmax)))
+            # which applies for per-tensor quantization
             # generalizing this, we need to rescale by the number of elements in the group
             numels_grp = x_grouped.shape[0]  # shape[1] is the number of groups
 
             s_grad = s_grad * (1 / math.sqrt(numels_grp * (qmax)))
-            # print(s_grad)
             return ctx.spec.grouper.ungroup(x_grad, x), s_grad, None, None
-
         else:
             raise NotImplementedError("Zero point is not supported")
 
@@ -473,7 +439,7 @@ def _forward_lsq(
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    functional: callable,
+    functional: Callable,
     **kwargs,
 ):
     if self.online:
@@ -501,16 +467,18 @@ def _lsq_prepare(
     self.weight_info = calibrate(layer.weight, weight_spec)
     self.weight_info.scale.requires_grad_(True)
 
-    self.weight = nn.Parameter(layer.weight, requires_grad=False).requires_grad_(True)
+    self.weight = nn.Parameter(layer.weight.detach().clone(), requires_grad=True)
     self.bias = (
-        nn.Parameter(layer.bias, requires_grad=False).requires_grad_(True)
+        nn.Parameter(layer.bias.detach().clone(), requires_grad=True)
         if layer.bias is not None
         else None
     )
 
     self.online = online
     if not online:
-        assert data_batch is not None, "data_batch is required for offline LSQ"
+        assert (
+            data_batch is not None
+        ), "data_batch is required to initialize offline LSQ"
         self.input_info = calibrate(data_batch, input_spec)
         self.input_info.scale.requires_grad_(True)
         self.input_spec = input_spec
@@ -521,7 +489,7 @@ def _lsq_prepare(
 def _lsq_to_float(self, kwargs_to_extract, orig_layer_cls):
     # Extract kwargs from the original layer
     kwargs = {key: getattr(self, key) for key in kwargs_to_extract}
-    rt = orig_layer_cls(**kwargs)
+    rt = orig_layer_cls(**kwargs, bias=self.bias is not None)
     rt.weight = self.weight
     rt.bias = self.bias
     return rt
@@ -529,20 +497,23 @@ def _lsq_to_float(self, kwargs_to_extract, orig_layer_cls):
 
 def _lsq_to_quant(self, orig_layer_cls, quant_layer_cls):
     # Extract kwargs from the original layer
-    kwargs = {
-        key: getattr(self, key) for key in ["in_features", "out_features", "bias"]
-    }
+    kwargs = {key: getattr(self, key) for key in ["in_features", "out_features"]}
     input_info = (
         self.input_info
         if not self.online
         else calibrate(torch.empty(1), self.input_spec)
     )
-
-    rt = quant_layer_cls(self.weight_info.spec, input_info, orig_layer_cls(**kwargs))
+    rt = quant_layer_cls(
+        self.weight_info.spec,
+        input_info,
+        orig_layer_cls(**kwargs, bias=self.bias is not None),
+    )
     rt.weight_info = self.weight_info
     rt.weight = torch.nn.Parameter(
         quantize(self.weight, self.weight_info), requires_grad=False
     )
+    if self.bias is not None:
+        rt.bias = torch.nn.Parameter(self.bias.detach().clone(), requires_grad=False)
     return rt
 
 
@@ -558,7 +529,7 @@ class LSQLinear(nn.Module):
         super().__init__()
         _extract_kwargs_from_orig_layer(
             self,
-            ["in_features", "out_features", "bias"],
+            ["in_features", "out_features"],
             original_layer,
         )
         _lsq_prepare(self, original_layer, weight_spec, input_spec, data_batch, online)
@@ -582,7 +553,7 @@ class LSQLinear(nn.Module):
 
     to_linear = partial(
         _lsq_to_float,
-        ["in_features", "out_features", "bias"],
+        ["in_features", "out_features"],
         nn.Linear,
     )
 
@@ -601,7 +572,6 @@ conv2d_kwargs = [
     "padding",
     "dilation",
     "groups",
-    "bias",
 ]
 
 
@@ -826,8 +796,8 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
             f"FusedLSQConv2dBatchNorm(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
             f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
             f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
-            f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
-            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
+            f"{self.conv.in_channels}, {self.conv.out_channels}, {self.conv.kernel_size}, "
+            f"{self.conv.stride}, {self.conv.padding}, {self.conv.dilation}, {self.conv.groups})"
         )
 
 
@@ -866,9 +836,9 @@ def get_regularizer_for_pact(model):
     if not pact_layers:
 
         def pact_regularizer():
-            return torch.tensor(0.0)
+            return torch.tensor(0.0).to(next(model.parameters()).device)
 
     def pact_regularizer():
-        return sum((layer.alpha**2).sum() for layer in pact_layers)
+        return sum(layer.alpha**2 for layer in pact_layers)
 
     return pact_regularizer

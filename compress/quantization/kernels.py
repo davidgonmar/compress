@@ -5,7 +5,6 @@ try:
 
     TRITON_AVAILABLE = True
 
-    raise ImportError("Disabled ATM")
 except ImportError:
     TRITON_AVAILABLE = False
 

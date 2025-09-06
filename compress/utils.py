@@ -76,7 +76,10 @@ def combine_should_do(should_do1: Callable, should_do2: Callable) -> Callable:
 
 
 def replace_with_factory(
-    model: nn.Module, module_dict: Dict[str, nn.Module], factory_fn: Callable
+    model: nn.Module,
+    module_dict: Dict[str, nn.Module],
+    factory_fn: Callable,
+    after_replace_callback=None,
 ):
 
     for name, module in module_dict.items():
@@ -84,7 +87,20 @@ def replace_with_factory(
         *parent_path, attr_name = name.split(".")
         for part in parent_path:
             parent_module = getattr(parent_module, part)
-        setattr(parent_module, attr_name, factory_fn(name, module))
+
+        factory_ret = factory_fn(name, module)
+        if isinstance(factory_ret, tuple):
+            new_mod, kwargs_for_callback = factory_ret
+            if kwargs_for_callback:
+                assert (
+                    after_replace_callback is not None
+                ), "after_replace_callback must be provided if factory_fn returns a tuple"
+        else:
+            new_mod = factory_ret
+            kwargs_for_callback = {}
+        setattr(parent_module, attr_name, new_mod)
+        if after_replace_callback is not None:
+            after_replace_callback(**kwargs_for_callback)
     return model
 
 
