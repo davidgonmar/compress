@@ -2,8 +2,6 @@ import torch
 from torch import nn
 from enum import Enum
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-
 
 class AbstractGrouper(ABC):
 
@@ -104,14 +102,13 @@ class IntAffineQuantizationMode(Enum):
     LSQ_INITIALIZATION = "LSQ_INITIALIZATION"
 
 
-@dataclass
 class IntAffineQuantizationSpec:
     nbits: int
     signed: bool
     quant_mode: IntAffineQuantizationMode
-    mode_args: dict = field(default_factory=dict)
+    mode_args: dict
 
-    grouper: AbstractGrouper = field(default_factory=PerTensor)
+    grouper: AbstractGrouper
     # grouper takes a tensor of any shape and returns a tensor of shape [group_d, n_groups]
     # each group has its own parameters
 
@@ -142,6 +139,7 @@ class IntAffineQuantizationSpec:
         return (1 << (self.nbits - 1)) - 1 if self.signed else (1 << self.nbits) - 1
 
     def get_dtype(self):
+        # if the dtype is not natively supported, returns float32
         return {
             (8, False): torch.uint8,
             (8, True): torch.int8,
@@ -149,17 +147,19 @@ class IntAffineQuantizationSpec:
             (16, True): torch.int16,
         }.get((self.nbits, self.signed), torch.float32)
 
-    def from_dtype(dtype: torch.dtype | str):
-        if dtype in ["int2, int4"]:
-            return IntAffineQuantizationSpec(2 if dtype == "int2" else 4, True)
-        if isinstance(dtype, str):
-            dtype = torch.dtype(dtype)
-        return {
-            torch.uint8: IntAffineQuantizationSpec(8, False),
-            torch.int8: IntAffineQuantizationSpec(8, True),
-            torch.uint16: IntAffineQuantizationSpec(16, False),
-            torch.int16: IntAffineQuantizationSpec(16, True),
-        }[dtype]
+    def __init__(
+        self,
+        nbits: int,
+        signed: bool,
+        quant_mode: IntAffineQuantizationMode,
+        grouper: AbstractGrouper = PerTensor,
+        **kwargs,
+    ):
+        self.nbits = nbits
+        self.signed = signed
+        self.quant_mode = quant_mode
+        self.mode_args = kwargs
+        self.grouper = grouper
 
     def __repr__(self):
         return f"IntAffineQuantizationSpec(nbits={self.nbits}, signed={self.signed}, quant_mode={self.quant_mode}, mode_args={self.mode_args}, grouper={self.grouper})"
