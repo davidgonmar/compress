@@ -1,3 +1,8 @@
+"""
+Experimental tile-lang convolution implementation.
+Not used in the codebase.
+"""
+
 import torch
 import tilelang
 from tilelang.autotuner import *

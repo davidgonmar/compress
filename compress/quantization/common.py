@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from enum import Enum
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
 
 class AbstractGrouper(ABC):
@@ -103,13 +104,14 @@ class IntAffineQuantizationMode(Enum):
     LSQ_INITIALIZATION = "LSQ_INITIALIZATION"
 
 
+@dataclass
 class IntAffineQuantizationSpec:
     nbits: int
     signed: bool
     quant_mode: IntAffineQuantizationMode
-    mode_args: dict = {}
+    mode_args: dict = field(default_factory=dict)
 
-    grouper: AbstractGrouper
+    grouper: AbstractGrouper = field(default_factory=PerTensor)
     # grouper takes a tensor of any shape and returns a tensor of shape [group_d, n_groups]
     # each group has its own parameters
 
@@ -158,20 +160,6 @@ class IntAffineQuantizationSpec:
             torch.uint16: IntAffineQuantizationSpec(16, False),
             torch.int16: IntAffineQuantizationSpec(16, True),
         }[dtype]
-
-    def __init__(
-        self,
-        nbits: int,
-        signed: bool,
-        quant_mode: IntAffineQuantizationMode,
-        grouper: AbstractGrouper = PerTensor,
-        **kwargs,
-    ):
-        self.nbits = nbits
-        self.signed = signed
-        self.quant_mode = quant_mode
-        self.mode_args = kwargs
-        self.grouper = grouper
 
     def __repr__(self):
         return f"IntAffineQuantizationSpec(nbits={self.nbits}, signed={self.signed}, quant_mode={self.quant_mode}, mode_args={self.mode_args}, grouper={self.grouper})"

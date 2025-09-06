@@ -434,16 +434,14 @@ def to_low_rank_global(
     for name, _ in modules_to_replace:
         S = factors[name][1]
         energy = torch.cumsum(S**2, dim=0)
-        energy /= energy[-1]
+        energy = energy / energy[-1]
         cum_energies.append(energy)
 
         p = (S**2) / torch.sum(S**2)
         H = -(p * torch.log(p + 1e-12)).sum()
         entropies.append(H)
 
-    cum_energies = [
-        energy * torch.sqrt(w) for energy, w in zip(cum_energies, entropies)
-    ]
+    cum_energies = [energy for energy, w in zip(cum_energies, entropies)]
 
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
     mods = [mod for _, mod in modules_to_replace]
@@ -601,6 +599,7 @@ def obtain_whitening_matrix_eigh(
         raise ValueError("Module should be either Conv2d or Linear")
 
     m = im2coled.T @ im2coled
+    m = m / acts.shape[0]
     eigenvalues, eigenvectors = torch.linalg.eigh(m)
     x_svals = torch.sqrt(eigenvalues)
     V = eigenvectors
@@ -876,7 +875,7 @@ def to_low_rank_activation_aware_global(
         act_vars.append(global_var.mean())
 
     cum_energies = [
-        energy * torch.sqrt(var.to(energy.device))
+        energy  # * torch.sqrt(var.to(energy.device))
         for energy, var in zip(cum_energies, act_vars)
     ]
 
@@ -936,7 +935,7 @@ def to_low_rank_activation_aware_global(
                 whit[name][1],
             )
         else:
-            return module
+            raise ValueError("Module should be either Linear or Conv2d")
 
     replace_with_factory(
         model,
