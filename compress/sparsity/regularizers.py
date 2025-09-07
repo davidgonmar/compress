@@ -33,7 +33,7 @@ class L1L2IntraRatioRegularizer:
         self, param: torch.Tensor, grouper: Type[OutChannelGroupingGrouperConv2d]
     ) -> torch.Tensor:
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-        return _vmapped_l1_l2_ratio(grouped, normalize=False)
+        return _vmapped_l1_l2_ratio(grouped, normalize=False)  # (n_groups,)
 
 
 class SCADIntraRegularizer:
@@ -46,7 +46,7 @@ class SCADIntraRegularizer:
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
         return _vmapped_scad(
             grouped, **kwargs, reduction="none"
-        )  # (n_groups, m_elements_per_group)
+        )  # (n_groups,)
 
 
 class L1L2InterRatioRegularizer:
@@ -54,15 +54,8 @@ class L1L2InterRatioRegularizer:
         self, param: torch.Tensor, grouper: Type[OutChannelGroupingGrouperConv2d]
     ) -> torch.Tensor:
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-        l2 = (lambda x: torch.sqrt(torch.sum(x**2, dim=-1)))(grouped)
-        return l1_l2_ratio(l2, False)  # (n_groups,)
-
-
-def l1_l2_ratio_for_all_modules(
-    param: torch.Tensor, grouper: Type[OutChannelGroupingGrouperConv2d], **kwargs
-) -> torch.Tensor:
-    grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-    return _vmapped_l1_l2_ratio(grouped, **kwargs)  # (n_groups, m_elements_per_group)
+        l2 = (lambda x: torch.sqrt(torch.sum(x**2, dim=-1)))(grouped)  # (n_groups,)
+        return l1_l2_ratio(l2, False)  # ()
 
 
 def get_regularizer_for_all_layers(
@@ -116,6 +109,7 @@ class SparsityParamRegularizer:
                 raise TypeError(
                     f"Weight for '{name}' must be a float or int, got {type(weight)}"
                 )
+            
             if not isinstance(
                 module,
                 (
@@ -127,7 +121,7 @@ class SparsityParamRegularizer:
                 ),
             ):
                 raise TypeError(
-                    f"Module for '{name}' must be a torch.nn.Module, got {type(module)}"
+                    f"Invalid module for '{name}', got {type(module)}"
                 )
             self.specs[name] = {
                 "grouper": grouper,
@@ -176,7 +170,6 @@ class L1L2ActivationInterRegularizer:
                 activation.size(0), activation.size(1), -1
             )  # (B, O, H*W)
             norm = self.metric(activation, dim=(0, 2))  # (O)
-            batch_axes = 0
         elif grouper is OutChannelGroupingGrouperLinear:
             # act shape = (..., O)
             batch_axes = list(range(len(activation.shape[:-1])))
@@ -218,7 +211,7 @@ class SparsityActivationRegularizer:
                 ),
             ):
                 raise TypeError(
-                    f"Module for '{name}' must be a torch.nn.Module, got {type(module)}"
+                    f"Invalid module for '{name}', got {type(module)}"
                 )
             self.specs[name] = {
                 "grouper": grouper,
@@ -232,7 +225,6 @@ class SparsityActivationRegularizer:
         )
 
         # create hooks to store activations
-
         self.activations = {}
         self.hooks = {}
         self.model = model
@@ -251,14 +243,13 @@ class SparsityActivationRegularizer:
     def _save_activation(self, name):
         def hook(module, input, output):
             self.activations[name] = output
-
         return hook
 
     def loss(self) -> torch.Tensor:
         total_loss = torch.tensor(0.0, device=self.device)
         assert (
             next(iter(self.activations.values())) is not None
-        ), "No activations found. Did you run the model?"
+        ), "No activations found. Did you run a forward pass?"
 
         for name, spec in self.specs.items():
             grp = spec["grouper"]
