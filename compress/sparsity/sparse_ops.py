@@ -49,6 +49,7 @@ class SparseLinear(nn.Module):
         return pruned_linear
 
     def to_sparse_semi_structured(self):
+        # Assumes the mask already has the correct sparsity pattern
         w = self.weight * self.weight_mask
         linear = nn.Linear(
             self.in_features, self.out_features, bias=self.bias is not None
@@ -189,7 +190,7 @@ class SparseConv2d(nn.Module):
         pruned_weight = self.weight * self.weight_mask
         conv.weight = nn.Parameter(pruned_weight.clone())
         if self.bias is not None:
-            conv.bias = nn.Parameter(self.bias.data.clone())
+            conv.bias = nn.Parameter((self.bias * self.bias_mask).clone())
         return conv
 
     def get_weight(self):
@@ -204,8 +205,8 @@ class SparseConv2d(nn.Module):
         ] * self.kernel_size[1] + (self.out_channels if self.bias is not None else 0)
 
 
+# Only supports frozen BN for now
 class SparseFusedConv2dBatchNorm2d(nn.Module):
-
     def __init__(self, conv_params: dict, bn_params: dict):
         super().__init__()
 
@@ -249,7 +250,6 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         weight_mask: torch.Tensor | None = None,
         bias_mask: torch.Tensor | None = None,
     ) -> "SparseFusedConv2dBatchNorm2d":
-        """Build a sparse‑aware block that behaves exactly like `conv+bn`."""
         obj = cls(
             conv_params={
                 "in_channels": conv.in_channels,
@@ -289,23 +289,10 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         return obj
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.training:
-            # update running stats
-            w_masked = self.conv.weight * self.weight_mask
-            b_masked = (
-                self.conv.bias * self.bias_mask if self.conv.bias is not None else None
-            )
-            _x = F.conv2d(
-                x,
-                w_masked,
-                b_masked,
-                stride=self.conv_params["stride"],
-                padding=self.conv_params["padding"],
-                dilation=self.conv_params["dilation"],
-                groups=self.conv_params["groups"],
-            )
-            self.bn(_x)
-
+        # In some cases, we might want to get the gradients of the EFFECTIVE parameters (those are the ones that would get merged for inference)
+        # For example, we use them to estimate the importance of the parameters for pruning
+        # _cached_bias and _cached_weight get stored so that one can access their gradients
+        # Note that gradients will flow back to the BN parameters, but the stats are frozen
         w_fused, b_fused = get_new_params(self.conv, self.bn)
         w_fused.retain_grad()
         b_fused.retain_grad()
@@ -339,21 +326,17 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
     def bias(self) -> torch.Tensor:
         return self.get_bias()
 
-    # ------------------------------------------------------------------------- #
+    # We count the number of parameters as they would be stored after fusion
     def nonzero_params(self) -> int:
-        """Number of *stored* parameters that are still non‑zero after pruning."""
         return int(
             torch.count_nonzero(self.get_weight())
             + torch.count_nonzero(self.get_bias())
         )
 
     def total_params(self) -> int:
-        """Total parameters before pruning (Conv + BN)."""
         return self.conv.weight.numel() + self.bn.bias.numel()
 
-    # ------------------------------------------------------------------------- #
     def to_conv2d(self) -> nn.Conv2d:
-        """Export a plain Conv2d containing the fused, pruned weights & bias."""
         fused_w, fused_b = self.get_weight(), self.get_bias()
 
         conv = nn.Conv2d(
@@ -372,7 +355,7 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         conv.bias.data.copy_(fused_b)
         return conv
 
-    # conv
+    # Conv properties
     @property
     def kernel_size(self):
         return self.conv.kernel_size
@@ -401,7 +384,7 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
     def dilation(self):
         return self.conv.dilation
 
-    # bn
+    # BN properties
     @property
     def eps(self):
         return self.bn.eps
