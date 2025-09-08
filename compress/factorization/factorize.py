@@ -373,7 +373,7 @@ def to_low_rank_manual(
     return model
 
 
-def collect_cache_low_rank_global(model, keys, dataloader):
+def collect_cache_low_rank_auto(model, keys, dataloader):
     # will compute the variance of each layer in keys and the output sizes
     modules_to_replace = gather_submodules(
         model,
@@ -719,7 +719,7 @@ def to_low_rank_manual_activation_aware(
     return model
 
 
-def to_low_rank_activation_aware_global(
+def to_low_rank_activation_aware_auto(
     model: nn.Module,
     cache,
     keys,
