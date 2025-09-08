@@ -4,7 +4,12 @@ import torch
 def maximize_energy(
     cum_energy_vectors, cumulative_cost_vectors, total_cost, minimize=False
 ):
-    import pulp
+    try:
+        import pulp
+    except ImportError:
+        raise ImportError(
+            "In order to use this function, please install the pulp package."
+        )
 
     # We are given N vectors of cumulative energies and of cumulative vectors. We want to, by selecting a (cumulative)
     # subset of indices from each vector (cumulative in the sense that if j is chosen, all(j' < j) are also chosen), maximize

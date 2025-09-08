@@ -44,9 +44,7 @@ class SCADIntraRegularizer:
         **kwargs,
     ) -> torch.Tensor:
         grouped = grouper.transform(param)  # (n_groups, m_elements_per_group)
-        return _vmapped_scad(
-            grouped, **kwargs, reduction="none"
-        )  # (n_groups,)
+        return _vmapped_scad(grouped, **kwargs, reduction="none")  # (n_groups,)
 
 
 class L1L2InterRatioRegularizer:
@@ -109,7 +107,7 @@ class SparsityParamRegularizer:
                 raise TypeError(
                     f"Weight for '{name}' must be a float or int, got {type(weight)}"
                 )
-            
+
             if not isinstance(
                 module,
                 (
@@ -120,9 +118,7 @@ class SparsityParamRegularizer:
                     SparseFusedConv2dBatchNorm2d,
                 ),
             ):
-                raise TypeError(
-                    f"Invalid module for '{name}', got {type(module)}"
-                )
+                raise TypeError(f"Invalid module for '{name}', got {type(module)}")
             self.specs[name] = {
                 "grouper": grouper,
                 "regularizer": regularizer,
@@ -210,9 +206,7 @@ class SparsityActivationRegularizer:
                     SparseFusedConv2dBatchNorm2d,
                 ),
             ):
-                raise TypeError(
-                    f"Invalid module for '{name}', got {type(module)}"
-                )
+                raise TypeError(f"Invalid module for '{name}', got {type(module)}")
             self.specs[name] = {
                 "grouper": grouper,
                 "regularizer": regularizer,
@@ -243,6 +237,7 @@ class SparsityActivationRegularizer:
     def _save_activation(self, name):
         def hook(module, input, output):
             self.activations[name] = output
+
         return hook
 
     def loss(self) -> torch.Tensor:

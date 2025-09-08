@@ -28,21 +28,16 @@ def _get_params_number_ratio_to_keep(
 ):
     assert X.ndim == 2, "X must be 2-dimensional"
     assert S.ndim == 1, "Singular values must be 1-dimensional"
-
     m, n = X.shape
-
     # A in R^{m x r}
     # B in R^{r x n}
 
     # So keeping a rank involves a total of m + n parameters
-
     params_per_rank_kept = torch.arange(0, S.shape[0] + 1).float() * (m + n)
-
     rel_params_per_rank_kept = params_per_rank_kept / params_per_rank_kept[-1]
     rank_to_keep = torch.searchsorted(
         rel_params_per_rank_kept, params_ratio_to_keep
     )  # rank_to_keep is the number of ranks to keep
-
     return rank_to_keep.item() + 1
 
 
@@ -84,6 +79,8 @@ class LowRankConv2d(nn.Module):
         groups: int = 1,
         bias: bool = True,
     ):
+
+        assert groups == 1, "Grouped convolutions are not supported yet"
         super(LowRankConv2d, self).__init__()
         H_k = kernel_size[0] if isinstance(kernel_size, tuple) else kernel_size
         W_k = kernel_size[1] if isinstance(kernel_size, tuple) else kernel_size
@@ -165,6 +162,9 @@ class LowRankConv2d(nn.Module):
 
 
 class SpatialLowRankConv2d(nn.Module):
+    """
+    Experimental
+    """
 
     def __init__(
         self,

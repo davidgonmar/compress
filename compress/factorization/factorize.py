@@ -1,5 +1,4 @@
 import torch.nn as nn
-from tqdm import tqdm
 from compress.factorization.low_rank_ops import LowRankLinear, LowRankConv2d
 from compress.utils import (
     gather_submodules,
@@ -130,7 +129,10 @@ def all_same_params_ratio(
 
 # ==========================================================================================================
 # These functions generate a vector with the costs of keeping a certain rank R approximation for each layer.
-# ==========================================================================================================
+# If the factorization is not worth it in terms of cost, we simply not factorize it, so the cost is capped to the original cost.
+# =========================================================================================================
+
+
 def generate_cost_flops_linear(weight_shape: tuple, out_shape: tuple) -> torch.Tensor:
     # A decomposed linear layer has shapes W_0 in [O, R] and W_1 in [R, I], input in [B, I] and output in [B, O]
     # flops(R) = min(B * R * (I + O), B * I * O)
@@ -179,7 +181,6 @@ def generate_cost_params_conv2d(filter_shape: tuple) -> torch.Tensor:
         min(filter_shape[0], filter_shape[1] * filter_shape[2] * filter_shape[3]) + 1,
         1,
     )
-
     C_out, C_in, H_k, W_k = filter_shape
     return torch.minimum(
         R * (C_in * H_k * W_k + C_out),
@@ -246,9 +247,6 @@ def reshape_conv2d(w: torch.Tensor) -> torch.Tensor:
 
 
 def get_reshape(module: nn.Module) -> callable:
-    """
-    Returns a function to reshape the weights of the module.
-    """
     if is_linear(module):
         return reshape_linear
     elif is_conv2d(module):
@@ -344,16 +342,6 @@ def to_low_rank_manual(
     inplace=True,
     cfg_dict: Dict[str, Dict[str, float]] = {},
 ):
-    """
-    Converts a model to low-rank by replacing its linear and convolutional layers with low-rank approximations.
-
-    Args:
-        model (nn.Module): The model to convert.
-        inplace (bool): If True, modifies the model in place. If False, returns a copy of the model with low-rank layers.
-        cfg_dict (Dict[str, Dict[str, float]]): A dictionary where keys are module names and values are dictionaries with configuration parameters for low-rank approximation.
-    Returns:
-        nn.Module: The modified model with low-rank layers.
-    """
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -385,12 +373,60 @@ def to_low_rank_manual(
     return model
 
 
+def collect_cache_low_rank_global(model, keys, dataloader):
+    # will compute the variance of each layer in keys and the output sizes
+    modules_to_replace = gather_submodules(
+        model,
+        should_do=keys_passlist_should_do(keys),
+    )
+    device = next(model.parameters()).device
+    was_training = model.training
+
+    sizes = {}
+    acts = {name: [] for name, _ in modules_to_replace}
+    hooks = []
+
+    def hook_fn(name):
+        def fn(module, inp, output):
+            if isinstance(module, (nn.Conv2d, nn.LazyConv2d, nn.Linear, nn.LazyLinear)):
+                acts[name].append(inp[0].detach().cpu())
+                if name not in sizes:
+                    sizes[name] = output.shape
+            else:
+                raise ValueError("Module should be either Conv2d or Linear")
+
+        return fn
+
+    for name, module in modules_to_replace:
+        hooks.append(module.register_forward_hook(hook_fn(name)))
+
+    for inputs, _ in dataloader:
+        model.eval()
+        with torch.no_grad():
+            _ = model(inputs.to(device))
+
+    for h in hooks:
+        h.remove()
+
+    model.train(was_training)
+
+    acts = {name: torch.cat(acts[name], dim=0).to(device) for name in acts}
+
+    variances_per_layer = {}
+    for name, module in modules_to_replace:
+        var = torch.var(acts[name])
+        variances_per_layer[name] = var.item()
+        del acts[name]
+
+    return {"variances": variances_per_layer, "sizes": sizes}
+
+
 def to_low_rank_global(
     model: nn.Module,
     metric: str,
     ratio_to_keep: float,
     keys,
-    sample_input: torch.Tensor,
+    cache,
     inplace: bool = True,
 ):
     if not inplace:
@@ -401,28 +437,13 @@ def to_low_rank_global(
         should_do=keys_passlist_should_do(keys),
     )
 
-    device = next(model.parameters()).device
-    rand_inp = sample_input.to(device)
+    variances = cache["variances"]
+    sizes = cache["sizes"]
 
-    hooks, sizes = [], []
-
-    def hook_fn(module, _, output):
-        if isinstance(module, (nn.Conv2d, nn.LazyConv2d, nn.Linear, nn.LazyLinear)):
-            sizes.append(output.shape)
-        else:
-            raise ValueError("Module should be either Conv2d or Linear")
-
-    for _, module in modules_to_replace:
-        hooks.append(module.register_forward_hook(hook_fn))
-
-    was_training = model.training
-    model.eval()
-    with torch.no_grad():
-        _ = model(rand_inp)
-    for h in hooks:
-        h.remove()
-    model.train(was_training)
-
+    sizes, variances = (
+        [sizes[name] for name, _ in modules_to_replace],
+        [variances[name] for name, _ in modules_to_replace],
+    )
     reshaped_params = {
         name: get_reshape(module)(module.weight.detach())
         for name, module in modules_to_replace
@@ -430,18 +451,15 @@ def to_low_rank_global(
     factors = {name: decompose_params(mat) for name, mat in reshaped_params.items()}
 
     cum_energies = []
-    entropies = []
     for name, _ in modules_to_replace:
         S = factors[name][1]
         energy = torch.cumsum(S**2, dim=0)
         energy = energy / energy[-1]
         cum_energies.append(energy)
 
-        p = (S**2) / torch.sum(S**2)
-        H = -(p * torch.log(p + 1e-12)).sum()
-        entropies.append(H)
-
-    cum_energies = [energy for energy, w in zip(cum_energies, entropies)]
+    cum_energies = [
+        energy * (var ** (1 / 2)) for energy, var in zip(cum_energies, variances)
+    ]
 
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
     mods = [mod for _, mod in modules_to_replace]
@@ -506,127 +524,23 @@ def to_low_rank_global(
     return model
 
 
-def obtain_whitening_matrix_cholesky(
-    acts: torch.Tensor,
-    module: nn.Module,
-):
-    """
-    Computes the whitening matrix for the given activations and module.
-    The whitening matrix is computed as the Cholesky decomposition of the covariance matrix of the activations.
-    """
-    if isinstance(module, nn.Conv2d):
-        # Input should be of shape (B, Cin, H, W)
-        assert acts.dim() == 4
-        im2coled = nn.functional.unfold(
-            acts,
-            kernel_size=module.kernel_size,
-            padding=module.padding,
-            stride=module.stride,
-        )  # shape (B, Cin * H_k * W_k, H_out * W_out)
-        im2coled = im2coled.permute(0, 2, 1).reshape(
-            im2coled.shape[0] * im2coled.shape[2], -1
-        )
-    elif isinstance(module, nn.Linear):
-        # Input should be of shape (B, Cin)
-        assert acts.dim() == 2
-        im2coled = acts
-    else:
-        raise ValueError("Module should be either Conv2d or Linear")
-
-    m = im2coled.T @ im2coled
-    m = m.double()
-    try:
-        chol = torch.linalg.cholesky(m)
-    except RuntimeError:
-        eigenvalues = torch.linalg.eigvalsh(m)
-        m = (-eigenvalues[0] + 1e-6) * torch.eye(m.shape[0]).to(m.device) + m
-        chol = torch.linalg.cholesky(m)
-    inv = torch.inverse(chol)
-    return inv.float(), chol.float()
-
-
-def obtain_whitening_matrix_svd(
-    acts: torch.Tensor,
-    module: nn.Module,
-):
-    if isinstance(module, nn.Conv2d):
-        assert acts.dim() == 4
-        im2coled = nn.functional.unfold(
-            acts,
-            kernel_size=module.kernel_size,
-            padding=module.padding,
-            stride=module.stride,
-        )
-        im2coled = im2coled.permute(0, 2, 1).reshape(
-            im2coled.shape[0] * im2coled.shape[2], -1
-        )
-    elif isinstance(module, nn.Linear):
-        assert acts.dim() == 2
-        im2coled = acts
-    else:
-        raise ValueError("Module should be either Conv2d or Linear")
-
-    U, S, Vh = torch.linalg.svd(im2coled, full_matrices=False)
-    keep = S > 1e-6
-    if not torch.any(keep):
-        raise RuntimeError("All singular values ≈ 0; cannot whiten.")
-
-    S_nz = S[keep]
-    V_nz = Vh[keep, :].T
-
-    return V_nz @ torch.diag(1 / S_nz), torch.diag(S_nz) @ V_nz.T
-
-
-def obtain_whitening_matrix_eigh(
-    acts: torch.Tensor,
-    module: nn.Module,
-):
-    if isinstance(module, nn.Conv2d):
-        assert acts.dim() == 4
-        im2coled = nn.functional.unfold(
-            acts,
-            kernel_size=module.kernel_size,
-            padding=module.padding,
-            stride=module.stride,
-        )
-        im2coled = im2coled.permute(0, 2, 1).reshape(
-            im2coled.shape[0] * im2coled.shape[2], -1
-        )
-    elif isinstance(module, nn.Linear):
-        assert acts.dim() == 2
-        im2coled = acts
-    else:
-        raise ValueError("Module should be either Conv2d or Linear")
-
-    m = im2coled.T @ im2coled
-    m = m / acts.shape[0]
-    eigenvalues, eigenvectors = torch.linalg.eigh(m)
-    x_svals = torch.sqrt(eigenvalues)
-    V = eigenvectors
-    keep = x_svals > 1e-6
-    x_svals = x_svals[keep]
-    V = V[:, keep]
-
-    return V @ torch.diag(1 / x_svals), torch.diag(x_svals) @ V.T
-
-
 def obtain_whitening_matrix(
     acts: torch.Tensor,
     module: nn.Module,
-    method: str = "eigh",
 ):
-    """
-    Computes the whitening matrix for the given activations and module.
-    The method can be "cholesky", "svd", or "eigh". "cholesky" will return non-precise results if the covariance matrix is not positive definite.
-    """
-    if method == "cholesky":
-        return obtain_whitening_matrix_cholesky(acts, module)
-    elif method == "svd":
-        return obtain_whitening_matrix_svd(acts, module)
-    elif method == "eigh":
-        return obtain_whitening_matrix_eigh(acts, module)
-    else:
-        raise ValueError("Method must be one of 'cholesky', 'svd', or 'eigh'.")
+    # acts of shape (G, B, D)
+    # cusolver throws, for some reason, on some matrices
+    torch.backends.cuda.preferred_linalg_library("magma")
+    eigenvalues, eigenvectors = torch.linalg.eigh(
+        acts.cuda()
+    )  # acts might be in lower precision
+    eigenvalues, eigenvectors = eigenvalues.to(acts.dtype), eigenvectors.to(acts.dtype)
+    x_svals = torch.sqrt(eigenvalues)
+    V = eigenvectors
+    keep = x_svals > 1e-10  # of shape (G, D)
+    x_svals = torch.where(keep, x_svals, torch.zeros_like(x_svals))
+    x_svals_inv = torch.where(keep, 1 / x_svals, torch.zeros_like(x_svals))
+    return V @ torch.diag(x_svals_inv), torch.diag(x_svals) @ V.transpose(-1, -2)
 
 
 def factorize_linear_whitened(
@@ -671,7 +585,6 @@ def factorize_conv2d_whitened(
     W = module.weight
     C_o, C_i, H_k, W_k = W.shape
     reshaped = W.reshape(C_o, C_i * H_k * W_k).T
-    # print(data_whitening_matrix_inverse @ data_whitening_matrix)
     if factors is None:
         U, S, V_T = decompose_params(data_whitening_matrix_inverse @ reshaped)
     else:
@@ -704,62 +617,73 @@ def factorize_conv2d_whitened(
     return low_rank_conv2d
 
 
+def _process_act(act, mod):
+    if isinstance(mod, nn.Conv2d):
+        # Input should be of shape (B, Cin, H, W)
+        assert act.dim() == 4
+        transformed = nn.functional.unfold(
+            act,
+            kernel_size=mod.kernel_size,
+            padding=mod.padding,
+            stride=mod.stride,
+        )  # shape (B, Cin * H_k * W_k, H_out * W_out)
+        transformed = transformed.transpose(-1, -2).reshape(
+            transformed.shape[0] * transformed.shape[2], transformed.shape[1]
+        )  # shape (B * H_out * W_out, Cin * H_k * W_k)
+    elif isinstance(mod, nn.Linear):
+        # Input should be of shape (B, Cin)
+        assert act.dim() == 2 or act.dim() == 3  # for language models, [B, L, D]
+        transformed = act.reshape(-1, act.shape[-1])  # shape (N, D)
+    return transformed
+
+
+def collect_cache_activation_aware(model: nn.Module, keys, dataloader):
+    length = len(dataloader.dataset)
+    mods = gather_submodules(model, should_do=keys_passlist_should_do(keys))
+    device = next(model.parameters()).device
+    acts, outsizes, hooks = {}, {}, []
+
+    def fn(n, m, inp, out):
+        x = inp[0] if isinstance(inp, tuple) else inp
+        a = _process_act(x.detach(), m)
+        if acts.get(n) is None:
+            acts[n] = torch.zeros(a.shape[1], a.shape[1], device=device, dtype=a.dtype)
+        acts[n] = acts[n].to(device, non_blocking=True)
+        acts[n] += a.transpose(-1, -2) @ a / length
+        acts[n] = acts[n].to("cpu")
+        outsizes.setdefault(n, out.shape)
+
+    for n, m in mods:
+        hooks.append(m.register_forward_hook(functools.partial(fn, n)))
+    state = model.training
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            model(batch[0].to(device))
+    model.train(state)
+    for h in hooks:
+        h.remove()
+    return {"acts": acts, "outsizes": outsizes}
+
+
 def to_low_rank_manual_activation_aware(
     model: nn.Module,
-    dataloader,
+    cache,
     inplace=True,
     cfg_dict={},
-    data_whitening_impl="eigh",
 ):
 
     if not inplace:
         model = copy.deepcopy(model)
 
-    acts = {}
-    hooks = []
-
+    acts = cache["acts"]
     modules_to_replace = gather_submodules(
         model,
         should_do=keys_passlist_should_do(cfg_dict.keys()),
     )
 
-    def hook_fn(module, input, output):
-        input = input[0] if isinstance(input, tuple) else input
-        if acts.get(module) is None:
-            acts[module] = input
-        else:
-            acts[module] = torch.cat((acts[module], input), dim=0)
-
-    for name, module in modules_to_replace:
-        hook = module.register_forward_hook(hook_fn)
-        hooks.append(hook)
-
-    prev_state = model.training
-    model.eval()
-    with torch.no_grad():
-
-        for batch in tqdm(dataloader, desc="Getting activations"):
-            if isinstance(batch, dict):
-                inputs = {
-                    key: value.to(next(model.parameters()).device)
-                    for key, value in batch.items()
-                }
-                model(**inputs)
-            else:
-                inputs, targets = batch
-                inputs, targets = inputs.to(
-                    next(model.parameters()).device
-                ), targets.to(next(model.parameters()).device)
-                model(inputs)
-
-    for hook in hooks:
-        hook.remove()
-
-    model.train(prev_state)
-
-    # get the cholesky decomposition of the covariance matrix of each activation im2col'ed in case of conv2d
     whit = {
-        name: obtain_whitening_matrix(acts[module], module, method=data_whitening_impl)
+        name: obtain_whitening_matrix(acts[name], module)
         for name, module in modules_to_replace
     }
 
@@ -797,90 +721,40 @@ def to_low_rank_manual_activation_aware(
 
 def to_low_rank_activation_aware_global(
     model: nn.Module,
-    dataloader,
+    cache,
     keys,
     ratio_to_keep,
     metric: str = "flops",
     inplace: bool = True,
-    data_whitening_impl: str = "eigh",
 ):
     if not inplace:
         model = copy.deepcopy(model)
-
-    device = next(model.parameters()).device
-
-    acts: Dict[str, torch.Tensor] = {}
-    outs: Dict[str, torch.Tensor] = {}
-    hooks = []
 
     modules_to_replace = gather_submodules(
         model,
         should_do=keys_passlist_should_do(keys),
     )
 
-    def hook_fn(name, module, input, output):
-        x = input[0] if isinstance(input, tuple) else input
-
-        if name not in acts:
-            acts[name] = x.detach()
-        else:
-            acts[name] = torch.cat((acts[name], x.detach()), dim=0)
-
-        if name not in outs:
-            outs[name] = output.detach()
-        else:
-            outs[name] = torch.cat((outs[name], output.detach()), dim=0)
-
-    for name, module in modules_to_replace:
-        hooks.append(module.register_forward_hook(functools.partial(hook_fn, name)))
-
-    prev_state = model.training
-    model.eval()
-
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Getting activations"):
-            if isinstance(batch, dict):
-                inputs = {k: v.to(device) for k, v in batch.items()}
-                _ = model(**inputs)
-            else:
-                inputs, _ = batch if len(batch) == 2 else (batch, None)
-                inputs = inputs.to(device)
-                _ = model(inputs)
-
-    model.train(prev_state)
-
-    for h in hooks:
-        h.remove()
+    acts = cache["acts"]
+    outsizes = cache["outsizes"]
 
     whit = {
-        name: obtain_whitening_matrix(acts[name], module, method=data_whitening_impl)
+        name: obtain_whitening_matrix(acts[name], module)
         for name, module in modules_to_replace
     }
+
+    outsizes = [outsizes[name] for name, _ in modules_to_replace]
 
     cum_energies = []
     for name, module in modules_to_replace:
         reshaped = get_reshape(module)(module.weight.detach())
         aa = whit[name][1] @ reshaped
         svals = torch.linalg.svdvals(aa)
-        cum_energy = torch.cumsum(svals**2, 0) / torch.sum(svals**2)
+        cum_energy = torch.cumsum(svals**2, 0)
+        cum_energy = cum_energy / cum_energy[-1]
         cum_energies.append(cum_energy)
 
-    act_vars = []
-    for name, module in modules_to_replace:
-        x = acts[name].float()
-        dims = tuple(range(x.ndim))
-        ex = x.mean(dims)
-        ex2 = (x * x).mean(dims)
-        global_var = ex2 - ex.pow(2)
-        act_vars.append(global_var.mean())
-
-    cum_energies = [
-        energy  # * torch.sqrt(var.to(energy.device))
-        for energy, var in zip(cum_energies, act_vars)
-    ]
-
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
-    out_shapes = [outs[name].shape for name, _ in modules_to_replace]
 
     if metric == "rank":
         costs = [
@@ -895,7 +769,7 @@ def to_low_rank_activation_aware_global(
                 if len(oshape) == 2
                 else generate_cost_flops_conv2d(w.shape, oshape)
             )
-            for w, oshape in zip(ws, out_shapes)
+            for w, oshape in zip(ws, outsizes)
         ]
         total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
     elif metric == "params":
@@ -905,7 +779,7 @@ def to_low_rank_activation_aware_global(
                 if len(oshape) == 2
                 else generate_cost_params_conv2d(w.shape)
             )
-            for w, oshape in zip(ws, out_shapes)
+            for w, oshape in zip(ws, outsizes)
         ]
         total_budget = sum(c[-1].item() for c in costs) * ratio_to_keep
     else:

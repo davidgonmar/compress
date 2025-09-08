@@ -250,7 +250,7 @@ class ActivationNormInterGroupPruner:
                 self.metric = lambda x: torch.sum(x.abs(), dim=1) / x.shape[1]
         else:
             raise ValueError(f"Unknown metric {metric}")
-        
+
     def prune(self):
         activations = {}
         hooks = {}
@@ -266,6 +266,7 @@ class ActivationNormInterGroupPruner:
                     activations[name] = output.detach().mean(dim=0)
                 else:
                     activations[name] += output.detach().mean(dim=0)
+
             return hook
 
         # hook for policied modules
@@ -423,7 +424,9 @@ class TaylorExpansionIntraGroupPruner:
             runner  # assumes runner has batch size 1 for correct fisher estimation!!!
         )
         self.approx = approx
-        assert self.approx == "fisher_diag", "Only fisher approximation is supported at the moment"
+        assert (
+            self.approx == "fisher_diag"
+        ), "Only fisher approximation is supported at the moment"
 
     def prune(self):
         training_state = self.model.training
@@ -456,7 +459,7 @@ class TaylorExpansionIntraGroupPruner:
                             fisher_hessian_diag[name] + (grad**2).detach()
                         )
             except StopIteration:
-                break # runner stopped
+                break  # runner stopped
 
         with torch.no_grad():
             # now we have the fisher information for each layer
@@ -485,8 +488,8 @@ class TaylorExpansionIntraGroupPruner:
                 ):
                     saliency_reshaped = saliency_reshaped * policy.grouper.transform(
                         module.weight_mask
-                    ) # if weight is already pruned, we manually set its saliency to 0
-                
+                    )  # if weight is already pruned, we manually set its saliency to 0
+
                 # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
                 density = 1 - policy.intra_group_metric.value
                 assert policy.intra_group_metric.name == "sparsity_ratio"
@@ -521,7 +524,9 @@ class TaylorExpansionInterGroupPruner:
         )
         self.approx = approx
         self.use_bias = use_bias
-        assert self.approx == "fisher_diag", "Only fisher approximation is supported at the moment"
+        assert (
+            self.approx == "fisher_diag"
+        ), "Only fisher approximation is supported at the moment"
 
     def prune(self):
         training_state = self.model.training
@@ -563,7 +568,7 @@ class TaylorExpansionInterGroupPruner:
                                 fisher_hessian_biases[name] + (grad**2).detach()
                             )
             except StopIteration:
-                break # runner stopped
+                break  # runner stopped
         if self.approx == "fisher_diag":
             # now we have the fisher information for each layer
             # perturbation = 1/2 * fisher * (param ** 2) (we ignore gradients)
@@ -608,11 +613,13 @@ class TaylorExpansionInterGroupPruner:
                 ):
                     saliencies_reshaped = (
                         saliencies_reshaped * policy.grouper.transform(mod.weight_mask)
-                    ) # if weight is already pruned, we manually set its saliency to 0
+                    )  # if weight is already pruned, we manually set its saliency to 0
                     if self.use_bias:
                         saliencies_biases[name] = saliencies_biases[
                             name
-                        ] * mod.bias_mask.reshape(-1) # if bias is already pruned, we manually set its saliency to 0
+                        ] * mod.bias_mask.reshape(
+                            -1
+                        )  # if bias is already pruned, we manually set its saliency to 0
 
                 # saliencies_reshaped have shape [n_groups, m_elements_per_group]
                 # we need to prune individual groups (inter-group sparsity)
@@ -695,6 +702,7 @@ class ActivationMagnitudeIntraGroupPruner:
         activations = {}
         total_acts = {}
         hooks = {}
+
         # hooks
         def get_hook(name):
             nonlocal activations, total_acts
@@ -705,7 +713,8 @@ class ActivationMagnitudeIntraGroupPruner:
                     activations[name] = input[0].detach().sum(dim=0)
                 else:
                     activations[name] += input[0].detach().sum(dim=0)
-                total_acts[name] = (total_acts.get(name, 0) + input[0].shape[0])
+                total_acts[name] = total_acts.get(name, 0) + input[0].shape[0]
+
             return hook
 
         # hook for policied modules
@@ -775,10 +784,15 @@ class ActivationMagnitudeIntraGroupPruner:
                     )  # shape [I, H_k, W_k, H_out * W_out]
                     # Given a kernel element K[o, i, h, w], it interacts with the row of size H_out * W_out of acts
                     # Unlike Wanda, we normalize
-                    vnorm = (lambda x: torch.sqrt(
-                        torch.sum(x**2, dim=(-1), keepdim=False)
-                    ) / math.sqrt(x.shape[-1]))(acts) # shape = [I, H_k, W_k]
-                    sal = vnorm * w.abs()  # shape [O, I, H_k, W_k] (gets braodcasted in the output channel)
+                    vnorm = (
+                        lambda x: torch.sqrt(torch.sum(x**2, dim=(-1), keepdim=False))
+                        / math.sqrt(x.shape[-1])
+                    )(
+                        acts
+                    )  # shape = [I, H_k, W_k]
+                    sal = (
+                        vnorm * w.abs()
+                    )  # shape [O, I, H_k, W_k] (gets braodcasted in the output channel)
                     assert sal.shape == module.weight.shape
                 else:
                     # linear
@@ -790,9 +804,12 @@ class ActivationMagnitudeIntraGroupPruner:
                         w = w * module.weight_mask.T
                     acts = acts.reshape(*acts.shape, 1)  # shape [..., I, 1]
                     extra_dims = acts.shape[:-2]
-                    vnorm = (lambda x: torch.sqrt(
-                        torch.sum(x**2, dim=(extra_dims), keepdim=False)
-                    ) / math.sqrt(math.prod(extra_dims)))(acts)
+                    vnorm = (
+                        lambda x: torch.sqrt(
+                            torch.sum(x**2, dim=(extra_dims), keepdim=False)
+                        )
+                        / math.sqrt(math.prod(extra_dims))
+                    )(acts)
                     sal = vnorm  # shape [I, 1]
                     sal = sal * w.abs()  # shape [I, O]
                     sal = sal.T  # shape [O, I]
