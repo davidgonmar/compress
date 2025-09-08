@@ -15,19 +15,26 @@ Reshaper = Callable[[torch.Tensor], torch.Tensor]
 
 
 class SafeSvals(torch.autograd.Function):
+    """
+    Computes the singular values of a matrix, and handles the case where some singular values are too close
+    (which means that the respective subspaces are close to be swappable) by setting the derivatives to 0.
+    """
+
     @staticmethod
-    def forward(ctx, input: torch.Tensor) -> torch.Tensor:
+    def forward(ctx, input: torch.Tensor, threshold: float = 1e-6) -> torch.Tensor:
         assert not input.is_complex(), "Complex tensors are not supported"
+        assert input.ndim == 2, "Only matrices are supported"
         U, S, Vh = torch.linalg.svd(input, full_matrices=False)
-        ctx.save_for_backward(input, U, S, Vh)
+        ctx.save_for_backward(U, S, Vh)
+        ctx.threshold = threshold
         return S
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
         # grad output of shape (r)
-        input, U, S, Vh = ctx.saved_tensors
+        U, S, Vh = ctx.saved_tensors
         # singular_vals_with_neighboors_too_close
-        ill = torch.abs(S[:-1] - S[1:]) < 1e-6
+        ill = torch.abs(S[:-1] - S[1:]) < ctx.threshold
         padleft = torch.zeros(1, device=ill.device, dtype=ill.dtype)
         padright = torch.zeros(1, device=ill.device, dtype=ill.dtype)
         illleft = torch.cat((padleft, ill), dim=0)
@@ -36,16 +43,11 @@ class SafeSvals(torch.autograd.Function):
         # dont take into account
         grad_output = torch.where(ill, torch.zeros_like(grad_output), grad_output)
         # masking is implicit for U and Vh
-        # print("input", input.shape)
-        # print("grad_output", grad_output.shape)
-        # print("U", U.shape)
-        # print("Vh", Vh.shape)
         # crop grad output till where s is 0
         return torch.einsum("k,ik,kj->ij", grad_output, U, Vh)
 
 
-def safe_svals(input: torch.Tensor) -> torch.Tensor:
-    return SafeSvals.apply(input)
+safe_svals = SafeSvals.apply
 
 
 def singular_values_l1_l2_ratio(
