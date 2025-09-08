@@ -316,9 +316,13 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
                 # pass with running var
                 running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
                 w_scale = self.bn.weight / running_std  # shape [out_channels]
+                w_simulated = self.conv.weight * w_scale.reshape(-1, 1, 1, 1)
+                w_quant = fake_quantize(
+                    w_simulated, calibrate(w_simulated, self.weight_spec)
+                )  # quantize the simulated weight
                 conv_out = nn.functional.conv2d(
                     x,
-                    self.conv.weight * w_scale.reshape(-1, 1, 1, 1),
+                    w_quant,
                     bias=None,
                     stride=self.conv.stride,
                     padding=self.conv.padding,
@@ -673,7 +677,6 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
     def forward(self, x: torch.Tensor):
         # similar to the default path of https://github.com/pytorch/pytorch/blob/v2.7.0/torch/ao/nn/intrinsic/qat/modules/conv_fused.py
         if self.training and self.bn_track_running_stats:
-
             if self.use_fast_bn_path:
                 if self.online:
                     info = calibrate(x, self.input_spec)
@@ -753,9 +756,16 @@ class FusedLSQConv2dBatchNorm2d(nn.Module):
                 # pass with running var
                 running_std = torch.sqrt(self.bn.running_var + self.bn.eps)
                 w_scale = self.bn.weight / running_std  # shape [out_channels]
+                w_simulated = self.conv.weight * w_scale.reshape(-1, 1, 1, 1)
+                w_quant = LSQQuantize.apply(
+                    w_simulated,
+                    self.weight_info.scale,
+                    self.weight_info.zero_point,
+                    self.weight_info,
+                )  # quantize the simulated weight
                 conv_out = nn.functional.conv2d(
                     x,
-                    self.conv.weight * w_scale.reshape(-1, 1, 1, 1),
+                    w_quant,
                     bias=None,
                     stride=self.conv.stride,
                     padding=self.conv.padding,
