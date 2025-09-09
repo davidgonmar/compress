@@ -2,14 +2,9 @@ from torch import nn
 from compress.quantization.common import (
     IntAffineQuantizationSpec,
     fake_quantize,
-    quantize,
 )
 import torch
 from compress.quantization.calibrate import calibrate
-from compress.quantization.ptq import (
-    QuantizedConv2d,
-    QuantizedLinear,
-)
 
 import math
 from functools import partial
@@ -96,7 +91,7 @@ def _extract_kwargs_from_orig_layer(self, keys_list, orig_layer):
         setattr(self, key, getattr(orig_layer, key))
 
 
-def _to_float(self, kwargs_to_extract, orig_layer_cls):
+def _to_float_qat(self, kwargs_to_extract, orig_layer_cls):
     kwargs = {key: getattr(self, key) for key in kwargs_to_extract}
     rt = orig_layer_cls(**kwargs, bias=self.bias is not None)
     rt.weight = self.weight.detach().clone()
@@ -132,7 +127,7 @@ class QATLinear(nn.Module):
         )
 
     to_linear = partial(
-        _to_float,
+        _to_float_qat,
         ["in_features", "out_features"],
         nn.Linear,
     )
@@ -185,7 +180,7 @@ class QATConv2d(nn.Module):
         )
 
     to_conv2d = partial(
-        _to_float,
+        _to_float_qat,
         [
             "in_channels",
             "out_channels",
@@ -212,7 +207,6 @@ def _get_bn_and_conv_weight(conv, bn):
     """
     Given a conv layer and a bn layer, returns the equivalent fused conv weight and bias
     """
-
     # Get the weight and bias of the conv layer
     w = conv.weight
     b = conv.bias if conv.bias is not None else 0
@@ -363,7 +357,7 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
             )
 
     to_conv2d = partial(
-        _to_float,
+        _to_float_qat,
         [
             "in_channels",
             "out_channels",
@@ -379,6 +373,10 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
     @property
     def weight(self):
         return _get_bn_and_conv_weight(self.conv, self.bn)[0]
+
+    @property
+    def bias(self):
+        return _get_bn_and_conv_weight(self.conv, self.bn)[1]
 
     def __repr__(self):
         return (
@@ -505,28 +503,6 @@ def _lsq_to_float(self, kwargs_to_extract, orig_layer_cls):
     return rt
 
 
-def _lsq_to_quant(self, orig_layer_cls, quant_layer_cls):
-    # Extract kwargs from the original layer
-    kwargs = {key: getattr(self, key) for key in ["in_features", "out_features"]}
-    input_info = (
-        self.input_info
-        if not self.online
-        else calibrate(torch.empty(1), self.input_spec)
-    )
-    rt = quant_layer_cls(
-        self.weight_info.spec,
-        input_info,
-        orig_layer_cls(**kwargs, bias=self.bias is not None),
-    )
-    rt.weight_info = self.weight_info
-    rt.weight = torch.nn.Parameter(
-        quantize(self.weight, self.weight_info), requires_grad=False
-    )
-    if self.bias is not None:
-        rt.bias = torch.nn.Parameter(self.bias.detach().clone(), requires_grad=False)
-    return rt
-
-
 class LSQLinear(nn.Module):
     def __init__(
         self,
@@ -565,12 +541,6 @@ class LSQLinear(nn.Module):
         _lsq_to_float,
         ["in_features", "out_features"],
         nn.Linear,
-    )
-
-    to_quant_linear = partial(
-        _lsq_to_quant,
-        nn.Linear,
-        QuantizedLinear,
     )
 
 
@@ -625,12 +595,6 @@ class LSQConv2d(nn.Module):
         _lsq_to_float,
         conv2d_kwargs,
         nn.Conv2d,
-    )
-
-    to_quant_conv2d = partial(
-        _lsq_to_quant,
-        nn.Conv2d,
-        QuantizedConv2d,
     )
 
 
