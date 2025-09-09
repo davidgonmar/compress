@@ -1,3 +1,7 @@
+"""
+Pre-defined quantization recipes for some models.
+"""
+
 from compress.quantization import IntAffineQuantizationSpec, IntAffineQuantizationMode
 from compress.quantization.common import (
     PerTensor,

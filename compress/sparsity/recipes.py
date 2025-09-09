@@ -1,3 +1,7 @@
+"""
+This module provides predefined pruning policy dictionaries for common neural network architectures.
+"""
+
 from .policy import PruningPolicy, PolicyDict, Metric
 from .groupers import (
     AbstractGrouper,

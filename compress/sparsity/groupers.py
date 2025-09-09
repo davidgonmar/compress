@@ -1,9 +1,23 @@
+"""
+Pruning groupers for structured and unstructured pruning.
+
+This submodule defines a set of "grouper" classes, each responsible for
+transforming tensors into a 2D grouping of the form `(n_groups, group_size)`
+to support pruning algorithms. A grouper also provides an `untransform`
+method to restore the original tensor shape after grouping.
+
+These are used for intra- and inter-group pruning methods.
+
+"""
+
 import torch
 
 
-# AbstractGrouper is a base class for all pruning groupers.
-# A PronningGrouper is responsible for transforming a tensor into a 2D tensor of the form (n_groups, group_size)
 class AbstractGrouper:
+    """
+    Abstract base class for all groupers.
+    """
+
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -14,6 +28,10 @@ class AbstractGrouper:
 
 
 class UnstructuredGrouperLinear(AbstractGrouper):
+    """
+    Grouper that produces a single group with all weights in it. Intended for nn.Linear layers.
+    """
+
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.reshape(1, -1)
@@ -24,6 +42,9 @@ class UnstructuredGrouperLinear(AbstractGrouper):
 
 
 class UnstructuredGrouperConv2d(AbstractGrouper):
+    """
+    Grouper that produces a single group with all weights in it. Intended for nn.Conv2d layers.
+    """
 
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
@@ -35,6 +56,10 @@ class UnstructuredGrouperConv2d(AbstractGrouper):
 
 
 class OutChannelGroupingGrouperLinear(AbstractGrouper):
+    """
+    Each group is composed of the weights associated with an output channel. Intended for nn.Linear layers.
+    For example, for a weight tensor of shape (out_channels, in_channels), we have out_channels groups of size in_channels.
+    """
 
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
@@ -47,6 +72,10 @@ class OutChannelGroupingGrouperLinear(AbstractGrouper):
 
 
 class OutChannelGroupingGrouperConv2d(AbstractGrouper):
+    """
+    Each group is composed of the weights associated with an output channel. Intended for nn.Conv2d layers.
+    """
+
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         # shape is (out_channels, in_channels, kernel_size, kernel_size), so we want each out channel to be a group
@@ -58,6 +87,10 @@ class OutChannelGroupingGrouperConv2d(AbstractGrouper):
 
 
 class GroupsOf4(AbstractGrouper):
+    """
+    Each group is composed of 4 contiguous weights (contiguous means contiguous after flattening).
+    """
+
     @staticmethod
     def transform(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.reshape(-1, 4)

@@ -1,3 +1,9 @@
+"""
+Calibration methods for quantization.
+Our notion of a calibration function is one that takes the tensor to be quantized, as well as
+quantization specifications, and returns the quantization parameters (scale and zero point).
+"""
+
 import torch
 from compress.quantization.common import (
     IntAffineQuantizationInfo,

@@ -17,6 +17,9 @@ import math
 from typing import Callable
 
 
+# ==========================================================================================================
+# Some general utilities
+# ==========================================================================================================
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
     assert tensor.dim() == 2, "Expected 2D tensor, got {}".format(tensor.shape)
     return tensor
@@ -188,18 +191,32 @@ def generate_cost_params_conv2d(filter_shape: tuple) -> torch.Tensor:
     )
 
 
+# ==========================================================================================================
+# These functions compute the rank to keep given a certain criterion
+# ==========================================================================================================
+
+
 def get_rank_to_keep_from_rank_ratio(
     X: torch.tensor, S: torch.Tensor, rank_ratio: float
 ):
-    # truncates towards 0
+    """
+    Get the rank to keep given a rank ratio.
+    Basically, it is implemented as rank = ceil(rank_ratio * max_rank)
+    """
     assert 0.0 <= rank_ratio <= 1.0, "rank_ratio must be in [0, 1]"
-    k = math.ceil(S.shape[0] * rank_ratio)
+    max_rank = min(X.shape[0], X.shape[1])
+    k = math.ceil(max_rank * rank_ratio)
     return max(k, 1)
 
 
 def get_rank_to_keep_from_energy_ratio(
     X: torch.Tensor, S: torch.Tensor, energy_ratio: float
 ) -> int:
+    """
+    Get the rank to keep given an energy ratio.
+    The energy is defined as the sum of squares of the singular values.
+    We keep the smallest rank k such that sum_{i=1}^k S[i]^2 >= energy_ratio * sum_{i=1}^r S[i]^2
+    """
     assert 0.0 <= energy_ratio <= 1.0
     sq = S.pow(2)
     cum_energy = sq.cumsum(dim=0)
@@ -214,6 +231,12 @@ def get_rank_to_keep_from_param_number_ratio(
     S: torch.Tensor,
     param_number_ratio: float,
 ):
+    """
+    Get the rank to keep given a parameter number ratio.
+    We keep the smallest rank k such that (k * (m + n)) / (min(m, n) * max(m, n)) >= param_number_ratio
+    where X is in R^{m x n}.
+    Careful inspection shows that this also works for (reshaped) nn.Conv2d weights.
+    """
     assert X.ndim == 2, "X must be 2-dimensional"
     assert S.ndim == 1, "Singular values must be 1-dimensional"
     m, n = X.shape
@@ -276,6 +299,11 @@ def should_do_low_rank(W, rank):
     cost_base = m * n
     cost_low_rank = (m + n) * rank
     return cost_low_rank < cost_base
+
+
+# ==========================================================================================================
+# The main functions to factorize a model using regular SVD-based factorization
+# =========================================================================================================
 
 
 def factorize_linear(module, get_rank: Callable, factors=None):
@@ -342,6 +370,17 @@ def to_low_rank_manual(
     inplace=True,
     cfg_dict: Dict[str, Dict[str, float]] = {},
 ):
+    """
+    Convert the model to a low-rank model using the provided configuration dictionary.
+    A criterion dictionary should be of the form:
+    {
+        "layer_name": {
+            "name": "rank_ratio_to_keep" | "svals_energy_ratio_to_keep" | "params_ratio_to_keep",
+            "value": float in [0, 1]
+        },
+        ...
+    }
+    """
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -374,7 +413,10 @@ def to_low_rank_manual(
 
 
 def collect_cache_low_rank_auto(model, keys, dataloader):
-    # will compute the variance of each layer in keys and the output sizes
+    """
+    This collects information about the model and calibration data needed by the `to_low_rank_auto` function.
+    Particularly, it collects the sizes of the outputs of each layer and the variance of their activations.
+    """
     modules_to_replace = gather_submodules(
         model,
         should_do=keys_passlist_should_do(keys),
@@ -421,7 +463,7 @@ def collect_cache_low_rank_auto(model, keys, dataloader):
     return {"variances": variances_per_layer, "sizes": sizes}
 
 
-def to_low_rank_global(
+def to_low_rank_auto(
     model: nn.Module,
     metric: str,
     ratio_to_keep: float,
@@ -429,6 +471,13 @@ def to_low_rank_global(
     cache,
     inplace: bool = True,
 ):
+    """
+    Convert the model to a low-rank model using a global budget.
+    The budget is defined as a ratio of the total cost (in FLOPs or parameters) of the original model.
+    The layers to be factorized are defined by the keys list.
+    It solves a multi-choice knapsack problem to select the rank for each layer, where the objective function can
+    be deduced from the code.
+    """
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -522,6 +571,12 @@ def to_low_rank_global(
         factory_fn,
     )
     return model
+
+
+# ==========================================================================================================
+# The main functions to factorize a model using whitening + SVD-based factorization for activation-aware factorization
+# The concept is heavily inspired by https://arxiv.org/abs/2403.07378 (but there are differences).
+# =========================================================================================================
 
 
 def obtain_whitening_matrix(
@@ -638,6 +693,10 @@ def _process_act(act, mod):
 
 
 def collect_cache_activation_aware(model: nn.Module, keys, dataloader):
+    """
+    This collects information about the model and calibration data needed by the `to_low_rank_activation_aware` function.
+    Particularly, it collects the sizes of the outputs of each layer and accumulates X^T X for the (reshaped) activations X of each layer.
+    """
     length = len(dataloader.dataset)
     mods = gather_submodules(model, should_do=keys_passlist_should_do(keys))
     device = next(model.parameters()).device
@@ -672,7 +731,19 @@ def to_low_rank_manual_activation_aware(
     inplace=True,
     cfg_dict={},
 ):
+    """
+    Convert the model to a low-rank model using the provided configuration dictionary.
+    A criterion dictionary should be of the form:
+    {
+        "layer_name": {
+            "name": "rank_ratio_to_keep" | "svals_energy_ratio_to_keep" | "params_ratio_to_keep",
+            "value": float in [0, 1]
+        },
+        ...
+    }
 
+    Implements activation-aware factorization via whitening + SVD (inspired by https://arxiv.org/abs/2403.07378).
+    """
     if not inplace:
         model = copy.deepcopy(model)
 
@@ -727,6 +798,13 @@ def to_low_rank_activation_aware_auto(
     metric: str = "flops",
     inplace: bool = True,
 ):
+    """
+    Similar to the `to_low_rank_auto` function, but implements activation-aware factorization.
+    Note that here, we do not weight importances by feature variances, for two reasons:
+    1. It works empirically.
+    2. It makes sense, as the activation-aware factorization takes into account output distortion.
+    """
+
     if not inplace:
         model = copy.deepcopy(model)
 

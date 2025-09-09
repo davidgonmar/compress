@@ -4,43 +4,6 @@ from torch.nn.modules.utils import _pair
 from torch.nn import functional as F
 
 
-def _get_rank_ratio_to_keep(S: torch.Tensor, rank_ratio_to_keep: float):
-    assert 0.0 <= rank_ratio_to_keep <= 1.0, "rank_ratio_to_keep must be in [0, 1]"
-    return max(int(S.shape[0] * rank_ratio_to_keep), 1)
-
-
-def _get_svals_energy_ratio_to_keep(
-    S: torch.Tensor, svals_energy_ratio_to_keep: float
-) -> int:
-    assert 0.0 <= svals_energy_ratio_to_keep <= 1.0
-    sq = S.pow(2)
-    cum_energy = sq.cumsum(dim=0)
-    total_energy = cum_energy[-1]
-    threshold = svals_energy_ratio_to_keep * total_energy
-    idx = torch.searchsorted(cum_energy, threshold)
-    return idx.item() + 1
-
-
-def _get_params_number_ratio_to_keep(
-    X: torch.Tensor,
-    S: torch.Tensor,
-    params_ratio_to_keep: float,
-):
-    assert X.ndim == 2, "X must be 2-dimensional"
-    assert S.ndim == 1, "Singular values must be 1-dimensional"
-    m, n = X.shape
-    # A in R^{m x r}
-    # B in R^{r x n}
-
-    # So keeping a rank involves a total of m + n parameters
-    params_per_rank_kept = torch.arange(0, S.shape[0] + 1).float() * (m + n)
-    rel_params_per_rank_kept = params_per_rank_kept / params_per_rank_kept[-1]
-    rank_to_keep = torch.searchsorted(
-        rel_params_per_rank_kept, params_ratio_to_keep
-    )  # rank_to_keep is the number of ranks to keep
-    return rank_to_keep.item() + 1
-
-
 class LowRankLinear(nn.Module):
     def __init__(
         self, in_features: int, out_features: int, rank: int, bias: bool = True
@@ -161,9 +124,49 @@ class LowRankConv2d(nn.Module):
         return res
 
 
+# The following code is experimental and exploratory, not used in the rest of the codebase.
+
+
+def _get_rank_ratio_to_keep(S: torch.Tensor, rank_ratio_to_keep: float):
+    assert 0.0 <= rank_ratio_to_keep <= 1.0, "rank_ratio_to_keep must be in [0, 1]"
+    return max(int(S.shape[0] * rank_ratio_to_keep), 1)
+
+
+def _get_svals_energy_ratio_to_keep(
+    S: torch.Tensor, svals_energy_ratio_to_keep: float
+) -> int:
+    assert 0.0 <= svals_energy_ratio_to_keep <= 1.0
+    sq = S.pow(2)
+    cum_energy = sq.cumsum(dim=0)
+    total_energy = cum_energy[-1]
+    threshold = svals_energy_ratio_to_keep * total_energy
+    idx = torch.searchsorted(cum_energy, threshold)
+    return idx.item() + 1
+
+
+def _get_params_number_ratio_to_keep(
+    X: torch.Tensor,
+    S: torch.Tensor,
+    params_ratio_to_keep: float,
+):
+    assert X.ndim == 2, "X must be 2-dimensional"
+    assert S.ndim == 1, "Singular values must be 1-dimensional"
+    m, n = X.shape
+    # A in R^{m x r}
+    # B in R^{r x n}
+
+    # So keeping a rank involves a total of m + n parameters
+    params_per_rank_kept = torch.arange(0, S.shape[0] + 1).float() * (m + n)
+    rel_params_per_rank_kept = params_per_rank_kept / params_per_rank_kept[-1]
+    rank_to_keep = torch.searchsorted(
+        rel_params_per_rank_kept, params_ratio_to_keep
+    )  # rank_to_keep is the number of ranks to keep
+    return rank_to_keep.item() + 1
+
+
 class SpatialLowRankConv2d(nn.Module):
     """
-    Experimental
+    Experimental, not really used in the rest of the codebase.
     """
 
     def __init__(

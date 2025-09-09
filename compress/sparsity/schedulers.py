@@ -1,7 +1,9 @@
+"""
+These are various sparsity scheduling functions that determine the sparsity level at each iteration in iterative pruning processes.
+"""
+
 import numpy as np
 from functools import partial
-
-# Schedulers for iterative sparsity
 
 
 def linear_sparsity(cur_iter, max_iter, target_sparsity):
