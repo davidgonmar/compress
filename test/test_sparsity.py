@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from compress.sparsity.sparse_ops import PrunedLinear, PrunedConv2d
+from compress.sparsity.sparse_ops import SparseConv2d, SparseLinear
 from compress.sparsity.groupers import (
     UnstructuredGrouperLinear,
     UnstructuredGrouperConv2d,
@@ -8,10 +8,10 @@ from compress.sparsity.groupers import (
 
 from compress.sparsity.prune import (
     apply_masks,
-    MagnitudePruner,
-    unstructured_resnet18_policies,
-    PruningPolicy,
+    WeightMagnitudeIntraGroupPruner,
 )
+from compress.sparsity.recipes import unstructured_resnet18_policy_dict
+from compress.sparsity.policy import PruningPolicy
 import pytest
 
 
@@ -32,9 +32,9 @@ def test_apply_masks_conv():
     flat[: mask.numel() // 2] = True
     mask = flat.view_as(mask)
 
-    apply_masks(model, {"conv": mask})
-    assert isinstance(model.conv, PrunedConv2d)
-    assert torch.equal(model.conv.mask, mask)
+    apply_masks(model, {"conv": {"weight": mask}})
+    assert isinstance(model.conv, SparseConv2d)
+    assert torch.equal(model.conv.weight_mask, mask)
 
 
 def test_apply_masks_linear():
@@ -42,9 +42,9 @@ def test_apply_masks_linear():
     # All-True mask
     mask = torch.ones_like(model.linear.weight, dtype=torch.bool)
 
-    apply_masks(model, {"linear": mask})
-    assert isinstance(model.linear, PrunedLinear)
-    assert torch.equal(model.linear.mask, mask)
+    apply_masks(model, {"linear": {"weight": mask}})
+    assert isinstance(model.linear, SparseLinear)
+    assert torch.equal(model.linear.weight_mask, mask)
 
 
 @pytest.mark.skip("broken")
@@ -57,11 +57,11 @@ def test_magnitude_pruner_reduces_weights():
         inter_group_sparsity=1.0,
         intra_group_sparsity=0.5,
     )
-    pruner = MagnitudePruner(model, {"linear": policy})
+    pruner = WeightMagnitudeIntraGroupPruner(model, {"linear": policy})
     pruner.prune()
 
     # After pruning, module should be PrunedLinear
-    assert isinstance(model.linear, PrunedLinear)
+    assert isinstance(model.linear, SparseLinear)
     kept = model.linear.mask.sum().item()
     assert kept <= orig_count * 0.5 + 1
 
@@ -69,7 +69,7 @@ def test_magnitude_pruner_reduces_weights():
 @pytest.mark.skip("broken")
 def test_unstructured_resnet18_policies():
     sparsity = 0.3
-    policies = unstructured_resnet18_policies(sparsity)
+    policies = unstructured_resnet18_policy_dict(sparsity)
     # Must include Conv2d and Linear policies
     assert any(
         isinstance(p.grouper, UnstructuredGrouperConv2d) for p in policies.values()

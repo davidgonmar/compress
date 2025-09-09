@@ -1,6 +1,6 @@
 import unittest
 from torch import nn
-from compress.common import default_should_do, gather_submodules
+from compress.utils import default_should_do, gather_submodules
 
 
 class DummyModule(nn.Module):

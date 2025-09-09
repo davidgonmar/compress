@@ -57,6 +57,14 @@ It also includes some utilities for **low-rank** regularization.
 
 The library also implements useful utilities for things like **layer fusion** (e.g., fusing batchnorm layers into convolutional layers, this is useful to mimic inference behavior of some CNNs), **FLOPs and parameter counting**, and **knowledge distillation** (e.g., implementing different losses for distillation). It also includes experiment utilities (e.g., for evaluation), including implementation of some models that are not available in popular libraries (e.g. CIFAR ResNets).
 
+## Testing
+The library includes some unit tests. To run them, use
+
+```bash
+pytest
+```
+The current test suite is very limited.
+
 ## Remarks
 
 This is a personal project that I use to experiment with model compression techniques. Some compression techniques are heavily inspired by existing works but have some differences (for research purposes or practical implementation reasons, for instance), while others (including removed ones present in the git history) are my own explorations.

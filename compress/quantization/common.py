@@ -153,7 +153,7 @@ class IntAffineQuantizationSpec:
         nbits: int,
         signed: bool,
         quant_mode: IntAffineQuantizationMode,
-        grouper: AbstractGrouper = PerTensor,
+        grouper: AbstractGrouper = PerTensor(),
         **kwargs,
     ):
         self.nbits = nbits
