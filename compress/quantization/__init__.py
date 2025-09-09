@@ -50,15 +50,6 @@ from typing import Dict, Literal
 import functools
 
 
-def merge_dicts(dict1: Dict, dict2: Dict) -> Dict:
-    """
-    Merges two dictionaries. If a key is present in both dictionaries, the value from dict2 is used.
-    """
-    merged_dict = dict1.copy()
-    merged_dict.update(dict2)
-    return merged_dict
-
-
 def get_quant_dict(
     model,
     layer_type: str,

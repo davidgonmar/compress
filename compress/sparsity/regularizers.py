@@ -1,3 +1,9 @@
+"""
+Regularizers for sparsity in neural networks.
+Different ones are offered, based on different ideas.
+The main idea is that optimizing their loss should induce sparsity in the network.
+"""
+
 import torch
 from compress.functional import (
     l1_l2_ratio,

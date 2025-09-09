@@ -20,6 +20,8 @@ def maximize_energy(
     # 1. sum_{j} x_{i, j} = 1 for all i
     # 2. sum_{i, j} j * x_{i, j} * cost_vectors[i][j] <= total_cost
 
+    # This is an specific instance of the multiple-choice knapsack problem.
+
     prob = (
         pulp.LpProblem("MaximizeEnergy", pulp.LpMaximize)
         if not minimize

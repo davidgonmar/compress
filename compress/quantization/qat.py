@@ -15,6 +15,7 @@ import math
 from functools import partial
 from typing import Callable
 
+
 # ============================================================
 # ============= REGULAR QUANTIZATION AWARE TRAINING ==========
 # ============================================================
@@ -208,6 +209,10 @@ class QATConv2d(nn.Module):
 
 
 def _get_bn_and_conv_weight(conv, bn):
+    """
+    Given a conv layer and a bn layer, returns the equivalent fused conv weight and bias
+    """
+
     # Get the weight and bias of the conv layer
     w = conv.weight
     b = conv.bias if conv.bias is not None else 0
@@ -219,7 +224,7 @@ def _get_bn_and_conv_weight(conv, bn):
     running_var = bn.running_var
     eps = bn.eps
 
-    # returns the transformed weight and bias
+    # Returns the transformed weight and bias
     inv_std = gamma / torch.sqrt(running_var + eps)  # shape [out_channels]
     w = w * inv_std.reshape(-1, 1, 1, 1)
     b = beta + (b - running_mean) * inv_std
