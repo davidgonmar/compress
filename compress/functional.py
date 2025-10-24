@@ -7,14 +7,14 @@ DEFAULT_NORMALIZE = False
 
 def l1_l2_ratio(
     input: torch.Tensor, normalize=DEFAULT_NORMALIZE
-) -> torch.Tensor:  # aka hoyer sparsity
+) -> torch.Tensor:  # aka Hoyer sparsity
     # Metric to measure sparsity of the singular values. Taken from https://arxiv.org/abs/cs/0408058.
     # The paper introduces it in its normalized form (from 0 to 1, where 1 is the most sparse), but it can also be used in its non-normalized form (R^+, where 0 is the most sparse).
     n = input.numel()
     input = input.flatten()
     l1_norm = torch.sum(torch.abs(input))
     l2_norm = torch.norm(input, p=2)
-    if l2_norm < 1e-6:
+    if l2_norm < 1e-8:
         return torch.tensor(0.0, device=input.device)
     return (
         (math.sqrt(n) - (l1_norm / l2_norm)) / (math.sqrt(n) - 1)

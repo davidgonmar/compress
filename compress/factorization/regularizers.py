@@ -32,19 +32,21 @@ class SafeSvals(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
         # grad output of shape (r)
-        U, S, Vh = ctx.saved_tensors
-        # singular_vals_with_neighboors_too_close
+        U, S, Vt = ctx.saved_tensors
+
+        # mask = neighbor (left or right) singular values are too close
         ill = torch.abs(S[:-1] - S[1:]) < ctx.threshold
         padleft = torch.zeros(1, device=ill.device, dtype=ill.dtype)
         padright = torch.zeros(1, device=ill.device, dtype=ill.dtype)
         illleft = torch.cat((padleft, ill), dim=0)
         illright = torch.cat((ill, padright), dim=0)
         ill = illleft | illright
-        # dont take into account
+
+        # dont take into account singular values that are too close
         grad_output = torch.where(ill, torch.zeros_like(grad_output), grad_output)
-        # masking is implicit for U and Vh
-        # crop grad output till where s is 0
-        return torch.einsum("k,ik,kj->ij", grad_output, U, Vh)
+
+        # masking is implicit for U and Vt because of the einsum
+        return torch.einsum("k,ik,kj->ij", grad_output, U, Vt)
 
 
 safe_svals = SafeSvals.apply
@@ -82,9 +84,9 @@ def singular_values_entropy(input: torch.Tensor) -> torch.Tensor:
 
 
 def orthogonal_regularizer(
-    matrix: torch.Tensor, normalize_by_rank_squared=True
+    matrix: torch.Tensor, normalize_by_numel=True
 ) -> torch.Tensor:
-    mat_rank = min(matrix.shape[0], matrix.shape[1])
+    numel = matrix.shape[0] * matrix.shape[1]
     ret = (
         torch.norm(
             torch.mm(matrix, matrix.t()) - torch.eye(matrix.shape[0]).to(matrix.device),
@@ -92,35 +94,35 @@ def orthogonal_regularizer(
         )
         ** 2
     )
-    return ret / mat_rank if normalize_by_rank_squared else ret
+    return ret / numel if normalize_by_numel else ret
 
 
-# Pairs (fn, sgn) where sgn is -1 if the metric should be minimized, 1 if maximized
+# Pairs (fn, sgn) where sgn is 1 if the metric should be minimized, -1 if maximized
 _regularizers = {
-    "entropy": lambda **kwargs: (lambda x, **kwargs: singular_values_entropy(x), -1.0),
+    "entropy": lambda **kwargs: (lambda x: singular_values_entropy(x), 1.0),
     "l1_l2_ratio": lambda **kwargs: (
-        lambda x, **kwargs: singular_values_l1_l2_ratio(
+        lambda x: singular_values_l1_l2_ratio(
             x, kwargs.get("normalize", DEFAULT_NORMALIZE)
         ),
         -1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else 1.0,
     ),
     "scad": lambda **kwargs: (
-        lambda x, **kwargs: singular_values_scad(
+        lambda x: singular_values_scad(
             x, kwargs["lambda_val"], kwargs["a_val"], kwargs.get("reduction", "sum")
         ),
-        -1.0,
+        1.0,
     ),
     "squared_l1_l2_ratio": lambda **kwargs: (
-        lambda x, **kwargs: singular_values_squared_l1_l2_ratio(
+        lambda x: singular_values_squared_l1_l2_ratio(
             x, kwargs.get("normalize", DEFAULT_NORMALIZE)
         ),
         -1.0 if kwargs.get("normalize", DEFAULT_NORMALIZE) else 1.0,
     ),
     "nuclear_norm": lambda **kwargs: (
-        lambda x, **kwargs: nuclear_norm(x),
+        lambda x: nuclear_norm(x),
         1.0,
     ),
-    "noop": lambda **kwargs: (lambda x, **kwargs: torch.tensor(0.0), 1.0),
+    "noop": lambda **kwargs: (lambda x: torch.tensor(0.0), 1.0),
 }
 
 
@@ -167,7 +169,7 @@ class OrthogonalRegularizer:
         self,
         params: List[List[tuple[str, torch.nn.Module]]],
         weights: float | List[float] = 1.0,
-        normalize_by_rank_squared=True,
+        normalize_by_numel=True,
     ):
         self.params = params
         self.weights = (
@@ -178,10 +180,10 @@ class OrthogonalRegularizer:
         ), "Number of params and weights should match, got {} and {}".format(
             len(self.params), len(self.weights)
         )
-        self.normalize_by_rank_squared = normalize_by_rank_squared
+        self.normalize_by_numel = normalize_by_numel
 
     @staticmethod
-    def apply_to_low_rank_modules(model, weights=1.0, normalize_by_rank_squared=True):
+    def apply_to_low_rank_modules(model, weights=1.0, normalize_by_numel=True):
         params = extract_weights(
             model,
             cls_list=(LowRankLinear, LowRankConv2d),
@@ -192,7 +194,7 @@ class OrthogonalRegularizer:
             keywords={"w0", "w1"},
             ret_module=True,
         )
-        return OrthogonalRegularizer(params, weights, normalize_by_rank_squared)
+        return OrthogonalRegularizer(params, weights, normalize_by_numel)
 
     def __call__(self) -> torch.Tensor:
         real_params = []
@@ -208,7 +210,7 @@ class OrthogonalRegularizer:
                 real_params.append(w)
         params = real_params
         return sum(
-            weight * orthogonal_regularizer(param, self.normalize_by_rank_squared)
+            weight * orthogonal_regularizer(param, self.normalize_by_numel)
             for param, weight in zip(params, self.weights)
         )
 

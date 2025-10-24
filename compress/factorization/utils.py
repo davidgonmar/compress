@@ -18,5 +18,5 @@ def matrix_approx_rank(matrix: torch.Tensor, energy_threshold: float = 0.99) -> 
     singular_values = torch.linalg.svdvals(matrix)
     cumulative_energy = torch.cumsum(singular_values**2, dim=0)
     energy_ratio = cumulative_energy / cumulative_energy[-1]
-    approximate_rank = torch.sum(energy_ratio < energy_threshold).item()
+    approximate_rank = torch.sum(energy_ratio <= energy_threshold).item()
     return approximate_rank

@@ -23,7 +23,7 @@ class LowRankLinear(nn.Module):
 
     def to_linear(self):
         res = nn.Linear(self.w0.shape[0], self.w1.shape[1], bias=self.bias is not None)
-        res.weight = nn.Parameter(self.w0 @ self.w1)
+        res.weight = nn.Parameter((self.w0 @ self.w1).T)
         if self.bias is not None:
             res.bias = self.bias
         return res
@@ -59,13 +59,15 @@ class LowRankConv2d(nn.Module):
         self.in_channels = in_channels
         self.kernel_size = kernel_size
         self.out_channels = out_channels
+        self.H_k = H_k
+        self.W_k = W_k
 
     def get_weights_as_matrices(self, w, keyword):
-        # inverse permutation of (3, 0, 1, 2) is  (1, 2, 3, 0), of (1, 0, 2, 3) is (1, 0, 2, 3)
+        # inverse permutation of (3, 0, 1, 2) is  (1, 2, 3, 0), of (1, 0, 2, 3) it is (1, 0, 2, 3)
         assert keyword in {"w0", "w1"}
         w = (
             w.permute(1, 2, 3, 0).reshape(
-                self.input_channels * self.kernel_size * self.kernel_size, self.rank
+                self.input_channels * self.H_k * self.W_k, self.rank
             )
             if keyword == "w0"
             else w.permute(1, 0, 2, 3).reshape(self.rank, self.out_channels)
@@ -114,8 +116,8 @@ class LowRankConv2d(nn.Module):
             (
                 self.out_channels,
                 self.input_channels,
-                self.kernel_size,
-                self.kernel_size,
+                self.H_k,
+                self.W_k,
             ),
         )
         res.weight = nn.Parameter(w)

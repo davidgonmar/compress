@@ -20,6 +20,8 @@ from typing import Callable
 # ==========================================================================================================
 # Some general utilities
 # ==========================================================================================================
+
+
 def default_tensor_to_matrix_reshape(tensor: torch.Tensor) -> torch.Tensor:
     assert tensor.dim() == 2, "Expected 2D tensor, got {}".format(tensor.shape)
     return tensor
@@ -431,7 +433,7 @@ def collect_cache_low_rank_auto(model, keys, dataloader):
     def hook_fn(name):
         def fn(module, inp, output):
             if isinstance(module, (nn.Conv2d, nn.LazyConv2d, nn.Linear, nn.LazyLinear)):
-                acts[name].append(inp[0].detach().cpu())
+                acts[name].append(output[0].detach().cpu())
                 if name not in sizes:
                     sizes[name] = output.shape
             else:
@@ -575,7 +577,8 @@ def to_low_rank_auto(
 
 # ==========================================================================================================
 # The main functions to factorize a model using whitening + SVD-based factorization for activation-aware factorization
-# The concept is heavily inspired by https://arxiv.org/abs/2403.07378 (but there are differences).
+# The concept is heavily inspired by https://arxiv.org/abs/2403.07378 (but there are differences). We use
+# eigh instead of an SVD. Algebraically, they are equivalent.
 # =========================================================================================================
 
 
@@ -583,12 +586,7 @@ def obtain_whitening_matrix(
     acts: torch.Tensor,
     module: nn.Module,
 ):
-    # acts of shape (G, B, D)
-    # cusolver throws, for some reason, on some matrices
-    torch.backends.cuda.preferred_linalg_library("magma")
-    eigenvalues, eigenvectors = torch.linalg.eigh(
-        acts.cuda()
-    )  # acts might be in lower precision
+    eigenvalues, eigenvectors = torch.linalg.eigh(acts.cuda())
     eigenvalues, eigenvectors = eigenvalues.to(acts.dtype), eigenvectors.to(acts.dtype)
     x_svals = torch.sqrt(eigenvalues)
     V = eigenvectors
@@ -692,15 +690,15 @@ def _process_act(act, mod):
     return transformed
 
 
+@torch.no_grad()
 def collect_cache_activation_aware(model: nn.Module, keys, dataloader):
-    """
-    This collects information about the model and calibration data needed by the `to_low_rank_activation_aware` function.
-    Particularly, it collects the sizes of the outputs of each layer and accumulates X^T X for the (reshaped) activations X of each layer.
-    """
+    assert isinstance(
+        dataloader, torch.utils.data.DataLoader
+    ), "dataloader should be a DataLoader, got {}".format(type(dataloader))
     length = len(dataloader.dataset)
     mods = gather_submodules(model, should_do=keys_passlist_should_do(keys))
     device = next(model.parameters()).device
-    acts, outsizes, hooks = {}, {}, []
+    acts, outsizes, hooks, inner_dim_count = {}, {}, [], {}
 
     def fn(n, m, inp, out):
         x = inp[0] if isinstance(inp, tuple) else inp
@@ -708,9 +706,13 @@ def collect_cache_activation_aware(model: nn.Module, keys, dataloader):
         if acts.get(n) is None:
             acts[n] = torch.zeros(a.shape[1], a.shape[1], device=device, dtype=a.dtype)
         acts[n] = acts[n].to(device, non_blocking=True)
-        acts[n] += a.transpose(-1, -2) @ a / length
-        acts[n] = acts[n].to("cpu")
+        acts[n] += (a.transpose(-1, -2) @ a) / length
+        # we divide by length to avoid accumulation of very big numbers
+        # but we actually need to divide by the total number of elements reduced in the inner dimension
+        # this will be done later
+        acts[n] = acts[n].to("cpu").detach()
         outsizes.setdefault(n, out.shape)
+        inner_dim_count[n] = inner_dim_count.get(n, 0) + a.shape[0]
 
     for n, m in mods:
         hooks.append(m.register_forward_hook(functools.partial(fn, n)))
@@ -718,10 +720,19 @@ def collect_cache_activation_aware(model: nn.Module, keys, dataloader):
     model.eval()
     with torch.no_grad():
         for batch in dataloader:
-            model(batch[0].to(device))
+            if isinstance(batch, (list, tuple)):
+                model(batch[0].to(device))
+            else:
+                raise ValueError(
+                    "Data should be a tensor or a tuple/list (as in an ImageFolder dataset)"
+                )
     model.train(state)
     for h in hooks:
         h.remove()
+
+    # now correct the acts by dividing by the total number of elements reduced in the inner dimension
+    for n in acts.keys():
+        acts[n] = acts[n] * (length / inner_dim_count[n])
     return {"acts": acts, "outsizes": outsizes}
 
 
