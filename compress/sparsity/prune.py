@@ -1,3 +1,14 @@
+"""
+This module contains utilities for pruning models.
+In general, it allows to re-prune a model that has already been pruned (e.g., for iterative pruning).
+It assumes that models that have already been pruned are re-pruned with the same grouping schemes
+(e.g., if it was pruned with out-channel grouping, it should be re-pruned with out-channel grouping).
+Otherwise, wrong results might be obtained.
+
+In general, when pruning is aligned with the bias dimension, e.g. for out-channel grouping, we prune the bias as well.
+This is so as to prune it in a way that would allow to completely remove channels and thus obtain inference speedups.
+"""
+
 from torch import nn
 from compress.sparsity.sparse_ops import (
     SparseLinear,
@@ -14,7 +25,6 @@ from collections import defaultdict
 from compress.sparsity.policy import PolicyDict
 from compress.sparsity.runner import Runner
 import math
-
 
 _sparse_layers = (SparseLinear, SparseConv2d, SparseFusedConv2dBatchNorm2d)
 
@@ -198,9 +208,7 @@ class WeightNormInterGroupPruner(AbstractPruner):
             elif metric.name == "threshold":
                 threshold = metric.value
                 keep = self.metric(reshaped) >= threshold
-                if isinstance(
-                    module, (SparseConv2d, SparseLinear, SparseFusedConv2dBatchNorm2d)
-                ):
+                if isinstance(module, _sparse_layers):
                     # if the module is pruned, we need to use the previous mask also
                     old_mask = policy.grouper.transform(module.weight_mask)[
                         :, 0
@@ -215,7 +223,7 @@ class WeightNormInterGroupPruner(AbstractPruner):
                 if (
                     policy.grouper is OutChannelGroupingGrouperConv2d
                     or policy.grouper is OutChannelGroupingGrouperLinear
-                ) and isinstance(module, _sparse_layers):
+                ):
                     # if the module is pruned, we need to use the mask
                     assert mask.shape == module.bias_mask.shape
                     masks[name] = {**masks[name], "bias": mask}
@@ -254,18 +262,20 @@ class ActivationNormInterGroupPruner:
     def prune(self):
         activations = {}
         hooks = {}
-        number_passes = 0
+        total_acts = {}
         training_state = self.model.training
         self.model.eval()
 
+        # assumes batchsizes are of consistent size
         def get_hook(name):
             nonlocal activations
 
             def hook(module, input, output):
                 if name not in activations:
-                    activations[name] = output.detach().mean(dim=0)
+                    activations[name] = output.detach().sum(dim=0)
                 else:
-                    activations[name] += output.detach().mean(dim=0)
+                    activations[name] += output.detach().sum(dim=0)
+                total_acts[name] = total_acts.get(name, 0) + output.shape[0]
 
             return hook
 
@@ -281,9 +291,6 @@ class ActivationNormInterGroupPruner:
         while True:
             try:
                 loss = self.runner.iteration()
-                self.model.zero_grad()
-                loss["loss"].backward()
-                number_passes += 1
             except StopIteration:
                 break
 
@@ -303,7 +310,7 @@ class ActivationNormInterGroupPruner:
                 # if conv -> weight shape [O, I, H_k, W_k]
                 # if linear -> weight shape [O, I]
                 acts = (
-                    activations[name] / number_passes
+                    activations[name] / total_acts[name]
                 )  # normalize over number of batches
                 policy = self.policies[name]
                 if isinstance(
@@ -490,7 +497,8 @@ class TaylorExpansionIntraGroupPruner:
                         module.weight_mask
                     )  # if weight is already pruned, we manually set its saliency to 0
 
-                # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where the last dim has ordered by magnitude idxs
+                # first prune the elements in groups, so we end up with n_groups, m_elements_per_group where
+                #  the last dim has ordered by magnitude idxs
                 density = 1 - policy.intra_group_metric.value
                 assert policy.intra_group_metric.name == "sparsity_ratio"
                 ranked_elements = torch.topk(
@@ -766,11 +774,15 @@ class ActivationMagnitudeIntraGroupPruner:
                 if isinstance(
                     module, (nn.Conv2d, SparseConv2d, SparseFusedConv2dBatchNorm2d)
                 ):
+                    assert (
+                        module.groups == 1
+                    ), "Grouped convolutions are not supported at the moment"
                     acts = torch.nn.functional.unfold(
                         acts,
                         module.kernel_size,
                         stride=module.stride,
                         padding=module.padding,
+                        dilation=module.dilation,
                     )  # shape [I * H_k * W_k, H_out * W_out]
                     w = weight  # shape [O, I, H_k, W_k]
                     if isinstance(module, (SparseConv2d, SparseFusedConv2dBatchNorm2d)):
@@ -803,7 +815,7 @@ class ActivationMagnitudeIntraGroupPruner:
                         assert w.shape == module.weight.T.shape
                         w = w * module.weight_mask.T
                     acts = acts.reshape(*acts.shape, 1)  # shape [..., I, 1]
-                    extra_dims = acts.shape[:-2]
+                    extra_dims = list(range(acts.ndim - 2))
                     vnorm = (
                         lambda x: torch.sqrt(
                             torch.sum(x**2, dim=(extra_dims), keepdim=False)
@@ -842,6 +854,8 @@ class ActivationMagnitudeIntraGroupPruner:
         return apply_masks(self.model, masks)
 
 
+# In general, we do not count parameters casually being zero as "sparse",
+# we only count parameters intentionally masked.A
 def get_sparsity_information(model: nn.Module) -> dict:
     nz_total = 0
     total = 0
@@ -857,6 +871,7 @@ def get_sparsity_information(model: nn.Module) -> dict:
 
         for p in module.parameters(recurse=False):
             total += p.numel()
+            nz_total += p.numel()
 
         stack.extend(module.children())
     sparsity_ratio = 1.0 - nz_total / total if total else 0.0

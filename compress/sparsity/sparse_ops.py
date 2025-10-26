@@ -292,7 +292,8 @@ class SparseFusedConv2dBatchNorm2d(nn.Module):
         # In some cases, we might want to get the gradients of the EFFECTIVE parameters (those are the ones that would get merged for inference)
         # For example, we use them to estimate the importance of the parameters for pruning
         # _cached_bias and _cached_weight get stored so that one can access their gradients
-        # Note that gradients will flow back to the BN parameters, but the stats are frozen
+        # Note that gradients will flow back to the BN parameters, but the stats are frozen.
+        # This is the only option as os now and a better one might be implemented in the future.
         w_fused, b_fused = get_new_params(self.conv, self.bn)
         w_fused.retain_grad()
         b_fused.retain_grad()
