@@ -235,7 +235,7 @@ class QuantizedConv2d(nn.Conv2d):
 
 
 class KMeansQuantizer:
-    def _get_quantized_codebook(self, x: torch.Tensor, nbits: int, signed: bool):
+    def _get_quantized_codebook(self, x: torch.Tensor, nbits: int):
         try:
             from sklearn.cluster import KMeans
         except ImportError:
@@ -257,16 +257,13 @@ class KMeansQuantizer:
         codebook = torch.tensor(kmeans.cluster_centers_).to(x.device).reshape(-1)
         return codebook
 
-    def __init__(
-        self, tensor: torch.Tensor, nbits: int, signed: bool, init_uniform: bool = False
-    ):
+    def __init__(self, tensor: torch.Tensor, nbits: int, init_uniform: bool = False):
         super().__init__()
         self.init_uniform = init_uniform
         self.codebook = nn.Parameter(
-            self._get_quantized_codebook(tensor, nbits, signed), requires_grad=False
+            self._get_quantized_codebook(tensor, nbits), requires_grad=False
         )
         self.nbits = nbits
-        self.signed = signed
 
     def quantize(self, x: torch.Tensor):
         arange = torch.arange(2**self.nbits).to(x.device)
@@ -304,9 +301,7 @@ class KMeansQuantizedLinear(nn.Linear):
         )
         self.weight_spec = weight_spec
         self.input_spec = input_spec
-        self.weight_quantizer = KMeansQuantizer(
-            linear.weight, weight_spec.nbits, weight_spec.signed
-        )
+        self.weight_quantizer = KMeansQuantizer(linear.weight, weight_spec.nbits)
         self.weight = nn.Parameter(
             self.weight_quantizer.quantize(linear.weight), requires_grad=False
         )
@@ -363,9 +358,7 @@ class KMeansQuantizedConv2d(nn.Conv2d):
         )
         self.weight_spec = weight_spec
         self.input_spec = input_spec
-        self.weight_quantizer = KMeansQuantizer(
-            conv2d.weight, weight_spec.nbits, weight_spec.signed
-        )
+        self.weight_quantizer = KMeansQuantizer(conv2d.weight, weight_spec.nbits)
         self.weight = nn.Parameter(
             self.weight_quantizer.quantize(conv2d.weight), requires_grad=False
         )

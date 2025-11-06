@@ -4,6 +4,9 @@ from enum import Enum
 from abc import ABC, abstractmethod
 
 
+# groups have shape (group_dim, n_groups)
+
+
 class AbstractGrouper(ABC):
 
     @abstractmethod
@@ -162,6 +165,8 @@ class IntAffineQuantizationSpec:
         self.mode_args = kwargs
         self.grouper = grouper
 
+        self.__post_init__()
+
     def __repr__(self):
         return f"IntAffineQuantizationSpec(nbits={self.nbits}, signed={self.signed}, quant_mode={self.quant_mode}, mode_args={self.mode_args}, grouper={self.grouper})"
 
@@ -255,13 +260,13 @@ def _or0(x):
     return x
 
 
-def quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
+def quantize(x: torch.Tensor, info: IntAffineQuantizationInfo, cast=True):
     return info.spec.grouper.ungroup(
         torch.clamp(
             ste_round(info.spec.grouper.group(x) / info.scale + _or0(info.zero_point)),
             info.qmin,
             info.qmax,
-        ).to(info.get_dtype()),
+        ).to(info.get_dtype() if cast else torch.float32),
         x,
     )
 
@@ -275,4 +280,4 @@ def dequantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
 
 
 def fake_quantize(x: torch.Tensor, info: IntAffineQuantizationInfo):
-    return dequantize(quantize(x, info), info)
+    return dequantize(quantize(x, info, cast=False), info)

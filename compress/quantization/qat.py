@@ -94,9 +94,10 @@ def _extract_kwargs_from_orig_layer(self, keys_list, orig_layer):
 def _to_float_qat(self, kwargs_to_extract, orig_layer_cls):
     kwargs = {key: getattr(self, key) for key in kwargs_to_extract}
     rt = orig_layer_cls(**kwargs, bias=self.bias is not None)
-    rt.weight = self.weight.detach().clone()
-    if self.bias is not None:
-        rt.bias = self.bias.detach().clone()
+    with torch.no_grad():
+        rt.weight.copy_(self.weight.detach())
+        if self.bias is not None:
+            rt.bias.copy_(self.bias.detach())
     return rt
 
 
@@ -385,7 +386,6 @@ class FusedQATConv2dBatchNorm2d(nn.Module):
             f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
             f"{self.conv.in_channels}, {self.conv.out_channels}, {self.conv.kernel_size}, "
             f"{self.conv.stride}, {self.conv.padding}, {self.conv.dilation}, {self.conv.groups})"
-            f"frozen={self.frozen}, "
         )
 
 
@@ -534,7 +534,7 @@ class LSQLinear(nn.Module):
             f"LSQQuantizedLinear(W{'S' if self.weight_spec.signed else 'U'}{self.weight_spec.nbits}"
             f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
             f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
-            f"{self.in_features}, {self.out_features}, {self.bias})"
+            f"{self.in_features}, {self.out_features}, {self.bias is not None})"
         )
 
     to_linear = partial(
@@ -588,7 +588,7 @@ class LSQConv2d(nn.Module):
             f"A{'S' if self.input_spec.signed else 'U'}{self.input_spec.nbits}, "
             f"WGrouper={self.weight_spec.grouper}, AGrouper={self.input_spec.grouper}, "
             f"{self.in_channels}, {self.out_channels}, {self.kernel_size}, "
-            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups})"
+            f"{self.stride}, {self.padding}, {self.dilation}, {self.groups}, {self.bias is not None})"
         )
 
     to_conv2d = partial(
