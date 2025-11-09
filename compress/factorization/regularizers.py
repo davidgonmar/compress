@@ -157,7 +157,7 @@ class SingularValuesRegularizer:
 
     def __call__(self) -> torch.Tensor:
         return self.sgn * sum(
-            weight * self.fn(reshaper(param), **self.kwargs)
+            weight * self.fn(reshaper(param))
             for (param, reshaper), weight in zip(
                 self.params_and_reshapers, self.weights
             )
