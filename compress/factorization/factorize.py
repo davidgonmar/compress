@@ -521,10 +521,7 @@ def to_low_rank_auto(
     mods = [mod for _, mod in modules_to_replace]
 
     if metric == "rank":
-        costs = [
-            torch.cumsum(torch.arange(1, len(e) + 1, device=e.device), 0)
-            for e in cum_energies
-        ]
+        costs = [torch.arange(1, len(e) + 1, device=e.device) for e in cum_energies]
         total_budget = sum(len(e) for e in cum_energies) * ratio_to_keep
     elif metric == "flops":
         costs = [
@@ -851,10 +848,7 @@ def to_low_rank_activation_aware_auto(
     ws = [mod.weight.detach() for _, mod in modules_to_replace]
 
     if metric == "rank":
-        costs = [
-            torch.cumsum(torch.arange(1, len(e) + 1, device=e.device), 0)
-            for e in cum_energies
-        ]
+        costs = [torch.arange(1, len(e) + 1, device=e.device) for e in cum_energies]
         total_budget = sum(len(e) for e in cum_energies) * ratio_to_keep
     elif metric == "flops":
         costs = [
