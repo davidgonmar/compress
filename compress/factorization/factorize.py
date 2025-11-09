@@ -206,6 +206,7 @@ def get_rank_to_keep_from_rank_ratio(
     Basically, it is implemented as rank = ceil(rank_ratio * max_rank)
     """
     assert 0.0 <= rank_ratio <= 1.0, "rank_ratio must be in [0, 1]"
+    assert X.ndim == 2, "X must be 2-dimensional"
     max_rank = min(X.shape[0], X.shape[1])
     k = math.ceil(max_rank * rank_ratio)
     return max(k, 1)
@@ -340,7 +341,7 @@ def factorize_conv2d(module, get_rank: Callable, factors=None):
         U, S, V_T = decompose_params(reshaped)
     else:
         U, S, V_T = factors
-    rank = get_rank(W, U, S, V_T)
+    rank = get_rank(reshaped, U, S, V_T)
     if not should_do_low_rank(reshaped, rank):
         return module
     U, S, V_T = crop_svd(
@@ -642,7 +643,7 @@ def factorize_conv2d_whitened(
         U, S, V_T = decompose_params(data_whitening_matrix_inverse @ reshaped)
     else:
         U, S, V_T = factors
-    rank = get_rank(W, U, S, V_T)
+    rank = get_rank(reshaped, U, S, V_T)
     if not should_do_low_rank(reshaped, rank):
         return module
     U, S, V_T = crop_svd(
