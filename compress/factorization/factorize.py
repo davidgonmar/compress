@@ -428,13 +428,19 @@ def collect_cache_low_rank_auto(model, keys, dataloader):
     was_training = model.training
 
     sizes = {}
-    acts = {name: [] for name, _ in modules_to_replace}
+    sums = {}
+    counts = {}
     hooks = []
 
     def hook_fn(name):
         def fn(module, inp, output):
             if isinstance(module, (nn.Conv2d, nn.LazyConv2d, nn.Linear, nn.LazyLinear)):
-                acts[name].append(output[0].detach().cpu())
+                bsum = output.detach().sum(dim=0).cpu()
+                if name not in sums:
+                    sums[name] = torch.zeros_like(bsum)
+                    counts[name] = 0
+                sums[name] += bsum
+                counts[name] += output.shape[0]
                 if name not in sizes:
                     sizes[name] = output.shape
             else:
@@ -455,13 +461,11 @@ def collect_cache_low_rank_auto(model, keys, dataloader):
 
     model.train(was_training)
 
-    acts = {name: torch.cat(acts[name], dim=0).to(device) for name in acts}
-
     variances_per_layer = {}
     for name, module in modules_to_replace:
-        var = torch.var(acts[name])
+        mean_act = (sums[name] / counts[name]).to(device)
+        var = torch.var(mean_act)
         variances_per_layer[name] = var.item()
-        del acts[name]
 
     return {"variances": variances_per_layer, "sizes": sizes}
 
