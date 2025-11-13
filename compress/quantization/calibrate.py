@@ -143,7 +143,7 @@ def calibrate(
         alpha_star = c1 * torch.sqrt(E_w2) + c2 * E_abs_w
         scale = alpha_star
         zero_point = None
-        return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
+        scale = torch.tensor(scale).to(x.device).detach()
 
     if spec.quant_mode == IntAffineQuantizationMode.ENTROPY_SYMMETRIC:
         assert isinstance(
@@ -165,9 +165,8 @@ def calibrate(
         threshold = (best_i + 0.5) * bin_width
         scale = 2 * threshold / (spec.qmax - spec.qmin)
         zero_point = None
-        return IntAffineQuantizationInfo(
-            spec, torch.tensor(scale).to(x.device).detach(), zero_point
-        )
+        scale = torch.tensor(scale).to(x.device).detach()
+
     if spec.quant_mode == IntAffineQuantizationMode.LSQ_INITIALIZATION:
         # Learned Step Size Quantization init: s = 2 * E[|x|] / sqrt(Q)
         xm = spec.grouper.group(x)
@@ -175,7 +174,6 @@ def calibrate(
         Qp = float(spec.qmax)
         scale = 2 * E_abs / math.sqrt(Qp)
         zero_point = None
-        return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
     if spec.quant_mode == IntAffineQuantizationMode.ASYMMETRIC:
         xm = spec.grouper.group(x)
@@ -190,7 +188,6 @@ def calibrate(
         xmax = quantile(xm, upper_percentile / 100.0, dim=0)
         scale = (xmax - xmin) / (spec.qmax - spec.qmin)
         zero_point = torch.round(spec.qmin - xmin / scale).to(x.dtype)
-        return IntAffineQuantizationInfo(spec, scale.detach(), zero_point.detach())
 
     if spec.quant_mode == IntAffineQuantizationMode.SYMMETRIC:
         percentile = spec.mode_args.get(
@@ -205,6 +202,10 @@ def calibrate(
         xmax = quantile(xm.abs(), percentile / 100, dim=0)
         scale = 2 * xmax / (spec.qmax - spec.qmin)
         zero_point = None
-        return IntAffineQuantizationInfo(spec, scale.detach(), zero_point)
 
+    # scale = 1 where it is 0, so that division does not cause NaNs
+    scale[scale < 1e-8] = 1
+    return IntAffineQuantizationInfo(
+        spec, scale.detach(), (zero_point.detach() if zero_point is not None else None)
+    )
     raise ValueError(f"Unsupported quantization mode: {spec.quant_mode}")
