@@ -786,6 +786,10 @@ def qat_freeze_bn_running_stats(model: nn.Module):
         if isinstance(module, (FusedLSQConv2dBatchNorm2d, FusedQATConv2dBatchNorm2d)):
             module.bn_track_running_stats = False
 
+def qat_unfreeze_bn_running_stats(model: nn.Module):
+    for module in model.modules():
+        if isinstance(module, (FusedLSQConv2dBatchNorm2d, FusedQATConv2dBatchNorm2d)):
+            module.bn_track_running_stats = True
 
 # ============================================================
 # ============= PACT QUANTIZATION ============================
