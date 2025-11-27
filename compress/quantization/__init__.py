@@ -16,6 +16,7 @@ from compress.quantization.qat import (
     FusedQATConv2dBatchNorm2d,
     FusedLSQConv2dBatchNorm2d,
     qat_freeze_bn_running_stats,
+    qat_unfreeze_bn_running_stats,
 )
 
 import torch.nn.functional as F
