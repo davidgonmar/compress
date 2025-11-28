@@ -337,6 +337,15 @@ def requantize_qat(
                 module.weight,
                 specs[name]["weight"],
             )
+            if isinstance(
+                module,
+                (
+                    LSQConv2d,
+                    LSQLinear,
+                    FusedLSQConv2dBatchNorm2d,
+                ),
+            ):
+                module.weight_info.scale.requires_grad_(True)
         if hasattr(module, "input_info"):
             assert kwargs.get("data_batch") is not None, "data_batch must be provided"
 
@@ -345,7 +354,15 @@ def requantize_qat(
                 activations[name],
                 specs[name]["input"],
             )
-
+            if isinstance(
+                module,
+                (
+                    LSQConv2d,
+                    LSQLinear,
+                    FusedLSQConv2dBatchNorm2d,
+                ),
+            ):
+                module.input_info.scale.requires_grad_(True)
     return model
 
 
