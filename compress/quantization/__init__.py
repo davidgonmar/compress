@@ -363,6 +363,10 @@ def requantize_qat(
                 ),
             ):
                 module.input_info.scale.requires_grad_(True)
+        if hasattr(module, "input_observer"):
+            module.input_observer.spec = specs[name]["input"]
+            module.input_observer.initialized = False
+            del module.input_observer.info # will be reconstructed
     return model
 
 
